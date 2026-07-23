@@ -1,58 +1,73 @@
 # Unit CamS3 firmware
 
-The camera unit runs its own ESP32-S3. Our target firmware behavior:
+## ✅ Variant: 5MP — confirmed via the vlogCamera project
 
-- Join the LAN in **STA mode** (same WiFi as the Stopwatch)
-- Serve `GET /capture` → still JPEG (SVGA〜XGA, quality ≈12)
-- Optional `GET /stream` → MJPEG (for a future pseudo-preview)
-- Blink the LED on capture
+The exact unit was verified on 2026-06-02 in
+[aieo-product/vlogCamera](https://github.com/aieo-product/vlogCamera)
+(`hardware-verification/`, device MAC `3C:DC:75:77:82:94`): it runs the
+**factory firmware `UnitCamS3-UserDemo` branch `unitcams3-5mp`** (5MP, max
+QSXGA 2592×1944). No variant identification step needed.
 
-## Step 0 — identify your sensor variant (do this first!)
+## Strategy: use the factory firmware as-is (no custom build for MVP)
 
-The 2MP (OV2640) and 5MP (PY260) versions share the same PCB and silkscreen.
-With the **factory firmware** installed:
+The factory firmware already serves a full REST API
+(19/19 smoke tests passed in vlogCamera):
 
-1. Power the unit, connect to its WiFi AP `UnitCamS3-WiFi`
-2. Open `http://192.168.4.1/` and press **Capture**
-3. Check the saved image resolution:
-   - **1600×1200** → 2MP OV2640
-   - **2592×1944** → 5MP PY260
+| Endpoint | Use in ToiCamera |
+|---|---|
+| `GET /api/v1/capture` | still JPEG — the Stopwatch polls this |
+| `GET /api/v1/control?var=<k>&val=<v>` | `framesize`/`quality`/`awb`/`aec`/`agc`/`vflip`/`hmirror`… |
+| `GET /api/v1/status` | sensor state (JSON) |
+| `GET /api/v1/led_on` / `led_off` | capture LED feedback |
+| `POST /api/v1/set_config` | `{wifiSsid, wifiPass, ...}` → STA mode on reboot |
+| `GET /api/v1/stream` | MJPEG (VGA ≈11fps) — future pseudo-preview |
 
-(Alternatively, M5Burner shows which factory firmware the unit matches.)
+Full reference: `vlogCamera/hardware-verification/api-reference.md`.
 
-## Path A — 5MP PY260 variant
+### ⚠️ Known gotcha: near-black images by default
 
-The PY260 driver is **not** in mainline `espressif/esp32-camera`
-([esphome#10286](https://github.com/esphome/issues/issues/10286)). Base on
-[hbentel/M5Stack-Unit-CamS3-5MP](https://github.com/hbentel/M5Stack-Unit-CamS3-5MP)
-(Apache-2.0, ESP-IDF 5.3.2), which vendors a working PY260 driver (XCLK pinned
-at 10MHz) and already serves a JPEG snapshot on port 80 and MJPEG on port 81.
+Factory defaults ship with `awb/aec/agc` **all OFF** → captures average
+luminance ~3/255. The Stopwatch firmware fixes this at boot by calling
+`configureCamera()` (awb=1, awb_gain=1, aec=1, agc=1, gainceiling=2,
+framesize=SVGA, quality=12). If testing the camera standalone, apply the same
+via curl first.
 
-Planned modifications (fork into this directory):
+### WiFi modes are exclusive (AP ⇔ STA)
 
-- Hard-code STA credentials via build config (or keep its BLE provisioning)
-- Default frame size SVGA–XGA, JPEG quality ~12
-- Strip MQTT/Frigate integration
-- Keep `/health`, add capture LED blink
+- `wifiSsid` empty → AP mode `UnitCamS3-WiFi` (192.168.4.1)
+- `wifiSsid` set → STA mode joins your LAN (**the AP disappears**)
 
-**Pin the esp32-camera fork version — never upgrade it** (2.1.6 broke PY260).
+**Setup procedure for ToiCamera (one-time):**
 
-Fallback: M5Stack's official `UnitCamS3-UserDemo` branch `unitcams3-5mp` (MIT).
+```bash
+# 1. Join the camera's AP "UnitCamS3-WiFi" (e.g. from a phone or the Mac)
+H=192.168.4.1
+# 2. Point it at your LAN (factory get_wifi_list is buggy/empty — set directly)
+curl -s -X POST http://$H/api/v1/set_config -H "Content-Type: application/json" \
+  -d '{"wifiSsid":"<your-ssid>","wifiPass":"<your-pass>","startPoster":"no","postInterval":5,"nickname":"ToiCamera","timeZone":"GMT+9"}'
+# 3. Power-cycle. Find its LAN IP (router DHCP table / arp) and give it a
+#    DHCP reservation; put "http://<ip>" into firmware/stopwatch/secrets.ini (CAM_BASE)
+# 4. Verify from the LAN:
+curl -s http://<ip>/api/v1/status | jq .
+curl -s http://<ip>/api/v1/capture -o test.jpg && file test.jpg
+```
 
-## Path B — 2MP OV2640 variant
+**Open verification point:** vlogCamera confirmed STA mode joins the LAN for
+the EzData poster flow, but did not verify that the HTTP server stays
+reachable on the STA IP. Step 4 above is the go/no-go check. To return to AP
+mode, set `wifiSsid` back to empty (or `reset_config`).
 
-Mainline `esp32-camera` supports OV2640 — a small Arduino/ESP-IDF sketch with
-`esp_camera` + an HTTP server (~100 lines) is simpler than modifying anything.
-Sketch will be added here once the variant is confirmed.
+### Fallback if STA + HTTP server doesn't work
 
-## Last-resort fallback
-
-The factory firmware itself serves JPEG over HTTP in AP mode. The Stopwatch
-could join `UnitCamS3-WiFi` to capture — but then it loses internet access for
-the AI call, so this is only useful for demos with pre-canned analysis.
+Rebuild the firmware with vlogCamera's patch/overlay approach
+(`vlogCamera/firmware/` — ESP-IDF v5.1.4, patches onto UserDemo
+`unitcams3-5mp`, includes a WiFi reconnect watchdog and an AP-fallback patch).
+That repo's `firmware/README.md` + `BUILD-lite-page.md` document the build.
+Vendor the result into this directory if we go that route.
 
 ## Power
 
 No battery on board. Grove red=5V / black=GND from the Stopwatch powers it
-(expect 200–400mA peaks during capture/WiFi). The Grove data pins are **USB
-D+/D- (G19/G20)** — do not drive UART signals into them with stock firmware.
+(200–400mA peaks). The Grove data pins are **USB D+/D- (G19/G20)** — do not
+drive UART signals into them. The Stopwatch enables its PMIC-gated 5V output
+at boot (`cfg.output_power` / `M5.Power.setExtOutput(true)`).

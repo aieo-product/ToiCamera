@@ -76,13 +76,19 @@ RESULT --[KEYA]--> CAPTURING(再撮影)   RESULT --[KEYB]--> 音声リプレイ
 
 ### 4.2 CamS3 ファームウェア(`firmware/cams3/`)
 
-要件: STA モードで LAN 参加、`GET /capture` で JPEG(SVGA〜XGA, q≈12)返却、撮影 LED。
+**変種は 5MP で確定**(過去プロジェクト
+[vlogCamera](https://github.com/aieo-product/vlogCamera) の 2026-06-02 実機検証。
+工場ファーム = `UnitCamS3-UserDemo` branch `unitcams3-5mp`)。
 
-センサー変種で実装が分岐する(**変種判別が最優先タスク**):
+**MVP はカスタムファーム不要**: 工場ファームの REST API(`/api/v1/capture`・
+`/api/v1/control`・`/api/v1/led_on|off`・`set_config` による STA 化)をそのまま使う。
+Stopwatch 側が起動時に `configureCamera()` で露出設定(awb/aec/agc ON — 工場初期値は
+全 OFF で画像が真っ黒になる既知の罠)と SVGA/q12 を適用する。
 
-- **5MP PY260**: mainline esp32-camera 非対応のため `hbentel/M5Stack-Unit-CamS3-5MP`
-  fork をベースに改修(esp32-camera fork のバージョン固定)
-- **2MP OV2640**: mainline esp32-camera + 小さな httpd スケッチ
+- 残検証: STA モードで HTTP サーバーが LAN 側 IP から叩けるか(go/no-go)
+- フォールバック: vlogCamera の patch/overlay ビルド(ESP-IDF v5.1.4、WiFi 再接続
+  ウォッチドッグ・AP フォールバック付き)を流用して改修版を焼く
+- 手順・API リファレンス: `firmware/cams3/README.md`
 
 ### 4.3 AI 中継 Worker(`worker/`)
 
@@ -118,7 +124,7 @@ vars: `MODEL` / `TTS_VOICE`。
 
 ## 7. リスクと対策
 
-1. **PY260 ドライバ/変種誤認** → 実機判別を最優先。fork バージョン固定。最悪、純正 FW の HTTP API をそのまま使う
+1. **STA モードで HTTP サーバー不達の可能性** → set_config で STA 化して LAN から `/api/v1/capture` を叩く go/no-go 検証を最優先。NG なら vlogCamera の patch ビルドで改修版を焼く
 2. **日本語 TTS 品質** → Worker 側のみで Google TTS へ差替可能な構造
 3. **PSRAM 圧迫** → 状態遷移ごとのバッファ解放、SVGA 運用、音声長制限
 4. **デモ時の WiFi 不調** → テザリング SSID を第 2 スロットに焼き込み、動画は事前収録

@@ -16,6 +16,9 @@
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
 #endif
+#ifndef CAM_BASE
+#error "CAM_BASE missing — update secrets.ini from secrets.ini.example"
+#endif
 
 enum class AppState {
   Boot,
@@ -195,14 +198,39 @@ static uint8_t *readBody(HTTPClient &http, size_t maxLen, size_t &outLen) {
   return buf;
 }
 
+// Fire a short GET against the CamS3 REST API; result body is ignored.
+static bool camGet(const String &pathAndQuery, uint16_t timeoutMs = 3000) {
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  if (!http.begin(String(CAM_BASE) + pathAndQuery)) return false;
+  const int code = http.GET();
+  http.end();
+  return code == HTTP_CODE_OK;
+}
+
+// Factory firmware boots with awb/aec/agc all OFF -> near-black images
+// (vlogCamera hardware-verification, 2026-06-02). Enable auto exposure and
+// pick SVGA/q12 for fast transfer. Best-effort: failures are non-fatal.
+static void configureCamera() {
+  static const char *kInit[] = {
+      "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",
+      "/api/v1/control?var=aec&val=1",  "/api/v1/control?var=agc&val=1",
+      "/api/v1/control?var=gainceiling&val=2",
+      "/api/v1/control?var=framesize&val=9",  // SVGA 800x600
+      "/api/v1/control?var=quality&val=12",
+  };
+  for (auto p : kInit) camGet(p);
+}
+
 static bool captureFromCam() {
   free(jpegBuf);
   jpegBuf = nullptr;
   jpegLen = 0;
 
+  camGet("/api/v1/led_on", 500);
   HTTPClient http;
   http.setTimeout(8000);
-  if (!http.begin(CAM_URL)) return false;
+  if (!http.begin(String(CAM_BASE) + "/api/v1/capture")) return false;
   const int code = http.GET();
   if (code == HTTP_CODE_OK) {
     jpegBuf = readBody(http, kMaxJpeg, jpegLen);
@@ -210,6 +238,7 @@ static bool captureFromCam() {
     lastError = "camera HTTP " + String(code);
   }
   http.end();
+  camGet("/api/v1/led_off", 500);
   return jpegBuf != nullptr;
 }
 
@@ -321,6 +350,7 @@ void setup() {
     enterError("WiFiに接続できません");
     return;
   }
+  configureCamera();  // black-image fix + SVGA; harmless if camera is offline
   showIdle();
   state = AppState::Idle;
 }
