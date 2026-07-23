@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "m5aicamera",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // Claude model for /analyze. Flip to a higher tier (e.g. claude-sonnet-5)
+    // for demo recording via: wrangler deploy --var MODEL:claude-sonnet-5
+    "MODEL": "claude-haiku-4-5",
+    // OpenAI TTS voice. Swap Worker-side only if Japanese quality disappoints
+    // (fallback plan: Google Cloud TTS ja-JP-Neural2, LINEAR16).
+    "TTS_VOICE": "marin"
+  }
+  // Secrets (set via `akc run -- wrangler secret put <NAME>`, never in this file):
+  //   ANTHROPIC_API_KEY  — Claude vision
+  //   OPENAI_API_KEY     — TTS
+  //   DEVICE_TOKEN       — shared token the Stopwatch sends as X-Device-Token
+}

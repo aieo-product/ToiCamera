@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Secrets — never commit credentials (akc / wrangler secret で管理)
+secrets.ini
+.env
+.dev.vars
+
+# PlatformIO
+.pio/
+.vscode/
+
+# Node
+node_modules/
+dist/
+.wrangler/
