@@ -1,4 +1,8 @@
-# m5AiCamera — AI Explainer Camera
+# ToiCamera — AI Explainer Camera
+
+> **Toi** (問い) is Japanese for "a question" — and it sounds like *toy*.
+> ToiCamera is a toy-like camera you ask questions with: shoot something,
+> and the AI tells you what you're looking at.
 
 A pocket AI camera built from the **M5Stack Stopwatch Dev Kit (ESP32-S3, SKU C152)** and the **M5Stack Unit CamS3**. Press the yellow shutter button, and the device captures a photo, shows it on the 1.75" round AMOLED, and an AI narrator explains what it sees — on screen and out loud through the built-in speaker (Japanese TTS).
 

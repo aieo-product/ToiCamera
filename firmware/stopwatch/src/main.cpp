@@ -1,4 +1,4 @@
-// m5AiCamera — Stopwatch host firmware
+// ToiCamera — Stopwatch host firmware
 //
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation (text + TTS)
 // Blue button   (KEYB/G1): replay last TTS audio

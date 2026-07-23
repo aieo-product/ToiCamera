@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "m5aicamera",
+  "name": "toicamera",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "observability": {

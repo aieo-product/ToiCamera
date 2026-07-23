@@ -1,6 +1,6 @@
-# m5AiCamera 設計書
+# ToiCamera 設計書
 
-M5Stack Global Innovation Contest 2026 応募作品「m5AiCamera」の設計文書。
+M5Stack Global Innovation Contest 2026 応募作品「ToiCamera」の設計文書。
 実装の単一の正典はコードとし、本書はアーキテクチャ判断とその理由を記録する。
 
 - 提出締切: **2026-08-07 23:59 PST**(Hackster.io 英語記事 + Google Form、両方必須)
@@ -9,6 +9,9 @@ M5Stack Global Innovation Contest 2026 応募作品「m5AiCamera」の設計文�
 ## 1. コンセプト
 
 「黄ボタンを押すだけで、撮ったものを AI が日本語で解説してくれる小さなカメラ」。
+
+**名称の由来**: ToiCamera = 「問い(Toi)」×「Toy」。AI に"問い"を投げるおもちゃの
+ようなカメラ、というダブルミーニング。英語圏でも "toy camera" と音が重なり覚えやすい。
 
 M5Stack Stopwatch の円形 AMOLED をコンパクトカメラの背面モニタに、Unit CamS3 を
 レンズに見立てた 3D プリントボディに収める。シャッター(KEYA 黄)→ 撮影画像表示 →

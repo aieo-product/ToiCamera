@@ -28,7 +28,7 @@ npx wrangler deploy
 ## Testing
 
 ```bash
-BASE=https://m5aicamera.<account>.workers.dev
+BASE=https://toicamera.<account>.workers.dev
 TOKEN=<device token>
 
 curl -s $BASE/health
