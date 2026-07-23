@@ -309,7 +309,9 @@ static void runCaptureCycle() {
 
 void setup() {
   auto cfg = M5.config();
+  cfg.output_power = true;  // Grove 5V out — powers the CamS3
   M5.begin(cfg);
+  M5.Power.setExtOutput(true);  // PMIC-gated 5V bus: enable explicitly
   M5.Speaker.setVolume(180);
   M5.Display.setBrightness(200);
 
