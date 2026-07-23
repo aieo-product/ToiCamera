@@ -1,0 +1,1 @@
+/Users/takehiro/.claude/skills/dev-workflow/scripts/hooks/check-merge-gate.sh

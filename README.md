@@ -29,7 +29,19 @@ Built for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 | `firmware/cams3/` | Camera unit firmware notes / build (variant-dependent, see its README) |
 | `worker/` | Cloudflare Worker AI relay (TypeScript + wrangler) |
 | `case/` | 3D-printed compact-camera-style case (Bambu Lab X2D) |
-| `docs/` | Wiring, photos, Hackster.io write-up draft |
+| `docs/` | [Design doc (JA)](docs/DESIGN.md), [wiring](docs/wiring.md), photos, Hackster.io write-up draft |
+
+## Getting started
+
+1. **Camera firmware** — identify your CamS3 sensor variant first, then follow
+   [`firmware/cams3/README.md`](firmware/cams3/README.md)
+2. **Worker** — deploy the AI relay per [`worker/README.md`](worker/README.md)
+3. **Stopwatch firmware** — `cp secrets.ini.example secrets.ini`, fill in WiFi /
+   URLs / device token, then `pio run -t upload`
+   (see [`firmware/stopwatch/platformio.ini`](firmware/stopwatch/platformio.ini))
+
+Architecture decisions and the full schedule live in
+[`docs/DESIGN.md`](docs/DESIGN.md) (Japanese).
 
 ## Security notes
 

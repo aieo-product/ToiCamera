@@ -1,0 +1,1 @@
+/Users/takehiro/.claude/skills/dev-workflow/scripts/hooks/stop-commit-reminder.sh
