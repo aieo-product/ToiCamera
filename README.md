@@ -40,9 +40,10 @@ Built for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 1. **Camera firmware** — identify your CamS3 sensor variant first, then follow
    [`firmware/cams3/README.md`](firmware/cams3/README.md)
 2. **Worker** — deploy the AI relay per [`worker/README.md`](worker/README.md)
-3. **Stopwatch firmware** — `cp secrets.ini.example secrets.ini`, fill in WiFi /
-   URLs / device token, then `pio run -t upload`
-   (see [`firmware/stopwatch/platformio.ini`](firmware/stopwatch/platformio.ini))
+3. **Stopwatch secrets** — `./firmware/stopwatch/gen-secrets.sh <ssid> <pass>`
+   (WiFi from args, device token pulled from the macOS Keychain via akc)
+4. **Stopwatch firmware** — `pio run -t upload` in `firmware/stopwatch/`
+   (see [`platformio.ini`](firmware/stopwatch/platformio.ini))
 
 Architecture decisions and the full schedule live in
 [`docs/DESIGN.md`](docs/DESIGN.md) (Japanese).
