@@ -51,7 +51,7 @@ AI 解説のテキスト表示 + スピーカー読み上げ、という一連�
 |---|---|---|
 | 画像の受け渡し | WiFi HTTP | CamS3 純正 FW に UART プロトコルが無く、Grove ピンは USB 専用。UART 化は両側カスタム FW + USB ピン転用のリスクがあるため Phase 2 のストレッチに格下げ |
 | AI 呼び出し | Cloudflare Worker 中継 | API キーをデバイスに置かない。プロンプト・モデル切替・TTS 差し替えを再書き込みなしで実施可能。ESP32 側の TLS/JSON 実装が単純化 |
-| 解析モデル | `claude-haiku-4-5`(env `MODEL` で切替) | 1.5〜3 秒・約 $0.002/枚。デモ動画収録時のみ上位モデルに切替 |
+| 解析モデル | 暫定: OpenAI `gpt-4o-mini`(学習用無料トークン、env `ANALYZE_MODEL`)。`ANALYZE_PROVIDER=anthropic` で `claude-haiku-4-5` に切替可 | Anthropic アカウントのクレジット補充までの暫定運用。切替は Worker 再デプロイのみでデバイス無関係 |
 | TTS | OpenAI `gpt-4o-mini-tts` → WAV 24kHz mono | M5Unified Speaker は WAV/RAW のみ(MP3 デコーダ非搭載)。品質不満時は Google TTS `ja-JP-Neural2`(LINEAR16)へ Worker 側のみで差替 |
 | 日本語表示 | M5GFX 内蔵 `efontJA_16` | 追加フォント資材なしで UTF-8 日本語描画。品質を上げたければ VLW 変換が後続手段 |
 | デバイス→Worker TLS | `setInsecure()` | 自前 Worker のみに接続・送信物は画像+デバイストークンのみ。トレードオフを README に明記。将来はルート CA ピン留め |

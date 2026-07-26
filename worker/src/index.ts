@@ -3,7 +3,15 @@ import Anthropic from "@anthropic-ai/sdk";
 export interface Env {
   ANTHROPIC_API_KEY: string;
   OPENAI_API_KEY: string;
+  /** Free daily-token key (data-sharing program) — used for /analyze while
+   *  the Anthropic account has no credit. */
+  OPENAI_FREE_API_KEY: string;
   DEVICE_TOKEN: string;
+  /** "openai" | "anthropic" — which vision backend /analyze uses */
+  ANALYZE_PROVIDER: string;
+  /** OpenAI vision model (free-token eligible) */
+  ANALYZE_MODEL: string;
+  /** Anthropic vision model (used when ANALYZE_PROVIDER=anthropic) */
   MODEL: string;
   TTS_VOICE: string;
 }
@@ -44,6 +52,59 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
+const FALLBACK_RESULT = {
+  caption: "解説できません",
+  detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
+};
+
+async function analyzeWithOpenAI(env: Env, imageB64: string): Promise<Response> {
+  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: env.ANALYZE_MODEL,
+      max_completion_tokens: 500,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: `data:image/jpeg;base64,${imageB64}` },
+            },
+            { type: "text", text: "この写真を解説してください。" },
+          ],
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "toi_result", strict: true, schema: RESULT_SCHEMA },
+      },
+    }),
+  });
+
+  if (!upstream.ok) {
+    const detail = await upstream.text();
+    console.error("OpenAI analyze error", upstream.status, detail);
+    return json({ error: "analyze upstream failed", status: upstream.status }, 502);
+  }
+  const data = (await upstream.json()) as {
+    choices?: { message?: { content?: string; refusal?: string } }[];
+  };
+  const msg = data.choices?.[0]?.message;
+  if (!msg?.content || msg.refusal) {
+    return json(FALLBACK_RESULT);
+  }
+  // strict json_schema により content は RESULT_SCHEMA に適合した JSON
+  return new Response(msg.content, {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   const image = await request.arrayBuffer();
   if (image.byteLength < 128) {
@@ -51,6 +112,10 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   }
   if (image.byteLength > MAX_IMAGE_BYTES) {
     return json({ error: "image too large" }, 413);
+  }
+
+  if (env.ANALYZE_PROVIDER !== "anthropic") {
+    return analyzeWithOpenAI(env, toBase64(image));
   }
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -80,10 +145,7 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   });
 
   if (response.stop_reason === "refusal") {
-    return json({
-      caption: "解説できません",
-      detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
-    });
+    return json(FALLBACK_RESULT);
   }
 
   const text = response.content.find((b) => b.type === "text")?.text;

@@ -7,15 +7,21 @@
     "enabled": true
   },
   "vars": {
-    // Claude model for /analyze. Flip to a higher tier (e.g. claude-sonnet-5)
-    // for demo recording via: wrangler deploy --var MODEL:claude-sonnet-5
+    // /analyze vision backend: "openai" uses the free daily-token key while the
+    // Anthropic account is unfunded; flip back with --var ANALYZE_PROVIDER:anthropic
+    "ANALYZE_PROVIDER": "openai",
+    // OpenAI vision model (free-token eligible tier)
+    "ANALYZE_MODEL": "gpt-4o-mini",
+    // Claude model for /analyze when ANALYZE_PROVIDER=anthropic.
+    // Flip to a higher tier for demo recording: --var MODEL:claude-sonnet-5
     "MODEL": "claude-haiku-4-5",
     // OpenAI TTS voice. Swap Worker-side only if Japanese quality disappoints
     // (fallback plan: Google Cloud TTS ja-JP-Neural2, LINEAR16).
     "TTS_VOICE": "marin"
   }
-  // Secrets (set via `akc run -- wrangler secret put <NAME>`, never in this file):
-  //   ANTHROPIC_API_KEY  — Claude vision
-  //   OPENAI_API_KEY     — TTS
-  //   DEVICE_TOKEN       — shared token the Stopwatch sends as X-Device-Token
+  // Secrets (set via `akc get <NAME> --reveal | wrangler secret put <NAME>`):
+  //   ANTHROPIC_API_KEY    — Claude vision (when ANALYZE_PROVIDER=anthropic)
+  //   OPENAI_API_KEY       — TTS
+  //   OPENAI_FREE_API_KEY  — /analyze free daily-token key (data-sharing program)
+  //   DEVICE_TOKEN         — shared token the Stopwatch sends as X-Device-Token
 }

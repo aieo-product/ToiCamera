@@ -17,8 +17,9 @@ explanation + TTS audio.
 npm install
 
 # Secrets — values come from the macOS Keychain via akc, never typed in plain text
-akc get ANTHROPIC_API_KEY --reveal | npx wrangler secret put ANTHROPIC_API_KEY
-akc get OPENAI_API_KEY --reveal    | npx wrangler secret put OPENAI_API_KEY
+akc get ANTHROPIC_API_KEY --reveal   | npx wrangler secret put ANTHROPIC_API_KEY
+akc get OPENAI_API_KEY --reveal      | npx wrangler secret put OPENAI_API_KEY
+akc get OPENAI_FREE_API_KEY --reveal | npx wrangler secret put OPENAI_FREE_API_KEY
 openssl rand -hex 16               | npx wrangler secret put DEVICE_TOKEN
 # (copy the same token into firmware/stopwatch/secrets.ini)
 
@@ -44,11 +45,12 @@ curl -s -X POST "$BASE/tts" \
 
 ## Model switching
 
-`MODEL` is a plain var (default `claude-haiku-4-5` for speed/cost ≈$0.002/shot).
-For demo recording, redeploy with a higher tier:
+`/analyze` backend is `ANALYZE_PROVIDER` (currently `openai` = free daily-token
+key, model `ANALYZE_MODEL`). Once the Anthropic account is funded:
 
 ```bash
-npx wrangler deploy --var MODEL:claude-sonnet-5
+npx wrangler deploy --var ANALYZE_PROVIDER:anthropic            # Claude (MODEL var)
+npx wrangler deploy --var ANALYZE_PROVIDER:anthropic --var MODEL:claude-sonnet-5  # demo tier
 ```
 
 TTS voice is `TTS_VOICE` (OpenAI `gpt-4o-mini-tts`). If Japanese quality is not
