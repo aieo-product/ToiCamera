@@ -13,8 +13,9 @@ Use a Grove cable with the two data wires removed (or cut), because the CamS3
 Grove data pins are USB D+/D- — driving GPIO signals into them can confuse the
 USB peripheral. Power only.
 
-Data path is WiFi: both devices join the same LAN; give the CamS3 a DHCP
-reservation and put its IP into `firmware/stopwatch/secrets.ini` (`CAM_URL`).
+Data path is WiFi, but **no router involved**: the Stopwatch runs its own
+SoftAP ("ToiCamera", 192.168.4.1) and the camera joins it as a client
+(auto-discovered on the DHCP leases — no IP configuration needed).
 
 ## Phase 2 (stretch): single-cable UART
 

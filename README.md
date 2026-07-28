@@ -11,18 +11,21 @@ Built for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 ## How it works
 
 ```
-┌─────────────┐  Grove (5V power only)  ┌──────────┐
-│  Stopwatch  │═══════════════════════│  CamS3   │
-│ AMOLED/SPK  │                        └────┬─────┘
-└──────┬──────┘   WiFi (same LAN)           │
-       │←──── HTTP GET /capture (JPEG) ─────┘
-       │
-       └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ Claude (vision)
+┌─────────────┐   Grove (5V power only)   ┌──────────┐
+│  Stopwatch  │═════════════════════════│  CamS3   │
+│ SoftAP+STA  │◀── WiFi: its own AP ───── │(custom FW)│
+│ AMOLED/SPK  │    "ToiCamera"            └──────────┘
+└──────┬──────┘    GET /api/v1/capture (JPEG)
+       │  WiFi STA (home LAN or phone hotspot — internet only)
+       └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ AI vision
           HTTPS POST /tts ─────▶ Cloudflare Worker ─▶ TTS (WAV stream)
 ```
 
+No router or PC on the camera path: the Stopwatch hosts a private AP for the
+camera (ESP32 SoftAP+STA), so the whole rig works outdoors on a phone hotspot.
+
 - **Stopwatch** (host/UI): captures via HTTP from the CamS3, displays the JPEG, calls the AI relay, renders Japanese text (M5GFX efontJA) and plays the TTS WAV through its 1W speaker.
-- **Unit CamS3** (camera): modified firmware joins your WiFi in STA mode and serves `GET /capture`. Powered from the Stopwatch's Grove 5V — no battery needed.
+- **Unit CamS3** (camera): custom firmware (factory OSS + STA-server patch) joins the Stopwatch's private AP and serves the factory REST API (`/api/v1/capture`). Powered from the Stopwatch's Grove 5V — no battery needed.
 - **Cloudflare Worker** (AI relay): holds all API keys as secrets, calls the Claude vision API for a structured `{caption, detail}` explanation, and proxies TTS audio as WAV.
 
 ## Repository layout

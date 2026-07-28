@@ -22,34 +22,41 @@ AI 解説のテキスト表示 + スピーカー読み上げ、という一連�
 | 役割 | デバイス | 要点 |
 |---|---|---|
 | ホスト/UI | M5Stack Stopwatch Dev Kit (SKU C152) | ESP32-S3R8、16MB Flash / 8MB PSRAM、466×466 円形 AMOLED(CO5300/QSPI)、CST820B タッチ、ES8311+AW8737A+1W スピーカー、マイク、KEYA=G2(黄)/KEYB=G1(青)、Grove=GND/5V/G10/G11 |
-| カメラ | M5Stack Unit CamS3 | ESP32-S3 N16R8、センサーは 2MP OV2640 または 5MP PY260(実機判別が必要)、microSD、バッテリーなし |
+| カメラ | M5Stack Unit CamS3 | ESP32-S3 N16R8、**5MP 版で確定**(vlogCamera 実機検証)、microSD、バッテリーなし。**カスタムファーム**(公式 UserDemo + STA サーバーパッチ)で運用 |
 | (Phase 1.5) 位置情報 | Unit GPS v1.1 (SKU U032-V11) | AT6668、UART Grove、48×24mm |
 
 ### 接続(Phase 1 / MVP)
 
 - Grove ケーブルは **5V/GND のみ結線**(給電専用)。CamS3 の Grove データピンは
   USB D+/D-(G20/G19)であり、GPIO 信号を流し込まない
-- 画像データは WiFi(同一 LAN)経由の HTTP で受け渡す
+- 画像データは **Stopwatch 自身が立てる専用 AP** 経由の HTTP で受け渡す
+  (自宅ルーター・PC・スマホはカメラ経路に一切関与しない)
 
 詳細は [`wiring.md`](wiring.md)。
 
 ## 3. システムアーキテクチャ
 
 ```
-┌─────────────┐  Grove(5V給電のみ)   ┌──────────┐
-│  Stopwatch  │═══════════════════│  CamS3   │
-│ AMOLED/SPK  │                    └────┬─────┘
-└──────┬──────┘  WiFi(同一LAN)          │
-       │←─── HTTP GET /capture(JPEG) ───┘
-       └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ Claude vision
+┌─────────────┐   Grove(5V給電のみ)    ┌──────────┐
+│  Stopwatch  │═════════════════════│  CamS3   │
+│  SoftAP+STA │◀─ WiFi: 専用AP ────── │(カスタムFW│
+│ AMOLED/SPK  │   "ToiCamera"         │ STAサーバー)│
+└──────┬──────┘   192.168.4.0/24      └──────────┘
+       │              GET /api/v1/capture (JPEG)
+       │ WiFi(STA): 自宅 or テザリング
+       └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ AI vision
           HTTPS POST /tts ─────▶ (API キーは Worker 秘匿) ─▶ OpenAI TTS → WAV
 ```
+
+Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(AP)とクラウド
+接続(STA)を 1 チップで両立する。屋外はスマホテザリングだけで完結する。
 
 ### 採用理由(主要な設計判断)
 
 | 判断 | 採用 | 理由 / 棄却案 |
 |---|---|---|
-| 画像の受け渡し | WiFi HTTP | CamS3 純正 FW に UART プロトコルが無く、Grove ピンは USB 専用。UART 化は両側カスタム FW + USB ピン転用のリスクがあるため Phase 2 のストレッチに格下げ |
+| 画像の受け渡し | Stopwatch の SoftAP に カメラを収容(WiFi HTTP) | 当初の「同一 LAN」案はルーター依存と初回設定の煩雑さで棄却(ユーザー要望)。UART 化は両側カスタム FW + USB ピン転用のリスクがあるため Phase 2 のストレッチ。SoftAP は **stock サブネット(192.168.4.1)必須** — softAPConfig で変更すると DHCP プールが追従せずクライアントが IP を取れない(実測) |
+| カメラファームウェア | 公式 UserDemo への **STA サーバーパッチ**(`firmware/cams3/patches/0001`、101 行) | 工場ファームは STA モードで REST サーバーを起動しない(TCP 診断で port 80/81 拒否を確認)。接続失敗 30 秒で工場 AP モードへフォールバック(ロックアウト防止) |
 | AI 呼び出し | Cloudflare Worker 中継 | API キーをデバイスに置かない。プロンプト・モデル切替・TTS 差し替えを再書き込みなしで実施可能。ESP32 側の TLS/JSON 実装が単純化 |
 | 解析モデル | 暫定: OpenAI `gpt-4o-mini`(学習用無料トークン、env `ANALYZE_MODEL`)。`ANALYZE_PROVIDER=anthropic` で `claude-haiku-4-5` に切替可 | Anthropic アカウントのクレジット補充までの暫定運用。切替は Worker 再デプロイのみでデバイス無関係 |
 | TTS | OpenAI `gpt-4o-mini-tts` → WAV 24kHz mono | M5Unified Speaker は WAV/RAW のみ(MP3 デコーダ非搭載)。品質不満時は Google TTS `ja-JP-Neural2`(LINEAR16)へ Worker 側のみで差替 |
@@ -74,21 +81,43 @@ RESULT --[KEYA]--> CAPTURING(再撮影)   RESULT --[KEYB]--> 音声リプレイ
   折返し描画し、タッチドラッグ+自動スクロール
 - WiFi は 2 スロット(自宅 + テザリング)をビルドフラグ(`secrets.ini`、gitignore)で注入
 
-### 4.2 CamS3 ファームウェア(`firmware/cams3/`)
+### 4.2 CamS3 ファームウェア(`firmware/cams3/`)— カスタム(2026-07-28 実機稼働確認)
 
-**変種は 5MP で確定**(過去プロジェクト
-[vlogCamera](https://github.com/aieo-product/vlogCamera) の 2026-06-02 実機検証。
-工場ファーム = `UnitCamS3-UserDemo` branch `unitcams3-5mp`)。
+**変種は 5MP で確定**([vlogCamera](https://github.com/aieo-product/vlogCamera)
+2026-06-02 実機検証。ベース = `UnitCamS3-UserDemo` branch `unitcams3-5mp`)。
 
-**MVP はカスタムファーム不要**: 工場ファームの REST API(`/api/v1/capture`・
-`/api/v1/control`・`/api/v1/led_on|off`・`set_config` による STA 化)をそのまま使う。
-Stopwatch 側が起動時に `configureCamera()` で露出設定(awb/aec/agc ON — 工場初期値は
-全 OFF で画像が真っ黒になる既知の罠)と SVGA/q12 を適用する。
+工場ファームの STA モードは EzData poster 専用で **REST サーバーが起動しない**
+(TCP 診断で確定)ため、第 3 の起動モードを追加するパッチを作成した:
 
-- 残検証: STA モードで HTTP サーバーが LAN 側 IP から叩けるか(go/no-go)
-- フォールバック: vlogCamera の patch/overlay ビルド(ESP-IDF v5.1.4、WiFi 再接続
-  ウォッチドッグ・AP フォールバック付き)を流用して改修版を焼く
-- 手順・API リファレンス: `firmware/cams3/README.md`
+- 起動分岐: `startPoster=="yes"` → poster / `wifiSsid` 設定あり → **STA サーバー
+  (新設)** / それ以外 → 工場 AP モード
+- STA サーバー: 保存済み SSID(= Stopwatch の SoftAP)に接続し、工場 AP モードと
+  同一の REST API 群(`/api/v1/capture` 等)を提供。**接続 30 秒失敗で AP モードへ
+  フォールバック**(ロックアウト防止)。LED は接続中点滅 → 確立で点灯
+- ビルド: `firmware/cams3/build.sh`(ESP-IDF v5.1.4 + uv の Python 3.11。
+  esp_insights の SHA_SIZE バグ修正を自動適用)。書き込みは USB-C、`erase-flash`
+  で設定を初期化してから焼く(→ AP モードで起動しペアリング可能な状態になる)
+
+**露出の罠**: 工場初期値は awb/aec/agc 全 OFF で画像が真っ黒(vlogCamera 検証)。
+Stopwatch 側が起動時に `configureCamera()` で自動露出 ON + SVGA/q12 を適用する。
+
+**再起動の制約**: Grove 5V は常時給電(ALWAYS_ON)で Stopwatch からの電源断は
+不可。設定反映のカメラ再起動は USB 経由(esptool reset)か Grove/USB の物理
+抜き差しで行う(ペアリング完了画面にその案内を表示)。
+
+手順・API リファレンス: `firmware/cams3/README.md`
+
+### 4.2b ペアリングフロー(初回のみ・全自動)
+
+```
+Stopwatch 起動 → カメラ探索(SoftAP の DHCP リース .2〜.12 を probe)
+  → 見つからない場合:
+      工場 AP "UnitCamS3-WiFi" に直接 join(3 回試行)
+      → POST set_config {wifiSsid: "ToiCamera", startPoster: "no"}(readback 検証)
+      → 自 AP+STA 復帰 → カメラ再起動(USB reset or 抜き差し)を待つ
+      → カメラが SoftAP に参加 → 発見 → configureCamera()
+青ボタン: 手動再探索/再ペアリング
+```
 
 ### 4.3 AI 中継 Worker(`worker/`)
 
@@ -124,7 +153,7 @@ vars: `MODEL` / `TTS_VOICE`。
 
 ## 7. リスクと対策
 
-1. **STA モードで HTTP サーバー不達の可能性** → set_config で STA 化して LAN から `/api/v1/capture` を叩く go/no-go 検証を最優先。NG なら vlogCamera の patch ビルドで改修版を焼く
+1. ~~STA モードで HTTP サーバー不達~~ → **顕在化し解決済み**(カスタム STA サーバーパッチで克服、2026-07-28 実機確認)
 2. **日本語 TTS 品質** → Worker 側のみで Google TTS へ差替可能な構造
 3. **PSRAM 圧迫** → 状態遷移ごとのバッファ解放、SVGA 運用、音声長制限
 4. **デモ時の WiFi 不調** → テザリング SSID を第 2 スロットに焼き込み、動画は事前収録
@@ -135,8 +164,8 @@ vars: `MODEL` / `TTS_VOICE`。
 | 日 | マイルストーン |
 |---|---|
 | D1-D2 (7/23-24) | scaffold(済)・センサー変種判別・CamS3 FW・Worker デプロイ |
-| D3-D6 (7/25-28) | Stopwatch 実機ブリングアップ → 撮影表示 → AI 連携 → 音声 |
-| **D7 (7/29)** | **E2E 完成 = MVP** |
+| D3-D6 (7/25-28) | ✅ Worker 稼働(OpenAI 無料トークン)/ Stopwatch 実機稼働 / カメラ経路確立(カスタム FW) |
+| **D7 (7/29)** | **E2E 完成 = MVP**(黄ボタン通し試験 → 10 被写体) |
 | D8-D10 (7/30-8/1) | ケース CAD・印刷 #1→#2、Phase 1.5(任意) |
 | D11 (8/2) | Phase 2 UART スパイク(タイムボックス) |
 | D12-D14 (8/3-5) | デモ動画・Hackster 記事(EN)・リポジトリ public 化 |
