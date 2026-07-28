@@ -49,7 +49,7 @@ static size_t wavLen = 0;
 static String caption;
 static String detailText;
 static String lastError;
-static String camBase;  // e.g. "http://192.168.44.2" — discovered on the SoftAP
+static String camBase;  // e.g. "http://192.168.4.2" — discovered on the SoftAP
 
 static M5Canvas textCanvas(&M5.Display);
 static int scrollY = 0;
@@ -180,12 +180,15 @@ static bool connectWifi() {
   return false;
 }
 
-// Bring up the Stopwatch's own AP for the camera. 192.168.44.x avoids
-// colliding with the camera's factory AP subnet (192.168.4.x).
+// Bring up the Stopwatch's own AP for the camera. Stock defaults
+// (192.168.4.1/24) keep the built-in DHCP server in its known-good config —
+// overriding the subnet after softAP() left DHCP serving the wrong pool.
+// No collision with the camera's factory AP: the two networks never exist
+// at the same time on this radio (our AP is torn down while pairing).
 static void startSoftAp() {
-  WiFi.softAPConfig(IPAddress(192, 168, 44, 1), IPAddress(192, 168, 44, 1),
-                    IPAddress(255, 255, 255, 0));
   WiFi.softAP(TOI_AP_SSID, TOI_AP_PASS);
+  Serial.printf("[toi] softAP up ip=%s ch=%d\n",
+                WiFi.softAPIP().toString().c_str(), WiFi.channel());
 }
 
 // Read an HTTP response body into a PSRAM buffer. Returns nullptr on failure.
@@ -237,13 +240,39 @@ static bool camGet(const String &pathAndQuery, uint16_t timeoutMs = 3000) {
   return code == HTTP_CODE_OK;
 }
 
+// TCP-level port probe: fast-false = connection refused (host alive, no
+// server), slow-false = timeout (no host at that IP).
+static void diagCameraNet() {
+  const IPAddress ap = WiFi.softAPIP();
+  for (int host = 2; host <= 6; ++host) {
+    IPAddress ip(ap[0], ap[1], ap[2], host);
+    for (uint16_t port : {80, 81}) {
+      WiFiClient c;
+      const uint32_t t0 = millis();
+      const bool r = c.connect(ip, port, 1500);
+      Serial.printf("[toi] diag %s:%u -> %s (%lums)\n", ip.toString().c_str(),
+                    port, r ? "OPEN" : "closed", millis() - t0);
+      c.stop();
+    }
+  }
+}
+
 // Find the camera among the SoftAP DHCP clients (first leases start at .2).
 static bool cameraReachable() {
   if (!camBase.isEmpty() && camGet("/api/v1/get_mac", 2000)) return true;
-  for (int host = 2; host <= 9; ++host) {
-    camBase = "http://192.168.44." + String(host);
-    if (camGet("/api/v1/get_mac", 1200)) return true;
+  const IPAddress ap = WiFi.softAPIP();
+  const String net = String(ap[0]) + "." + ap[1] + "." + ap[2] + ".";
+  for (int host = 2; host <= 12; ++host) {
+    camBase = "http://" + net + host;
+    if (camGet("/api/v1/get_mac", 1500)) {
+      Serial.printf("[toi] camera found at %s (stations=%d)\n", camBase.c_str(),
+                    WiFi.softAPgetStationNum());
+      return true;
+    }
   }
+  Serial.printf("[toi] camera not found on %s0/24 (stations=%d)\n", net.c_str(),
+                WiFi.softAPgetStationNum());
+  if (WiFi.softAPgetStationNum() > 0) diagCameraNet();
   camBase = "";
   return false;
 }
@@ -260,6 +289,7 @@ static void powerCycleCamera() {
 // power-cycle it so it reboots as a client of the Stopwatch.
 static bool pairCamera() {
   showStatus("カメラをペアリング中...");
+  Serial.println("[toi] pair: power-cycle camera (watch its LED: should blink off)");
   powerCycleCamera();
   delay(8000);  // let the camera finish booting its AP
 
@@ -274,6 +304,8 @@ static bool pairCamera() {
     WiFi.begin("UnitCamS3-WiFi");  // open AP
     for (int i = 0; i < 24 && WiFi.status() != WL_CONNECTED; ++i) delay(500);
     joined = WiFi.status() == WL_CONNECTED;
+    Serial.printf("[toi] pair: join UnitCamS3-WiFi attempt %d -> %s\n", attempt + 1,
+                  joined ? WiFi.localIP().toString().c_str() : "FAIL");
     if (!joined) {
       WiFi.disconnect(true);
       delay(2000);
@@ -285,7 +317,7 @@ static bool pairCamera() {
       JsonDocument doc;
       doc["wifiSsid"] = TOI_AP_SSID;  // camera's "home WiFi" = our SoftAP
       doc["wifiPass"] = TOI_AP_PASS;
-      doc["startPoster"] = "no";
+      doc["startPoster"] = "no";  // custom FW: ssid set + poster off -> STA server
       doc["postInterval"] = 5;
       doc["nickname"] = "ToiCamera";
       doc["timeZone"] = "GMT+9";
@@ -295,8 +327,19 @@ static bool pairCamera() {
       http.setTimeout(5000);
       if (http.begin("http://192.168.4.1/api/v1/set_config")) {
         http.addHeader("Content-Type", "application/json");
-        ok = http.POST(body) == HTTP_CODE_OK;
+        const int code = http.POST(body);
+        ok = code == HTTP_CODE_OK;
+        Serial.printf("[toi] pair: set_config -> HTTP %d\n", code);
         http.end();
+      }
+      // Read back what the camera actually persisted (diagnostic).
+      HTTPClient chk;
+      chk.setTimeout(4000);
+      if (chk.begin("http://192.168.4.1/api/v1/get_config")) {
+        if (chk.GET() == HTTP_CODE_OK) {
+          Serial.printf("[toi] pair: get_config = %s\n", chk.getString().c_str());
+        }
+        chk.end();
       }
     }
     WiFi.disconnect(true);
@@ -309,10 +352,17 @@ static bool pairCamera() {
   startSoftAp();
   powerCycleCamera();  // camera reboots and should join our SoftAP
   showStatus(ok ? "カメラの接続を待っています..." : "カメラを探しています...");
-  for (int i = 0; i < 14; ++i) {
+  if (ok) {
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
+    M5.Display.drawString("LEDが消えなければGroveを抜き差し",
+                          M5.Display.width() / 2, 340);
+  }
+  for (int i = 0; i < 24; ++i) {
     delay(2500);
     if (cameraReachable()) return true;
   }
+  Serial.println("[toi] pair: camera never joined our SoftAP");
   return false;
 }
 
@@ -458,8 +508,11 @@ void setup() {
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
+  Serial.begin(115200);
   WiFi.mode(WIFI_AP_STA);
   const bool netOk = connectWifi();  // internet is only needed for the AI call
+  Serial.printf("[toi] STA %s ip=%s ch=%d\n", netOk ? "ok" : "FAIL",
+                WiFi.localIP().toString().c_str(), WiFi.channel());
   startSoftAp();
 
   bool camOk = cameraReachable();
@@ -479,6 +532,7 @@ void loop() {
         runCaptureCycle();
       } else if (M5.BtnB.wasPressed()) {
         // Manual camera re-pairing (e.g. after fixing power/placement).
+        showStatus("カメラ探索中...");
         const bool camOk = cameraReachable() || pairCamera();
         if (camOk) configureCamera();
         showIdleWithWarnings(WiFi.status() == WL_CONNECTED, camOk);

@@ -1,0 +1,101 @@
+diff --git a/app/app.cpp b/app/app.cpp
+index 38f275f..b8a90cb 100644
+--- a/app/app.cpp
++++ b/app/app.cpp
+@@ -56,6 +56,8 @@ void APP::Setup(SetupCallback_t callback)
+     // Simple
+     if (HAL::GetSystemConfig().startPoster == "yes")
+         HAL::StartPosterServer();
++    else if (!HAL::GetSystemConfig().wifiSsid.empty())
++        HAL::StartStaServer();
+     else
+         HAL::StartApServer();
+ 
+diff --git a/app/hal/hal.h b/app/hal/hal.h
+index 8122774..5239930 100644
+--- a/app/hal/hal.h
++++ b/app/hal/hal.h
+@@ -461,6 +461,10 @@ public:
+     static void StartPosterServer() { Get()->startPosterServer(); }
+     virtual void startPosterServer() {}
+ 
++    // ToiCamera: join an existing WiFi as station and serve the REST API
++    static void StartStaServer() { Get()->startStaServer(); }
++    virtual void startStaServer() {}
++
+     /* -------------------------------------------------------------------------- */
+     /*                                     SD                                     */
+     /* -------------------------------------------------------------------------- */
+diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
+index 44bf396..765592b 100644
+--- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
++++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
+@@ -55,6 +55,7 @@ public:
+     void startApServer() override;
+     void stopApServer() override;
+     void startPosterServer() override;
++    void startStaServer() override;
+ 
+     bool sdCardInit(bool passImagePath) override;
+     bool sdCardDeInit() override;
+diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
+new file mode 100644
+index 0000000..1dfa005
+--- /dev/null
++++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
+@@ -0,0 +1,55 @@
++/**
++ * @file server_sta.cpp
++ * @brief ToiCamera: connect to the host's WiFi (STA) and serve the same
++ *        REST API as the factory AP server. Falls back to the AP server if
++ *        the connection cannot be established (lockout prevention).
++ */
++#include "../hal_unitcam_s3_5mp.h"
++#include "../hal_config.h"
++#include <mooncake.h>
++#include <Arduino.h>
++#include <WiFi.h>
++#include <AsyncTCP.h>
++#include <ESPAsyncWebServer.h>
++#include <FS.h>
++#include <LittleFS.h>
++#include "apis/apis.h"
++#include <assets/assets.h>
++
++static AsyncWebServer* _sta_server = nullptr;
++
++void HAL_UnitCamS3_5MP::startStaServer()
++{
++    spdlog::info("start sta server, try connect: {}", HAL::GetSystemConfig().wifiSsid);
++
++    WiFi.mode(WIFI_STA);
++    WiFi.setAutoReconnect(true);
++    WiFi.begin(HAL::GetSystemConfig().wifiSsid.c_str(), HAL::GetSystemConfig().wifiPass.c_str());
++
++    uint32_t t0 = millis();
++    bool led = false;
++    while (WiFi.status() != WL_CONNECTED)
++    {
++        if (millis() - t0 > 30000)
++        {
++            spdlog::error("sta connect timeout, fall back to ap server");
++            WiFi.disconnect(true);
++            startApServer();
++            return;
++        }
++        delay(250);
++        led = !led;
++        HAL::SetLedState(led);  // fast blink while connecting
++    }
++    spdlog::info("sta ip: {}", WiFi.localIP().toString().c_str());
++
++    _sta_server = new AsyncWebServer(80);
++    load_cam_apis(*_sta_server);
++    load_mic_apis(*_sta_server);
++    load_system_apis(*_sta_server);
++    load_poster_apis(*_sta_server);
++    _sta_server->begin();
++    spdlog::info("sta web server started");
++
++    HAL::SetLedState(true);
++}
