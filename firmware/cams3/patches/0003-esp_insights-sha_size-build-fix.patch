@@ -1,0 +1,20 @@
+vlogCamera build fix: esp_insights が ESP-IDF v5.1.4 で 'SHA_SIZE' undeclared でビルド失敗する問題。
+
+対象: managed_components/espressif__esp_insights/src/esp_insights_cbor_encoder.c
+（managed_components は component manager 生成物で git 管理外のため、手動適用 or 下記 sed で当てる）
+
+原因: esp_diagnostics が定義名を DIAG_SHA_SIZE に変更したが、esp_insights は旧名 SHA_SIZE を参照したまま。
+
+--- a/managed_components/espressif__esp_insights/src/esp_insights_cbor_encoder.c
++++ b/managed_components/espressif__esp_insights/src/esp_insights_cbor_encoder.c
+@@
+ #include <esp_diagnostics.h>
++
++/* vlogCamera fix: esp_insights旧名 SHA_SIZE → esp_diagnosticsの DIAG_SHA_SIZE へ橋渡し */
++#ifndef SHA_SIZE
++#define SHA_SIZE DIAG_SHA_SIZE
++#endif
+
+# 自動適用（ビルドツリーのルートで実行）:
+#   F=platforms/unitcam_s3_5mp/managed_components/espressif__esp_insights/src/esp_insights_cbor_encoder.c
+#   perl -0pi -e 's/(#include <esp_diagnostics\.h>\n)/$1\n#ifndef SHA_SIZE\n#define SHA_SIZE DIAG_SHA_SIZE\n#endif\n/' "$F"

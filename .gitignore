@@ -18,3 +18,4 @@ dist/
 # dev-workflow
 .agent/logs/
 .claude/handoff/
+firmware/cams3/build-tree/
