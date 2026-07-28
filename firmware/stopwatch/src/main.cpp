@@ -83,6 +83,18 @@ static void showIdle() {
   M5.Display.drawString("黄ボタンで撮影", M5.Display.width() / 2, 260);
 }
 
+static void showIdleWithWarnings(bool netOk, bool camOk) {
+  showIdle();
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
+  if (!netOk) {
+    M5.Display.drawString("ネット未接続(解析不可)", M5.Display.width() / 2, 310);
+  }
+  if (!camOk) {
+    M5.Display.drawString("カメラ未検出 青ボタンで再接続", M5.Display.width() / 2, 340);
+  }
+}
+
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
@@ -249,27 +261,27 @@ static void powerCycleCamera() {
 static bool pairCamera() {
   showStatus("カメラをペアリング中...");
   powerCycleCamera();
+  delay(8000);  // let the camera finish booting its AP
 
-  // Wait for the factory AP to appear (unconfigured camera boots as AP).
-  bool apFound = false;
-  for (int round = 0; round < 5 && !apFound; ++round) {
-    delay(3000);
-    const int n = WiFi.scanNetworks();
-    for (int i = 0; i < n; ++i) {
-      if (WiFi.SSID(i) == "UnitCamS3-WiFi") apFound = true;
+  // Drop our AP+STA while we briefly become a client of the camera. Scanning
+  // in AP_STA mode is unreliable, so just try to join the factory AP blind.
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
+  delay(300);
+  WiFi.mode(WIFI_STA);
+  bool joined = false;
+  for (int attempt = 0; attempt < 3 && !joined; ++attempt) {
+    WiFi.begin("UnitCamS3-WiFi");  // open AP
+    for (int i = 0; i < 24 && WiFi.status() != WL_CONNECTED; ++i) delay(500);
+    joined = WiFi.status() == WL_CONNECTED;
+    if (!joined) {
+      WiFi.disconnect(true);
+      delay(2000);
     }
-    WiFi.scanDelete();
   }
   bool ok = false;
-  if (apFound) {
-    // Drop our AP+STA while we briefly become a client of the camera.
-    WiFi.softAPdisconnect(true);
-    WiFi.disconnect(true);
-    delay(300);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin("UnitCamS3-WiFi");  // open AP
-    for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; ++i) delay(500);
-    if (WiFi.status() == WL_CONNECTED) {
+  {
+    if (joined) {
       JsonDocument doc;
       doc["wifiSsid"] = TOI_AP_SSID;  // camera's "home WiFi" = our SoftAP
       doc["wifiPass"] = TOI_AP_PASS;
@@ -296,8 +308,7 @@ static bool pairCamera() {
   connectWifi();
   startSoftAp();
   powerCycleCamera();  // camera reboots and should join our SoftAP
-  if (!ok && !apFound) return cameraReachable();
-  showStatus("カメラの接続を待っています...");
+  showStatus(ok ? "カメラの接続を待っています..." : "カメラを探しています...");
   for (int i = 0; i < 14; ++i) {
     delay(2500);
     if (cameraReachable()) return true;
@@ -455,16 +466,7 @@ void setup() {
   if (!camOk) camOk = pairCamera();  // auto-provision (one-time, device-only)
   if (camOk) configureCamera();      // black-image fix + SVGA
 
-  showIdle();
-  M5.Display.setTextSize(1);
-  if (!netOk) {
-    M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-    M5.Display.drawString("ネット未接続(解析不可)", M5.Display.width() / 2, 310);
-  }
-  if (!camOk) {
-    M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-    M5.Display.drawString("カメラ未検出", M5.Display.width() / 2, 340);
-  }
+  showIdleWithWarnings(netOk, camOk);
   state = AppState::Idle;
 }
 
@@ -473,7 +475,14 @@ void loop() {
 
   switch (state) {
     case AppState::Idle:
-      if (M5.BtnA.wasPressed()) runCaptureCycle();
+      if (M5.BtnA.wasPressed()) {
+        runCaptureCycle();
+      } else if (M5.BtnB.wasPressed()) {
+        // Manual camera re-pairing (e.g. after fixing power/placement).
+        const bool camOk = cameraReachable() || pairCamera();
+        if (camOk) configureCamera();
+        showIdleWithWarnings(WiFi.status() == WL_CONNECTED, camOk);
+      }
       break;
 
     case AppState::Result: {
