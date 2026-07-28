@@ -4,8 +4,11 @@
 // Blue button   (KEYB/G1): replay last TTS audio
 // Touch drag             : scroll explanation text
 //
-// State machine: BOOT -> WIFI_CONNECTING -> IDLE -> CAPTURING -> SHOW_PHOTO
-//                -> ANALYZING -> SPEAKING/RESULT -> IDLE  (ERROR: KEYA retries)
+// Networking: the Stopwatch runs SoftAP + STA simultaneously. The CamS3 joins
+// the Stopwatch's own AP (no home router / PC involved on the camera path);
+// the STA side reaches the cloud Worker via home WiFi or a phone hotspot.
+//
+//   CamS3 --(WiFi: SoftAP "ToiCamera")--> Stopwatch --(WiFi: LAN)--> Worker
 
 #include <M5Unified.h>
 #include <WiFi.h>
@@ -16,8 +19,12 @@
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
 #endif
-#ifndef CAM_BASE
-#error "CAM_BASE missing — update secrets.ini from secrets.ini.example"
+// Closed device-to-device network the camera connects to.
+#ifndef TOI_AP_SSID
+#define TOI_AP_SSID "ToiCamera"
+#endif
+#ifndef TOI_AP_PASS
+#define TOI_AP_PASS "toi-cam-2026"
 #endif
 
 enum class AppState {
@@ -42,6 +49,7 @@ static size_t wavLen = 0;
 static String caption;
 static String detailText;
 static String lastError;
+static String camBase;  // e.g. "http://192.168.44.2" — discovered on the SoftAP
 
 static M5Canvas textCanvas(&M5.Display);
 static int scrollY = 0;
@@ -160,6 +168,14 @@ static bool connectWifi() {
   return false;
 }
 
+// Bring up the Stopwatch's own AP for the camera. 192.168.44.x avoids
+// colliding with the camera's factory AP subnet (192.168.4.x).
+static void startSoftAp() {
+  WiFi.softAPConfig(IPAddress(192, 168, 44, 1), IPAddress(192, 168, 44, 1),
+                    IPAddress(255, 255, 255, 0));
+  WiFi.softAP(TOI_AP_SSID, TOI_AP_PASS);
+}
+
 // Read an HTTP response body into a PSRAM buffer. Returns nullptr on failure.
 static uint8_t *readBody(HTTPClient &http, size_t maxLen, size_t &outLen) {
   const int contentLen = http.getSize();
@@ -200,12 +216,93 @@ static uint8_t *readBody(HTTPClient &http, size_t maxLen, size_t &outLen) {
 
 // Fire a short GET against the CamS3 REST API; result body is ignored.
 static bool camGet(const String &pathAndQuery, uint16_t timeoutMs = 3000) {
+  if (camBase.isEmpty()) return false;
   HTTPClient http;
   http.setTimeout(timeoutMs);
-  if (!http.begin(String(CAM_BASE) + pathAndQuery)) return false;
+  if (!http.begin(camBase + pathAndQuery)) return false;
   const int code = http.GET();
   http.end();
   return code == HTTP_CODE_OK;
+}
+
+// Find the camera among the SoftAP DHCP clients (first leases start at .2).
+static bool cameraReachable() {
+  if (!camBase.isEmpty() && camGet("/api/v1/get_mac", 2000)) return true;
+  for (int host = 2; host <= 9; ++host) {
+    camBase = "http://192.168.44." + String(host);
+    if (camGet("/api/v1/get_mac", 1200)) return true;
+  }
+  camBase = "";
+  return false;
+}
+
+// Cut and restore Grove 5V — power-cycles the CamS3 (it has no battery).
+static void powerCycleCamera() {
+  M5.Power.setExtOutput(false);
+  delay(1500);
+  M5.Power.setExtOutput(true);
+}
+
+// One-time camera provisioning, no PC/phone/router involved: join the camera's
+// factory AP (UnitCamS3-WiFi), point it at OUR SoftAP via set_config, then
+// power-cycle it so it reboots as a client of the Stopwatch.
+static bool pairCamera() {
+  showStatus("カメラをペアリング中...");
+  powerCycleCamera();
+
+  // Wait for the factory AP to appear (unconfigured camera boots as AP).
+  bool apFound = false;
+  for (int round = 0; round < 5 && !apFound; ++round) {
+    delay(3000);
+    const int n = WiFi.scanNetworks();
+    for (int i = 0; i < n; ++i) {
+      if (WiFi.SSID(i) == "UnitCamS3-WiFi") apFound = true;
+    }
+    WiFi.scanDelete();
+  }
+  bool ok = false;
+  if (apFound) {
+    // Drop our AP+STA while we briefly become a client of the camera.
+    WiFi.softAPdisconnect(true);
+    WiFi.disconnect(true);
+    delay(300);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin("UnitCamS3-WiFi");  // open AP
+    for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; ++i) delay(500);
+    if (WiFi.status() == WL_CONNECTED) {
+      JsonDocument doc;
+      doc["wifiSsid"] = TOI_AP_SSID;  // camera's "home WiFi" = our SoftAP
+      doc["wifiPass"] = TOI_AP_PASS;
+      doc["startPoster"] = "no";
+      doc["postInterval"] = 5;
+      doc["nickname"] = "ToiCamera";
+      doc["timeZone"] = "GMT+9";
+      String body;
+      serializeJson(doc, body);
+      HTTPClient http;
+      http.setTimeout(5000);
+      if (http.begin("http://192.168.4.1/api/v1/set_config")) {
+        http.addHeader("Content-Type", "application/json");
+        ok = http.POST(body) == HTTP_CODE_OK;
+        http.end();
+      }
+    }
+    WiFi.disconnect(true);
+  }
+
+  // Restore our normal radio setup regardless of the outcome.
+  WiFi.mode(WIFI_AP_STA);
+  showStatus("WiFi再接続中...");
+  connectWifi();
+  startSoftAp();
+  powerCycleCamera();  // camera reboots and should join our SoftAP
+  if (!ok && !apFound) return cameraReachable();
+  showStatus("カメラの接続を待っています...");
+  for (int i = 0; i < 14; ++i) {
+    delay(2500);
+    if (cameraReachable()) return true;
+  }
+  return false;
 }
 
 // Factory firmware boots with awb/aec/agc all OFF -> near-black images
@@ -227,10 +324,14 @@ static bool captureFromCam() {
   jpegBuf = nullptr;
   jpegLen = 0;
 
+  if (camBase.isEmpty() && !cameraReachable()) {
+    lastError = "カメラ未接続";
+    return false;
+  }
   camGet("/api/v1/led_on", 500);
   HTTPClient http;
   http.setTimeout(8000);
-  if (!http.begin(String(CAM_BASE) + "/api/v1/capture")) return false;
+  if (!http.begin(camBase + "/api/v1/capture")) return false;
   const int code = http.GET();
   if (code == HTTP_CODE_OK) {
     jpegBuf = readBody(http, kMaxJpeg, jpegLen);
@@ -346,12 +447,24 @@ void setup() {
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
-  if (!connectWifi()) {
-    enterError("WiFiに接続できません");
-    return;
-  }
-  configureCamera();  // black-image fix + SVGA; harmless if camera is offline
+  WiFi.mode(WIFI_AP_STA);
+  const bool netOk = connectWifi();  // internet is only needed for the AI call
+  startSoftAp();
+
+  bool camOk = cameraReachable();
+  if (!camOk) camOk = pairCamera();  // auto-provision (one-time, device-only)
+  if (camOk) configureCamera();      // black-image fix + SVGA
+
   showIdle();
+  M5.Display.setTextSize(1);
+  if (!netOk) {
+    M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
+    M5.Display.drawString("ネット未接続(解析不可)", M5.Display.width() / 2, 310);
+  }
+  if (!camOk) {
+    M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
+    M5.Display.drawString("カメラ未検出", M5.Display.width() / 2, 340);
+  }
   state = AppState::Idle;
 }
 
