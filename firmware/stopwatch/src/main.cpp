@@ -71,6 +71,9 @@ static bool gCamOk = false;
 static uint32_t lastPreviewAt = 0;
 static int previewFails = 0;
 
+static uint8_t *retainBuf = nullptr;   // last complete finder frame (owned)
+static size_t retainLen = 0, retainCap = 0;
+static uint32_t retainAt = 0;
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
 
@@ -148,7 +151,8 @@ static void sfxError() {
 static void stopAnimalese() {
   if (animTask) {
     animStopFlag = true;
-    for (int i = 0; i < 50 && animTask; ++i) delay(10);
+    M5.Speaker.stop();
+    for (int i = 0; i < 20 && animTask; ++i) delay(10);
   }
   M5.Speaker.stop();
 }
@@ -201,10 +205,9 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // Scale-to-fit; CamS3 sends SVGA (800x600) by default. Datum keeps it centered.
-  M5.Display.drawJpg(jpegBuf, jpegLen, 0, 0, M5.Display.width(),
-                     M5.Display.height(), 0, 0, 0.0f, 0.0f,
-                     datum_t::middle_center);
+  // HVGA 480x320 at 1:1, centered — same framing the finder showed.
+  M5.Display.drawJpg(jpegBuf, jpegLen, (M5.Display.width() - 480) / 2,
+                     (M5.Display.height() - 320) / 2);
 }
 
 // Word-wrap UTF-8 text into the canvas, minimal kinsoku (no line-leading 、。」).
@@ -255,8 +258,8 @@ static void buildResultCanvas() {
   scrollY = 0;
 }
 
-static void drawResult() {
-  M5.Display.fillScreen(TFT_BLACK);
+static void drawResult(bool full = false) {
+  if (full) M5.Display.fillScreen(TFT_BLACK);
   const int x = (M5.Display.width() - kTextWidth) / 2;
   const int viewTop = 90;
   const int viewH = M5.Display.height() - viewTop - 60;
@@ -318,10 +321,10 @@ static uint8_t *readBody(HTTPClient &http, size_t maxLen, size_t &outLen) {
       }
       got += stream->readBytes(buf + got, min(avail, cap - got));
       lastData = millis();
-    } else if (millis() - lastData > 10000) {
+    } else if (millis() - lastData > 4000) {
       break;  // stalled
     } else {
-      delay(5);
+      delay(1);
     }
   }
   if (got == 0 || (contentLen > 0 && got != (size_t)contentLen)) {
@@ -477,8 +480,10 @@ static void configureCamera() {
       "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",
       "/api/v1/control?var=aec&val=1",  "/api/v1/control?var=agc&val=1",
       "/api/v1/control?var=gainceiling&val=2",
-      "/api/v1/control?var=framesize&val=8",  // VGA 640x480 (finder + capture)
-      "/api/v1/control?var=quality&val=12",
+      // This fork's framesize enum: 9=HVGA 480x320, 10=VGA, 11=SVGA.
+      // One mode for finder AND stills (the shot IS the last finder frame).
+      "/api/v1/control?var=framesize&val=9",
+      "/api/v1/control?var=quality&val=15",
   };
   for (auto p : kInit) camGet(p);
 }
@@ -488,6 +493,20 @@ static bool captureFromCam() {
   jpegBuf = nullptr;
   jpegLen = 0;
 
+  if (retainBuf && retainLen && millis() - retainAt < 2000) {
+    // The shot IS the last finder frame — instant, and exactly WYSIWYG.
+    if (jpegLen < retainLen || !jpegBuf) {
+      free(jpegBuf);
+      jpegBuf = (uint8_t *)ps_malloc(retainLen);
+    }
+    if (jpegBuf) {
+      memcpy(jpegBuf, retainBuf, retainLen);
+      jpegLen = retainLen;
+      Serial.printf("[toi] capture: 0ms (finder frame, %u bytes)\n",
+                    (unsigned)retainLen);
+      return true;
+    }
+  }
   if (camBase.isEmpty() && !cameraReachable()) {
     lastError = "カメラ未接続";
     return false;
@@ -508,35 +527,47 @@ static bool captureFromCam() {
   return jpegBuf != nullptr;
 }
 
+// TLS client kept alive across shots — saves the handshake round-trips.
+static WiFiClientSecure analyzeClient;
+static HTTPClient analyzeHttp;
+static bool analyzeInit = false;
+
 static bool analyzePhoto() {
   const uint32_t t0 = millis();
-  WiFiClientSecure client;
-  client.setInsecure();  // own Worker only; documented trade-off in README
-  HTTPClient http;
-  http.setTimeout(30000);
+  if (!analyzeInit) {
+    analyzeClient.setInsecure();  // own Worker only; trade-off in README
+    analyzeHttp.setReuse(true);
+    analyzeHttp.setConnectTimeout(5000);
+    analyzeHttp.setTimeout(30000);
+    analyzeInit = true;
+  }
   String url = String(WORKER_URL) + "/analyze";
   if (gps.location.isValid() && gps.location.age() < 120000) {
     url += "?lat=" + String(gps.location.lat(), 6) +
            "&lon=" + String(gps.location.lng(), 6);
   }
-  if (!http.begin(client, url)) return false;
-  http.addHeader("Content-Type", "image/jpeg");
-  http.addHeader("X-Device-Token", DEVICE_TOKEN);
-  const int code = http.POST(jpegBuf, jpegLen);
   bool ok = false;
-  if (code == HTTP_CODE_OK) {
-    JsonDocument doc;
-    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok) {
-      caption = doc["caption"].as<String>();
-      detailText = doc["detail"].as<String>();
-      ok = caption.length() > 0;
+  int code = -1;
+  for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
+    if (!analyzeHttp.begin(analyzeClient, url)) continue;
+    analyzeHttp.addHeader("Content-Type", "image/jpeg");
+    analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    code = analyzeHttp.POST(jpegBuf, jpegLen);
+    if (code == HTTP_CODE_OK) {
+      JsonDocument doc;
+      if (deserializeJson(doc, analyzeHttp.getString()) ==
+          DeserializationError::Ok) {
+        caption = doc["caption"].as<String>();
+        detailText = doc["detail"].as<String>();
+        ok = caption.length() > 0;
+      }
+    } else {
+      lastError = "analyze HTTP " + String(code);
+      analyzeHttp.end();  // drop the (possibly stale) connection, retry fresh
     }
-  } else {
-    lastError = "analyze HTTP " + String(code);
   }
-  http.end();
-  Serial.printf("[toi] analyze: %lums (HTTP %d, gps=%s)\n", millis() - t0, code,
-                gps.location.isValid() ? "yes" : "no");
+  Serial.printf("[toi] analyze: %lums (HTTP %d, attempt-reuse, gps=%s)\n",
+                millis() - t0, code, gps.location.isValid() ? "yes" : "no");
   return ok;
 }
 
@@ -544,19 +575,6 @@ static bool analyzePhoto() {
 // persistent connection and consumes it in small per-loop slices, so buttons
 // stay responsive and there is no per-frame connection/request overhead.
 // Finder mode = HVGA/q20 (small, fluid); capture mode = VGA/q12 (quality).
-static bool previewQuality = false;  // camera currently in finder mode?
-
-static void setFinderQuality(bool finder) {
-  if (previewQuality == finder) return;
-  bool ok = camGet(finder ? "/api/v1/control?var=framesize&val=7"   // HVGA 480x320
-                          : "/api/v1/control?var=framesize&val=8",  // VGA 640x480
-                   800);
-  ok &= camGet(finder ? "/api/v1/control?var=quality&val=20"
-                      : "/api/v1/control?var=quality&val=12",
-               800);
-  if (ok) previewQuality = finder;
-}
-
 static WiFiClient streamClient;
 static uint8_t *sBuf = nullptr;
 static size_t sLen = 0;
@@ -587,7 +605,6 @@ static bool streamConnect() {
 // skipped naturally because we only trust the markers.
 static void previewTick() {
   if (!streamClient.connected()) {
-    setFinderQuality(true);
     if (!streamConnect()) {
       if (++previewFails >= 5) {
         gCamOk = false;
@@ -638,9 +655,21 @@ static void previewTick() {
       for (size_t i = 2; i + 1 < sLen; ++i) {
         if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD9) {
           const size_t frameLen = i + 2;
-          // HVGA 480x320 drawn 1:1, centered (no scaler cost)
-          M5.Display.drawJpg(sBuf, frameLen, 0, 0, M5.Display.width(),
-                             M5.Display.height(), 7, -73);
+          // Retain a copy — the shutter reuses it as the shot (zero latency)
+          if (frameLen > retainCap) {
+            free(retainBuf);
+            retainCap = frameLen + 16384;
+            retainBuf = (uint8_t *)ps_malloc(retainCap);
+          }
+          if (retainBuf) {
+            memcpy(retainBuf, sBuf, frameLen);
+            retainLen = frameLen;
+            retainAt = millis();
+          }
+          // HVGA 480x320 drawn 1:1, centered/cropped to the panel
+          M5.Display.drawJpg(sBuf, frameLen,
+                             (M5.Display.width() - 480) / 2,
+                             (M5.Display.height() - 320) / 2);
           M5.Display.setFont(&fonts::efontJA_16);
           M5.Display.setTextSize(1);
           M5.Display.setTextDatum(middle_center);
@@ -683,9 +712,7 @@ static void runCaptureCycle() {
   stopAnimalese();
   sfxShutter();
 
-  streamStop();  // release the camera before the still capture
   drawBusy("カメラ通信中", TFT_YELLOW);
-  setFinderQuality(false);  // full quality + VGA for the real shot
   if (!captureFromCam()) {
     sfxError();
     enterError(lastError.length() ? lastError : "カメラに接続できません");
@@ -706,7 +733,7 @@ static void runCaptureCycle() {
   }
 
   buildResultCanvas();
-  drawResult();
+  drawResult(true);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
   speakAnimalese(caption + "。" + detailText);

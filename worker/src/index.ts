@@ -74,7 +74,7 @@ async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): 
           content: [
             {
               type: "image_url",
-              image_url: { url: `data:image/jpeg;base64,${imageB64}` },
+              image_url: { url: `data:image/jpeg;base64,${imageB64}`, detail: "low" },
             },
             { type: "text", text: userText },
           ],
@@ -105,13 +105,21 @@ async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): 
   });
 }
 
-// Best-effort reverse geocoding (OSM Nominatim). Returns "" on any failure.
+// Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
+// ~100m and results cached in Cloudflare's edge cache (Nominatim usage policy
+// requires caching; it also keeps the hint off the latency-critical path).
 async function placeHint(lat: string, lon: string): Promise<string> {
   try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16&accept-language=ja`;
+    const rlat = Number(lat).toFixed(3);
+    const rlon = Number(lon).toFixed(3);
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${rlat}&lon=${rlon}&zoom=16&accept-language=ja`;
+    const cache = caches.default;
+    const cacheKey = new Request(url);
+    const cached = await cache.match(cacheKey);
+    if (cached) return await cached.text();
     const res = await fetch(url, {
       headers: { "user-agent": "ToiCamera/1.0 (contest gadget; take.otani@syn-gr.com)" },
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(800),
     });
     if (!res.ok) return "";
     const data = (await res.json()) as {
@@ -125,7 +133,12 @@ async function placeHint(lat: string, lon: string): Promise<string> {
       a.suburb ?? a.neighbourhood,
       data.name,
     ].filter(Boolean);
-    return parts.join(" ");
+    const place = parts.join(" ");
+    await cache.put(
+      cacheKey,
+      new Response(place, { headers: { "cache-control": "max-age=604800" } }),
+    );
+    return place;
   } catch (err) {
     console.warn("reverse geocode failed", err);
     return "";

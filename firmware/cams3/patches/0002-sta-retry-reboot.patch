@@ -13,10 +13,18 @@ index f8bd015..9b98773 100644
  
      // camera init
 diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
-index 1dfa005..6b8b317 100644
+index 1dfa005..412b7ec 100644
 --- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
 +++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
-@@ -32,9 +32,17 @@ void HAL_UnitCamS3_5MP::startStaServer()
+@@ -23,6 +23,7 @@ void HAL_UnitCamS3_5MP::startStaServer()
+     spdlog::info("start sta server, try connect: {}", HAL::GetSystemConfig().wifiSsid);
+ 
+     WiFi.mode(WIFI_STA);
++    WiFi.setSleep(false);  // minimize DTIM latency for stream/capture requests
+     WiFi.setAutoReconnect(true);
+     WiFi.begin(HAL::GetSystemConfig().wifiSsid.c_str(), HAL::GetSystemConfig().wifiPass.c_str());
+ 
+@@ -32,9 +33,17 @@ void HAL_UnitCamS3_5MP::startStaServer()
      {
          if (millis() - t0 > 30000)
          {
