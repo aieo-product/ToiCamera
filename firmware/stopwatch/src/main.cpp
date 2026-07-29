@@ -22,6 +22,7 @@
 #include <TinyGPSPlus.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <esp_sntp.h>
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
@@ -83,7 +84,9 @@ static int homeDistanceM = 0;
 static int homeWalkMin = 0;
 
 static bool ntpSyncPending = false;
-static uint32_t lastNtpPollAt = 0;
+// Set from the SNTP callback — getLocalTime() alone cannot tell a fresh SNTP
+// reply from a clock already restored out of the RTC.
+static volatile bool sntpSynced = false;
 
 static bool stepCounterAvailable = false;
 static uint32_t stepCount = 0;
@@ -419,23 +422,22 @@ static void restoreSystemClockFromRtc() {
   }
 }
 
+static void onSntpSynced(struct timeval *) { sntpSynced = true; }
+
 static void beginNtpSync() {
   setenv("TZ", "JST-9", 1);
   tzset();
+  sntpSynced = false;
+  sntp_set_time_sync_notification_cb(onSntpSynced);
   configTzTime("JST-9", "ntp.nict.jp", "pool.ntp.org");
   ntpSyncPending = true;
-  lastNtpPollAt = 0;
   Serial.println("[toi] ntp: sync requested");
 }
 
 static void pollNtpSync() {
-  if (!ntpSyncPending || WiFi.status() != WL_CONNECTED ||
-      (lastNtpPollAt && millis() - lastNtpPollAt < 5000)) {
-    return;
-  }
-  lastNtpPollAt = millis();
+  if (!ntpSyncPending || !sntpSynced) return;
   struct tm local {};
-  if (!getLocalTime(&local, 10) || local.tm_year < 125) return;
+  if (!getLocalClock(local)) return;
   M5.Rtc.setDateTime(&local);
   ntpSyncPending = false;
   homeDirty = true;

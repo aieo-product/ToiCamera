@@ -236,8 +236,9 @@ async function handlePlace(request: Request, ctx: ExecutionContext): Promise<Res
   const { searchParams } = new URL(request.url);
   const lat = searchParams.get("lat");
   const lon = searchParams.get("lon");
-  const latitude = lat === null ? Number.NaN : Number(lat);
-  const longitude = lon === null ? Number.NaN : Number(lon);
+  // Number("") / Number("  ") coerce to 0 — reject blanks before coercion.
+  const latitude = lat === null || lat.trim() === "" ? Number.NaN : Number(lat);
+  const longitude = lon === null || lon.trim() === "" ? Number.NaN : Number(lon);
   if (
     lat === null ||
     lon === null ||
