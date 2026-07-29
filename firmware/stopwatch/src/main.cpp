@@ -1,10 +1,12 @@
 // ToiCamera — Stopwatch host firmware
 //
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation
-// Blue button   (KEYB/G1): back to the live finder (result/error), re-pair (idle)
+// Blue button   (KEYB/G1): home (finder), sleep (home), back (result/error)
+// Blue hold                 : re-pair the camera from the live finder
 // Speech: on-device "animalese" (per-character chirps with intonation) — no TTS
 // Touch drag             : scroll explanation text
-// Idle screen            : live viewfinder (continuous VGA preview)
+// Home screen            : clock, place, steps; camera stream is stopped
+// Idle screen            : live viewfinder (continuous QVGA preview)
 //
 // Networking: the Stopwatch runs SoftAP + STA simultaneously. The CamS3 joins
 // the Stopwatch's own AP (no home router / PC involved on the camera path);
@@ -18,6 +20,11 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <TinyGPSPlus.h>
+#include <driver/gpio.h>
+#include <esp_sleep.h>
+#include <math.h>
+#include <sys/time.h>
+#include <time.h>
 
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
@@ -33,11 +40,13 @@
 enum class AppState {
   Boot,
   WifiConnecting,
+  Home,
   Idle,
   Capturing,
   Analyzing,
   Result,
   Error,
+  Sleeping,
 };
 
 static AppState state = AppState::Boot;
@@ -55,12 +64,33 @@ static M5Canvas textCanvas(&M5.Display);
 static int scrollY = 0;
 static int textCanvasHeight = 0;
 static uint32_t autoScrollAt = 0;
+static M5Canvas homeCanvas(&M5.Display);
+static bool homeCanvasReady = false;
+static bool homeDirty = true;
+static int32_t homeLastMinute = -1;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
 static bool gpsPinsSwapped = false;
 static uint32_t gpsSwapDeadline = 0;
 static uint32_t gpsLastLogAt = 0;
+static bool homeHadGpsFix = false;
+static bool placeLookupPending = true;
+static uint32_t lastPlaceAt = 0;
+static String homePlace;
+static String homeStation;
+static int homeDistanceM = 0;
+static int homeWalkMin = 0;
+
+static bool ntpSyncPending = false;
+static uint32_t lastNtpPollAt = 0;
+
+static bool stepCounterAvailable = false;
+static uint32_t stepCount = 0;
+static uint32_t lastStepAt = 0;
+static int32_t stepDateKey = -1;
+static float accelNormAverage = 0.0f;
+static bool accelPeakHigh = false;
 
 static TaskHandle_t animTask = nullptr;
 static volatile bool animStopFlag = false;
@@ -68,6 +98,7 @@ static String animText;
 
 static bool gNetOk = false;
 static bool gCamOk = false;
+static bool cameraDiscoveryDone = false;
 static uint32_t lastPreviewAt = 0;
 static int previewFails = 0;
 
@@ -108,8 +139,97 @@ static void showIdleWithWarnings(bool netOk, bool camOk) {
     M5.Display.drawString("ネット未接続(解析不可)", M5.Display.width() / 2, 310);
   }
   if (!camOk) {
-    M5.Display.drawString("カメラ未検出 青ボタンで再接続", M5.Display.width() / 2, 340);
+    M5.Display.drawString("カメラ未検出 青長押しで再接続", M5.Display.width() / 2, 340);
   }
+}
+
+static bool hasFreshGpsFix() {
+  return gps.location.isValid() && gps.location.age() < 120000;
+}
+
+static bool getLocalClock(struct tm &local) {
+  const time_t now = time(nullptr);
+  return localtime_r(&now, &local) != nullptr && local.tm_year >= 125;
+}
+
+static void drawHome() {
+  if (!homeCanvasReady) {
+    homeCanvas.setColorDepth(8);
+    homeCanvasReady =
+        homeCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr;
+  }
+  if (!homeCanvasReady) {
+    showStatus("ホーム画面を表示できません", TFT_RED);
+    return;
+  }
+
+  homeCanvas.fillSprite(TFT_BLACK);
+  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setTextDatum(middle_center);
+
+  const int battery = M5.Power.getBatteryLevel();
+  char batteryText[16];
+  if (battery >= 0) {
+    snprintf(batteryText, sizeof(batteryText), "%d%%", battery);
+  } else {
+    snprintf(batteryText, sizeof(batteryText), "--%%");
+  }
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  // Centered near the top — (360,42) sits on the round panel's clipped edge.
+  homeCanvas.drawString(batteryText, M5.Display.width() / 2, 48);
+
+  struct tm local {};
+  if (getLocalClock(local)) {
+    static constexpr const char *kWeekdays[] = {
+        "日", "月", "火", "水", "木", "金", "土"};
+    char dateText[40];
+    char timeText[8];
+    snprintf(dateText, sizeof(dateText), "%04d/%02d/%02d (%s)",
+             local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+             kWeekdays[local.tm_wday]);
+    snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
+             local.tm_min);
+    homeCanvas.setTextSize(1);
+    homeCanvas.drawString(dateText, M5.Display.width() / 2, 98);
+    homeCanvas.setTextSize(4);
+    homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    homeCanvas.drawString(timeText, M5.Display.width() / 2, 165);
+  } else {
+    homeCanvas.setTextSize(1);
+    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 98);
+    homeCanvas.setTextSize(4);
+    homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    homeCanvas.drawString("--:--", M5.Display.width() / 2, 165);
+  }
+
+  if (stepCounterAvailable) {
+    homeCanvas.setTextSize(1);
+    homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    // efontJA_16 has no emoji glyphs — keep the step display text-only.
+    homeCanvas.drawString(String(stepCount) + " 歩", M5.Display.width() / 2,
+                          260);
+  }
+
+  if (hasFreshGpsFix()) {
+    homeCanvas.setTextSize(1);
+    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    if (homePlace.length()) {
+      homeCanvas.drawString(homePlace, M5.Display.width() / 2, 330);
+    }
+    if (homeStation.length()) {
+      homeCanvas.drawString("最寄り:" + homeStation + " 徒歩" +
+                                String(homeWalkMin) + "分",
+                            M5.Display.width() / 2, 362);
+    }
+  }
+
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  homeCanvas.drawString("黄:カメラ 青:スリープ",
+                        M5.Display.width() / 2, 438);
+  homeCanvas.pushSprite(0, 0);
+  homeDirty = false;
 }
 
 // Small pill at the top of the round screen showing what we're waiting on.
@@ -272,6 +392,58 @@ static void drawResult(bool full = false) {
 
 // ------------------------------------------------------------- network layer
 
+static void restoreSystemClockFromRtc() {
+  setenv("TZ", "JST-9", 1);
+  tzset();
+  m5::rtc_datetime_t rtc;
+  if (!M5.Rtc.getDateTime(&rtc) || rtc.date.year < 2025) {
+    Serial.println("[toi] rtc: no valid saved time");
+    return;
+  }
+
+  struct tm local {};
+  local.tm_year = rtc.date.year - 1900;
+  local.tm_mon = rtc.date.month - 1;
+  local.tm_mday = rtc.date.date;
+  local.tm_hour = rtc.time.hours;
+  local.tm_min = rtc.time.minutes;
+  local.tm_sec = rtc.time.seconds;
+  local.tm_isdst = -1;
+  const time_t epoch = mktime(&local);
+  if (epoch > 0) {
+    const timeval now = {epoch, 0};
+    settimeofday(&now, nullptr);
+    Serial.printf("[toi] rtc: restored %04d-%02d-%02d %02d:%02d:%02d\n",
+                  rtc.date.year, rtc.date.month, rtc.date.date, rtc.time.hours,
+                  rtc.time.minutes, rtc.time.seconds);
+  }
+}
+
+static void beginNtpSync() {
+  setenv("TZ", "JST-9", 1);
+  tzset();
+  configTzTime("JST-9", "ntp.nict.jp", "pool.ntp.org");
+  ntpSyncPending = true;
+  lastNtpPollAt = 0;
+  Serial.println("[toi] ntp: sync requested");
+}
+
+static void pollNtpSync() {
+  if (!ntpSyncPending || WiFi.status() != WL_CONNECTED ||
+      (lastNtpPollAt && millis() - lastNtpPollAt < 5000)) {
+    return;
+  }
+  lastNtpPollAt = millis();
+  struct tm local {};
+  if (!getLocalTime(&local, 10) || local.tm_year < 125) return;
+  M5.Rtc.setDateTime(&local);
+  ntpSyncPending = false;
+  homeDirty = true;
+  Serial.printf("[toi] ntp: synced, RTC updated %04d-%02d-%02d %02d:%02d:%02d\n",
+                local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+                local.tm_hour, local.tm_min, local.tm_sec);
+}
+
 static bool connectWifi() {
   struct { const char *ssid, *pass; } slots[] = {
       {WIFI_SSID1, WIFI_PASS1}, {WIFI_SSID2, WIFI_PASS2}};
@@ -282,7 +454,10 @@ static bool connectWifi() {
       delay(500);
       M5.update();
     }
-    if (WiFi.status() == WL_CONNECTED) return true;
+    if (WiFi.status() == WL_CONNECTED) {
+      beginNtpSync();
+      return true;
+    }
     WiFi.disconnect();
   }
   return false;
@@ -456,7 +631,7 @@ static bool pairCamera() {
   // Restore our normal radio setup regardless of the outcome.
   WiFi.mode(WIFI_AP_STA);
   showStatus("WiFi再接続中...");
-  connectWifi();
+  gNetOk = connectWifi();
   startSoftAp();
   powerCycleCamera();  // camera reboots and should join our SoftAP
   showStatus(ok ? "カメラの接続を待っています..." : "カメラを探しています...");
@@ -537,6 +712,53 @@ static bool captureFromCam() {
 static WiFiClientSecure analyzeClient;
 static HTTPClient analyzeHttp;
 static bool analyzeInit = false;
+static WiFiClientSecure placeClient;
+static HTTPClient placeHttp;
+static bool placeHttpInit = false;
+
+static bool fetchHomePlace() {
+  if (!hasFreshGpsFix() || WiFi.status() != WL_CONNECTED) return false;
+  if (!placeHttpInit) {
+    placeClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
+    placeHttp.setReuse(true);
+    placeHttp.setConnectTimeout(5000);
+    placeHttp.setTimeout(5000);
+    placeHttpInit = true;
+  }
+
+  const String url = String(WORKER_URL) + "/place?lat=" +
+                     String(gps.location.lat(), 6) + "&lon=" +
+                     String(gps.location.lng(), 6);
+  homePlace = "";
+  homeStation = "";
+  homeDistanceM = 0;
+  homeWalkMin = 0;
+  const uint32_t t0 = millis();
+  int code = -1;
+  bool ok = false;
+  if (placeHttp.begin(placeClient, url)) {
+    placeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    code = placeHttp.GET();
+    if (code == HTTP_CODE_OK) {
+      JsonDocument doc;
+      if (deserializeJson(doc, placeHttp.getString()) ==
+          DeserializationError::Ok) {
+        homePlace = doc["place"].as<String>();
+        homeStation = doc["station"].as<String>();
+        homeDistanceM = doc["distance_m"] | 0;
+        homeWalkMin = doc["walk_min"] | 0;
+        ok = true;
+      }
+    } else {
+      placeHttp.end();  // discard a failed/stale keep-alive connection
+    }
+  }
+  Serial.printf("[toi] place: %lums HTTP %d place=%s station=%s distance=%dm\n",
+                millis() - t0, code, homePlace.c_str(), homeStation.c_str(),
+                homeDistanceM);
+  homeDirty = true;
+  return ok;
+}
 
 static bool analyzePhoto() {
   const uint32_t t0 = millis();
@@ -884,6 +1106,155 @@ static void voiceQuestionFlow() {
 
 // ------------------------------------------------------------------ lifecycle
 
+static void stepCounterTick() {
+  if (!M5.Imu.isEnabled()) return;
+  const auto updated = M5.Imu.update();
+  if (!(updated & m5::IMU_Class::sensor_mask_accel)) return;
+
+  float ax = 0.0f, ay = 0.0f, az = 0.0f;
+  if (!M5.Imu.getAccel(&ax, &ay, &az)) return;
+  const float norm = sqrtf(ax * ax + ay * ay + az * az);
+  if (!isfinite(norm) || norm < 0.1f || norm > 8.0f) return;
+
+  if (!stepCounterAvailable) {
+    stepCounterAvailable = true;
+    accelNormAverage = norm;
+    homeDirty = true;
+    Serial.println("[toi] imu: accelerometer ok, software step counter enabled");
+  }
+
+  struct tm local {};
+  if (getLocalClock(local)) {
+    const int32_t dateKey =
+        (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday;
+    if (stepDateKey < 0) {
+      stepDateKey = dateKey;
+    } else if (dateKey != stepDateKey) {
+      stepDateKey = dateKey;
+      stepCount = 0;
+      homeDirty = true;
+      Serial.println("[toi] steps: reset for new day");
+    }
+  }
+
+  accelNormAverage = accelNormAverage * 0.90f + norm * 0.10f;
+  const bool high = norm > 1.15f && norm > accelNormAverage + 0.10f;
+  if (high && !accelPeakHigh && millis() - lastStepAt >= 300) {
+    ++stepCount;
+    lastStepAt = millis();
+    accelPeakHigh = true;
+    homeDirty = true;
+    Serial.printf("[toi] steps: %lu\n", (unsigned long)stepCount);
+  } else if (norm < 1.10f && norm < accelNormAverage + 0.04f) {
+    accelPeakHigh = false;
+  }
+}
+
+static void enterHome() {
+  stopAnimalese();
+  streamStop();
+  Serial.println("[toi] finder: stream stopped (home)");
+  state = AppState::Home;
+  homeLastMinute = -1;
+  placeLookupPending = true;
+  lastPlaceAt = 0;
+  homeHadGpsFix = hasFreshGpsFix();
+  homeDirty = true;
+  drawHome();
+}
+
+static void enterIdle() {
+  state = AppState::Idle;
+  if (!cameraDiscoveryDone) {
+    cameraDiscoveryDone = true;
+    showStatus("カメラ探索中...");
+    gCamOk = cameraReachable();
+    if (!gCamOk) gCamOk = pairCamera();
+    if (gCamOk) configureCamera();
+  }
+  showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
+}
+
+static void rePairCamera() {
+  streamStop();
+  showStatus("カメラ探索中...");
+  gCamOk = cameraReachable() || pairCamera();
+  if (gCamOk) configureCamera();
+  showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
+}
+
+static void homeTick() {
+  pollNtpSync();
+
+  const bool gpsFix = hasFreshGpsFix();
+  if (gpsFix != homeHadGpsFix) {
+    homeHadGpsFix = gpsFix;
+    homeDirty = true;
+    if (gpsFix) {
+      placeLookupPending = true;
+    } else {
+      homePlace = "";
+      homeStation = "";
+      homeDistanceM = 0;
+      homeWalkMin = 0;
+    }
+  }
+  if (gpsFix && WiFi.status() == WL_CONNECTED &&
+      (placeLookupPending ||
+       (lastPlaceAt && millis() - lastPlaceAt >= 5 * 60 * 1000UL))) {
+    placeLookupPending = false;
+    lastPlaceAt = millis();
+    fetchHomePlace();
+  }
+
+  struct tm local {};
+  if (getLocalClock(local)) {
+    const int32_t minuteKey =
+        local.tm_yday * 24 * 60 + local.tm_hour * 60 + local.tm_min;
+    if (minuteKey != homeLastMinute) {
+      homeLastMinute = minuteKey;
+      homeDirty = true;
+    }
+  }
+  if (homeDirty) drawHome();
+}
+
+static void enterSleeping() {
+  state = AppState::Sleeping;
+  stopAnimalese();
+  streamStop();
+  Serial.println("[toi] finder: stream stopped (sleep)");
+  M5.Display.sleep();
+  M5.Display.setBrightness(0);
+  WiFi.mode(WIFI_OFF);
+
+  gpio_wakeup_enable(GPIO_NUM_2, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(GPIO_NUM_1, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  // The press that selected sleep must be released before LOW-level wake is
+  // armed, otherwise light sleep would return immediately.
+  while (gpio_get_level(GPIO_NUM_2) == 0 || gpio_get_level(GPIO_NUM_1) == 0) {
+    M5.update();
+    delay(10);
+  }
+}
+
+static void sleepingTick() {
+  // USB CDC disconnects during light sleep. Hardware UART logging or a wake
+  // marker after resume is more reliable when debugging this path.
+  const esp_err_t sleepResult = esp_light_sleep_start();
+  M5.Display.wakeup();
+  M5.Display.setBrightness(200);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  showStatus("WiFi接続中...");
+  gNetOk = connectWifi();
+  startSoftAp();
+  Serial.printf("[toi] wake: light sleep result=%d STA=%s\n", sleepResult,
+                gNetOk ? "ok" : "FAIL");
+  enterHome();
+}
+
 static void enterError(const String &msg) {
   lastError = msg;
   state = AppState::Error;
@@ -938,10 +1309,11 @@ void setup() {
   M5.Power.setExtOutput(true);  // PMIC-gated 5V bus: enable explicitly
   M5.Speaker.setVolume(255);
   M5.Display.setBrightness(200);
+  Serial.begin(115200);
+  restoreSystemClockFromRtc();
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
-  Serial.begin(115200);
   // Unit GPS v1.1 (AT6668, 9600bps NMEA) on the Grove port. RX/TX assignment
   // is auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
   Serial1.begin(9600, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
@@ -953,12 +1325,10 @@ void setup() {
                 WiFi.localIP().toString().c_str(), WiFi.channel());
   startSoftAp();
 
-  gCamOk = cameraReachable();
-  if (!gCamOk) gCamOk = pairCamera();  // auto-provision (one-time, device-only)
-  if (gCamOk) configureCamera();       // black-image fix + VGA
-
-  showIdleWithWarnings(gNetOk, gCamOk);  // preview takes over when camera is up
-  state = AppState::Idle;
+  // Camera discovery and pairing are intentionally deferred until the first
+  // finder entry, keeping boot-to-home fast and the MJPEG stream stopped.
+  gCamOk = false;
+  enterHome();
 }
 
 static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1022,16 +1392,27 @@ void loop() {
                       : "");
   }
 
+  if (state != AppState::Sleeping) stepCounterTick();
+
   switch (state) {
+    case AppState::Home:
+      if (M5.BtnA.wasPressed()) {
+        enterIdle();
+      } else if (M5.BtnB.wasPressed()) {
+        enterSleeping();
+      } else {
+        homeTick();
+      }
+      break;
+
     case AppState::Idle:
       if (M5.BtnA.wasPressed()) {
         runCaptureCycle();
-      } else if (M5.BtnB.wasPressed()) {
+      } else if (M5.BtnB.wasHold()) {
         // Manual camera re-pairing (e.g. after fixing power/placement).
-        showStatus("カメラ探索中...");
-        gCamOk = cameraReachable() || pairCamera();
-        if (gCamOk) configureCamera();
-        showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
+        rePairCamera();
+      } else if (M5.BtnB.wasClicked()) {
+        enterHome();
       } else if (gCamOk) {
         previewTick();  // live viewfinder (consumes stream in small slices)
       } else if (!gCamOk && WiFi.softAPgetStationNum() > 0 &&
@@ -1057,8 +1438,7 @@ void loop() {
         // Cancel: stop speech, back to the finder
         stopAnimalese();
         sfxCancel();
-        state = AppState::Idle;
-        if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
+        enterIdle();
         break;
       }
       // Touch drag scroll — track absolute Y between frames (deltaY from the
@@ -1088,20 +1468,24 @@ void loop() {
     case AppState::Error:
       if (M5.BtnB.wasPressed()) {
         sfxCancel();
-        state = AppState::Idle;
-        if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
+        enterIdle();
         break;
       }
       if (M5.BtnA.wasPressed()) {
         if (WiFi.status() != WL_CONNECTED) {
           showStatus("WiFi接続中...");
-          if (!connectWifi()) {
+          gNetOk = connectWifi();
+          if (!gNetOk) {
             enterError("WiFiに接続できません");
             break;
           }
         }
         runCaptureCycle();
       }
+      break;
+
+    case AppState::Sleeping:
+      sleepingTick();
       break;
 
     default:

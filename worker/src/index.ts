@@ -108,7 +108,7 @@ async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): 
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
 // ~100m and results cached in Cloudflare's edge cache (Nominatim usage policy
 // requires caching; it also keeps the hint off the latency-critical path).
-async function placeHint(lat: string, lon: string): Promise<string> {
+async function placeHint(lat: string, lon: string, ctx: ExecutionContext): Promise<string> {
   try {
     const rlat = Number(lat).toFixed(3);
     const rlon = Number(lon).toFixed(3);
@@ -134,9 +134,11 @@ async function placeHint(lat: string, lon: string): Promise<string> {
       data.name,
     ].filter(Boolean);
     const place = parts.join(" ");
-    await cache.put(
-      cacheKey,
-      new Response(place, { headers: { "cache-control": "max-age=604800" } }),
+    ctx.waitUntil(
+      cache.put(
+        cacheKey,
+        new Response(place, { headers: { "cache-control": "max-age=604800" } }),
+      ),
     );
     return place;
   } catch (err) {
@@ -145,7 +147,127 @@ async function placeHint(lat: string, lon: string): Promise<string> {
   }
 }
 
-async function handleAnalyze(request: Request, env: Env): Promise<Response> {
+interface StationHint {
+  station: string;
+  distance_m: number;
+}
+
+const NO_STATION: StationHint = { station: "", distance_m: 0 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function distanceMeters(value: unknown): number {
+  if (typeof value !== "string") return 0;
+  const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*(m|km)$/i);
+  if (!match) return 0;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(match[2].toLowerCase() === "km" ? amount * 1000 : amount);
+}
+
+function parseHeartRailsStation(data: unknown): StationHint {
+  if (!isRecord(data) || !isRecord(data.response)) return NO_STATION;
+  const stations = data.response.station;
+  if (!Array.isArray(stations) || !isRecord(stations[0])) return NO_STATION;
+  const name = stations[0].name;
+  if (typeof name !== "string" || !name) return NO_STATION;
+  return {
+    station: name,
+    distance_m: distanceMeters(stations[0].distance),
+  };
+}
+
+function parseCachedStation(data: unknown): StationHint | null {
+  if (
+    !isRecord(data) ||
+    typeof data.station !== "string" ||
+    typeof data.distance_m !== "number"
+  ) {
+    return null;
+  }
+  return {
+    station: data.station,
+    distance_m: Number.isFinite(data.distance_m) ? Math.max(0, data.distance_m) : 0,
+  };
+}
+
+async function nearestStation(
+  lat: string,
+  lon: string,
+  ctx: ExecutionContext,
+): Promise<StationHint> {
+  try {
+    const rlat = Number(lat).toFixed(3);
+    const rlon = Number(lon).toFixed(3);
+    const url =
+      `http://express.heartrails.com/api/json?method=getStations&x=${rlon}&y=${rlat}`;
+    const cache = caches.default;
+    const cacheKey = new Request(url);
+    const cached = await cache.match(cacheKey);
+    if (cached) {
+      const station = parseCachedStation(await cached.json());
+      if (station) return station;
+    }
+
+    const res = await fetch(url, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return NO_STATION;
+    const station = parseHeartRailsStation(await res.json());
+    ctx.waitUntil(
+      cache.put(
+        cacheKey,
+        new Response(JSON.stringify(station), {
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "max-age=604800",
+          },
+        }),
+      ),
+    );
+    return station;
+  } catch (err) {
+    console.warn("nearest station failed", err);
+    return NO_STATION;
+  }
+}
+
+async function handlePlace(request: Request, ctx: ExecutionContext): Promise<Response> {
+  const { searchParams } = new URL(request.url);
+  const lat = searchParams.get("lat");
+  const lon = searchParams.get("lon");
+  const latitude = lat === null ? Number.NaN : Number(lat);
+  const longitude = lon === null ? Number.NaN : Number(lon);
+  if (
+    lat === null ||
+    lon === null ||
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return json({ error: "invalid coordinates" }, 400);
+  }
+
+  const [place, station] = await Promise.all([
+    placeHint(lat, lon, ctx),
+    nearestStation(lat, lon, ctx),
+  ]);
+  return json({
+    place,
+    station: station.station,
+    distance_m: station.distance_m,
+    walk_min: station.distance_m > 0 ? Math.ceil(station.distance_m / 80) : 0,
+  });
+}
+
+async function handleAnalyze(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const image = await request.arrayBuffer();
   if (image.byteLength < 128) {
     return json({ error: "empty or truncated image body" }, 400);
@@ -159,7 +281,7 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   const lon = searchParams.get("lon");
   let userText = "この写真を解説してください。";
   if (lat && lon) {
-    const place = await placeHint(lat, lon);
+    const place = await placeHint(lat, lon, ctx);
     if (place) {
       userText = `撮影場所: ${place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
     }
@@ -323,7 +445,7 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
@@ -333,16 +455,19 @@ export default {
     if (request.headers.get("x-device-token") !== env.DEVICE_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }
-    if (request.method !== "POST") {
+    const expectedMethod = url.pathname === "/place" ? "GET" : "POST";
+    if (request.method !== expectedMethod) {
       return json({ error: "method not allowed" }, 405);
     }
 
     try {
       switch (url.pathname) {
         case "/analyze":
-          return await handleAnalyze(request, env);
+          return await handleAnalyze(request, env, ctx);
         case "/ask":
           return await handleAsk(request, env);
+        case "/place":
+          return await handlePlace(request, ctx);
         case "/tts":
           return await handleTts(request, env);
         default:
