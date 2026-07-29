@@ -205,9 +205,10 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // HVGA 480x320 at 1:1, centered — same framing the finder showed.
-  M5.Display.drawJpg(jpegBuf, jpegLen, (M5.Display.width() - 480) / 2,
-                     (M5.Display.height() - 320) / 2);
+  // Same framing the finder showed, scaled to fill the round panel.
+  M5.Display.drawJpg(jpegBuf, jpegLen, 0, 0, M5.Display.width(),
+                     M5.Display.height(), 0, 0, M5.Display.width() / 320.0f,
+                     M5.Display.height() / 320.0f, datum_t::middle_center);
 }
 
 // Word-wrap UTF-8 text into the canvas, minimal kinsoku (no line-leading 、。」).
@@ -480,10 +481,12 @@ static void configureCamera() {
       "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",
       "/api/v1/control?var=aec&val=1",  "/api/v1/control?var=agc&val=1",
       "/api/v1/control?var=gainceiling&val=2",
-      // This fork's framesize enum: 9=HVGA 480x320, 10=VGA, 11=SVGA.
+      // This fork's framesize enum: 7=320x320, 9=HVGA, 10=VGA, 11=SVGA.
+      // 320x320 square suits the round panel and keeps frames ~31KB — the
+      // SoftAP link tops out near 190KB/s, so small frames = fluid finder.
       // One mode for finder AND stills (the shot IS the last finder frame).
-      "/api/v1/control?var=framesize&val=9",
-      "/api/v1/control?var=quality&val=15",
+      "/api/v1/control?var=framesize&val=7",
+      "/api/v1/control?var=quality&val=18",
   };
   for (auto p : kInit) camGet(p);
 }
@@ -666,10 +669,12 @@ static void previewTick() {
             retainLen = frameLen;
             retainAt = millis();
           }
-          // HVGA 480x320 drawn 1:1, centered/cropped to the panel
-          M5.Display.drawJpg(sBuf, frameLen,
-                             (M5.Display.width() - 480) / 2,
-                             (M5.Display.height() - 320) / 2);
+          // 320x320 scaled ~1.46x to fill the round panel
+          M5.Display.drawJpg(sBuf, frameLen, 0, 0, M5.Display.width(),
+                             M5.Display.height(), 0, 0,
+                             M5.Display.width() / 320.0f,
+                             M5.Display.height() / 320.0f,
+                             datum_t::middle_center);
           M5.Display.setFont(&fonts::efontJA_16);
           M5.Display.setTextSize(1);
           M5.Display.setTextDatum(middle_center);
