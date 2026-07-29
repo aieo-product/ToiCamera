@@ -11,7 +11,7 @@
     // Anthropic account is unfunded; flip back with --var ANALYZE_PROVIDER:anthropic
     "ANALYZE_PROVIDER": "openai",
     // OpenAI vision model (free-token eligible tier)
-    "ANALYZE_MODEL": "gpt-4o-mini",
+    "ANALYZE_MODEL": "gpt-5.6-luna",
     // Claude model for /analyze when ANALYZE_PROVIDER=anthropic.
     // Flip to a higher tier for demo recording: --var MODEL:claude-sonnet-5
     "MODEL": "claude-haiku-4-5",
