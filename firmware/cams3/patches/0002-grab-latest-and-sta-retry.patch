@@ -1,0 +1,39 @@
+diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
+index f8bd015..48c9837 100644
+--- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
++++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
+@@ -40,9 +40,9 @@ void HAL_UnitCamS3_5MP::_camera_init()
+     config.pixel_format = PIXFORMAT_JPEG;
+     config.frame_size = FRAMESIZE_VGA;
+     config.jpeg_quality = 12;
+-    config.fb_count = 1;
++    config.fb_count = 2;
+     config.fb_location = CAMERA_FB_IN_PSRAM;
+-    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
++    config.grab_mode = CAMERA_GRAB_LATEST;  // ToiCamera: always return the freshest frame
+ 
+     // camera init
+     esp_err_t err = esp_camera_init(&config);
+diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
+index 1dfa005..6b8b317 100644
+--- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
++++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
+@@ -32,9 +32,17 @@ void HAL_UnitCamS3_5MP::startStaServer()
+     {
+         if (millis() - t0 > 30000)
+         {
+-            spdlog::error("sta connect timeout, fall back to ap server");
++            // Fall back to the factory AP (pairing window), but reboot after
++            // 3 minutes so we retry STA once the host AP comes back up —
++            // otherwise a camera that boots before the Stopwatch would stay
++            // stuck in AP mode forever.
++            spdlog::error("sta connect timeout, fall back to ap server (reboot in 3min)");
+             WiFi.disconnect(true);
+             startApServer();
++            xTaskCreate([](void*) {
++                vTaskDelay(pdMS_TO_TICKS(180000));
++                esp_restart();
++            }, "sta_retry", 2048, nullptr, 1, nullptr);
+             return;
+         }
+         delay(250);

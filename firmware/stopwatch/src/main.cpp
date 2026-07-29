@@ -1,8 +1,9 @@
 // ToiCamera — Stopwatch host firmware
 //
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation (text + TTS)
-// Blue button   (KEYB/G1): replay last TTS audio
+// Blue button   (KEYB/G1): back to the live finder (result/error), re-pair (idle)
 // Touch drag             : scroll explanation text
+// Idle screen            : live viewfinder (continuous VGA preview)
 //
 // Networking: the Stopwatch runs SoftAP + STA simultaneously. The CamS3 joins
 // the Stopwatch's own AP (no home router / PC involved on the camera path);
@@ -55,6 +56,11 @@ static M5Canvas textCanvas(&M5.Display);
 static int scrollY = 0;
 static int textCanvasHeight = 0;
 static uint32_t autoScrollAt = 0;
+
+static bool gNetOk = false;
+static bool gCamOk = false;
+static uint32_t lastPreviewAt = 0;
+static int previewFails = 0;
 
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr size_t kMaxWav = 4 * 1024 * 1024;
@@ -374,7 +380,7 @@ static void configureCamera() {
       "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",
       "/api/v1/control?var=aec&val=1",  "/api/v1/control?var=agc&val=1",
       "/api/v1/control?var=gainceiling&val=2",
-      "/api/v1/control?var=framesize&val=9",  // SVGA 800x600
+      "/api/v1/control?var=framesize&val=8",  // VGA 640x480 (finder + capture)
       "/api/v1/control?var=quality&val=12",
   };
   for (auto p : kInit) camGet(p);
@@ -456,6 +462,39 @@ static bool fetchTts() {
   return wavBuf != nullptr;
 }
 
+// Live viewfinder: fetch the freshest frame and paint it. Kept blocking and
+// simple — each frame is one short HTTP GET on the private AP link.
+static void previewTick() {
+  HTTPClient http;
+  http.setTimeout(2500);
+  if (!http.begin(camBase + "/api/v1/capture")) return;
+  const int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    size_t len = 0;
+    uint8_t *buf = readBody(http, kMaxJpeg, len);
+    if (buf) {
+      M5.Display.drawJpg(buf, len, 0, 0, M5.Display.width(),
+                         M5.Display.height(), 0, 0, 0.0f, 0.0f,
+                         datum_t::middle_center);
+      M5.Display.setFont(&fonts::efontJA_16);
+      M5.Display.setTextSize(1);
+      M5.Display.setTextDatum(middle_center);
+      M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+      M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
+      free(buf);
+      previewFails = 0;
+    }
+  } else {
+    ++previewFails;
+  }
+  http.end();
+  if (previewFails >= 5) {
+    gCamOk = false;
+    previewFails = 0;
+    showIdleWithWarnings(gNetOk, false);
+  }
+}
+
 // ------------------------------------------------------------------ lifecycle
 
 static void enterError(const String &msg) {
@@ -463,7 +502,7 @@ static void enterError(const String &msg) {
   state = AppState::Error;
   showStatus(("エラー: " + msg).c_str(), TFT_RED);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("黄ボタンで再試行", M5.Display.width() / 2, 320);
+  M5.Display.drawString("黄:再試行 青:戻る", M5.Display.width() / 2, 320);
 }
 
 static void runCaptureCycle() {
@@ -510,16 +549,16 @@ void setup() {
   state = AppState::WifiConnecting;
   Serial.begin(115200);
   WiFi.mode(WIFI_AP_STA);
-  const bool netOk = connectWifi();  // internet is only needed for the AI call
-  Serial.printf("[toi] STA %s ip=%s ch=%d\n", netOk ? "ok" : "FAIL",
+  gNetOk = connectWifi();  // internet is only needed for the AI call
+  Serial.printf("[toi] STA %s ip=%s ch=%d\n", gNetOk ? "ok" : "FAIL",
                 WiFi.localIP().toString().c_str(), WiFi.channel());
   startSoftAp();
 
-  bool camOk = cameraReachable();
-  if (!camOk) camOk = pairCamera();  // auto-provision (one-time, device-only)
-  if (camOk) configureCamera();      // black-image fix + SVGA
+  gCamOk = cameraReachable();
+  if (!gCamOk) gCamOk = pairCamera();  // auto-provision (one-time, device-only)
+  if (gCamOk) configureCamera();       // black-image fix + VGA
 
-  showIdleWithWarnings(netOk, camOk);
+  showIdleWithWarnings(gNetOk, gCamOk);  // preview takes over when camera is up
   state = AppState::Idle;
 }
 
@@ -533,9 +572,12 @@ void loop() {
       } else if (M5.BtnB.wasPressed()) {
         // Manual camera re-pairing (e.g. after fixing power/placement).
         showStatus("カメラ探索中...");
-        const bool camOk = cameraReachable() || pairCamera();
-        if (camOk) configureCamera();
-        showIdleWithWarnings(WiFi.status() == WL_CONNECTED, camOk);
+        gCamOk = cameraReachable() || pairCamera();
+        if (gCamOk) configureCamera();
+        showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
+      } else if (gCamOk && millis() - lastPreviewAt > 100) {
+        previewTick();  // live viewfinder
+        lastPreviewAt = millis();
       }
       break;
 
@@ -544,27 +586,43 @@ void loop() {
         runCaptureCycle();
         break;
       }
-      if (M5.BtnB.wasPressed() && wavBuf) {
-        M5.Speaker.playWav(wavBuf, wavLen);
+      if (M5.BtnB.wasPressed()) {
+        // Cancel: stop audio, back to the finder
+        M5.Speaker.stop();
+        state = AppState::Idle;
+        if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
+        break;
       }
-      // Touch drag scroll
+      // Touch drag scroll — track absolute Y between frames (deltaY from the
+      // touch driver proved unreliable on this panel)
+      static int lastTouchY = -1;
       auto t = M5.Touch.getDetail();
       const int viewH = M5.Display.height() - 150;
       const int maxScroll = max(0, textCanvasHeight - viewH);
-      if (t.isPressed() && t.deltaY() != 0) {
-        scrollY = constrain(scrollY - t.deltaY(), 0, maxScroll);
-        drawResult();
-        autoScrollAt = 0;  // manual scroll cancels auto-scroll
-      } else if (autoScrollAt && millis() > autoScrollAt &&
-                 scrollY < maxScroll) {
-        scrollY = min(scrollY + 1, maxScroll);
-        drawResult();
-        autoScrollAt = millis() + 40;
+      if (t.isPressed()) {
+        if (lastTouchY >= 0 && t.y != lastTouchY) {
+          scrollY = constrain(scrollY - (t.y - lastTouchY), 0, maxScroll);
+          drawResult();
+          autoScrollAt = 0;  // manual scroll cancels auto-scroll
+        }
+        lastTouchY = t.y;
+      } else {
+        lastTouchY = -1;
+        if (autoScrollAt && millis() > autoScrollAt && scrollY < maxScroll) {
+          scrollY = min(scrollY + 2, maxScroll);
+          drawResult();
+          autoScrollAt = millis() + 40;
+        }
       }
       break;
     }
 
     case AppState::Error:
+      if (M5.BtnB.wasPressed()) {
+        state = AppState::Idle;
+        if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
+        break;
+      }
       if (M5.BtnA.wasPressed()) {
         if (WiFi.status() != WL_CONNECTED) {
           showStatus("WiFi接続中...");
