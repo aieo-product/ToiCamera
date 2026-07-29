@@ -57,7 +57,7 @@ const FALLBACK_RESULT = {
   detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
 };
 
-async function analyzeWithOpenAI(env: Env, imageB64: string): Promise<Response> {
+async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): Promise<Response> {
   const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -76,7 +76,7 @@ async function analyzeWithOpenAI(env: Env, imageB64: string): Promise<Response> 
               type: "image_url",
               image_url: { url: `data:image/jpeg;base64,${imageB64}` },
             },
-            { type: "text", text: "この写真を解説してください。" },
+            { type: "text", text: userText },
           ],
         },
       ],
@@ -105,6 +105,33 @@ async function analyzeWithOpenAI(env: Env, imageB64: string): Promise<Response> 
   });
 }
 
+// Best-effort reverse geocoding (OSM Nominatim). Returns "" on any failure.
+async function placeHint(lat: string, lon: string): Promise<string> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16&accept-language=ja`;
+    const res = await fetch(url, {
+      headers: { "user-agent": "ToiCamera/1.0 (contest gadget; take.otani@syn-gr.com)" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as {
+      name?: string;
+      address?: Record<string, string>;
+    };
+    const a = data.address ?? {};
+    const parts = [
+      a.state,
+      a.city ?? a.town ?? a.village,
+      a.suburb ?? a.neighbourhood,
+      data.name,
+    ].filter(Boolean);
+    return parts.join(" ");
+  } catch (err) {
+    console.warn("reverse geocode failed", err);
+    return "";
+  }
+}
+
 async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   const image = await request.arrayBuffer();
   if (image.byteLength < 128) {
@@ -114,8 +141,19 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
     return json({ error: "image too large" }, 413);
   }
 
+  const { searchParams } = new URL(request.url);
+  const lat = searchParams.get("lat");
+  const lon = searchParams.get("lon");
+  let userText = "この写真を解説してください。";
+  if (lat && lon) {
+    const place = await placeHint(lat, lon);
+    if (place) {
+      userText = `撮影場所: ${place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
+    }
+  }
+
   if (env.ANALYZE_PROVIDER !== "anthropic") {
-    return analyzeWithOpenAI(env, toBase64(image));
+    return analyzeWithOpenAI(env, toBase64(image), userText);
   }
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });

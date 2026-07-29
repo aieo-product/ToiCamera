@@ -1,7 +1,8 @@
 // ToiCamera — Stopwatch host firmware
 //
-// Yellow button (KEYA/G2): capture -> show photo -> AI explanation (text + TTS)
+// Yellow button (KEYA/G2): capture -> show photo -> AI explanation
 // Blue button   (KEYB/G1): back to the live finder (result/error), re-pair (idle)
+// Speech: on-device "animalese" (per-character chirps with intonation) — no TTS
 // Touch drag             : scroll explanation text
 // Idle screen            : live viewfinder (continuous VGA preview)
 //
@@ -16,6 +17,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <TinyGPSPlus.h>
 
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
@@ -34,7 +36,6 @@ enum class AppState {
   Idle,
   Capturing,
   Analyzing,
-  FetchingAudio,
   Result,
   Error,
 };
@@ -44,8 +45,6 @@ static AppState state = AppState::Boot;
 // Buffers live in PSRAM (8MB). Freed on each new capture cycle.
 static uint8_t *jpegBuf = nullptr;
 static size_t jpegLen = 0;
-static uint8_t *wavBuf = nullptr;
-static size_t wavLen = 0;
 
 static String caption;
 static String detailText;
@@ -57,13 +56,22 @@ static int scrollY = 0;
 static int textCanvasHeight = 0;
 static uint32_t autoScrollAt = 0;
 
+static TinyGPSPlus gps;
+static uint32_t gpsBytes = 0;
+static bool gpsPinsSwapped = false;
+static uint32_t gpsSwapDeadline = 0;
+static uint32_t gpsLastLogAt = 0;
+
+static TaskHandle_t animTask = nullptr;
+static volatile bool animStopFlag = false;
+static String animText;
+
 static bool gNetOk = false;
 static bool gCamOk = false;
 static uint32_t lastPreviewAt = 0;
 static int previewFails = 0;
 
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
-static constexpr size_t kMaxWav = 4 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
 
 // ---------------------------------------------------------------- UI helpers
@@ -99,6 +107,95 @@ static void showIdleWithWarnings(bool netOk, bool camOk) {
   if (!camOk) {
     M5.Display.drawString("カメラ未検出 青ボタンで再接続", M5.Display.width() / 2, 340);
   }
+}
+
+// Small pill at the top of the round screen showing what we're waiting on.
+static void drawBusy(const char *label, uint32_t color) {
+  const int w = 200, h = 32, x = (M5.Display.width() - w) / 2, y = 26;
+  M5.Display.fillRoundRect(x, y, w, h, 16, TFT_BLACK);
+  M5.Display.drawRoundRect(x, y, w, h, 16, color);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(color, TFT_BLACK);
+  M5.Display.drawString(label, M5.Display.width() / 2, y + h / 2 + 1);
+}
+
+// ------------------------------------------------------------- sound effects
+
+static void sfxShutter() {
+  M5.Speaker.tone(1500, 22);
+  delay(24);
+  M5.Speaker.tone(880, 42);
+}
+
+static void sfxCancel() {
+  M5.Speaker.tone(620, 36);
+  delay(40);
+  M5.Speaker.tone(470, 50);
+}
+
+static void sfxError() {
+  M5.Speaker.tone(300, 120);
+}
+
+// --------------------------------------------------- animalese speech engine
+// Animal-Crossing-style gibberish: one short chirp per character, pitch driven
+// by a per-character hash plus sentence-level intonation (drift down, reset at
+// sentence ends, rise on question marks). Runs in its own task so the UI stays
+// responsive; text is shown on screen for the actual content.
+
+static void stopAnimalese() {
+  if (animTask) {
+    animStopFlag = true;
+    for (int i = 0; i < 50 && animTask; ++i) delay(10);
+  }
+  M5.Speaker.stop();
+}
+
+static void animaleseWorker(void *) {
+  const String t = animText;
+  const float base = 660.0f + (esp_random() % 120);
+  float pitch = base;
+  size_t i = 0;
+  while (i < t.length() && !animStopFlag) {
+    const uint8_t b = t[i];
+    const size_t cl = (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
+    const String ch = t.substring(i, i + cl);
+    i += cl;
+    if (ch == "。" || ch == "!" || ch == "！" || ch == "\n") {
+      pitch = base;
+      vTaskDelay(pdMS_TO_TICKS(240));
+      continue;
+    }
+    if (ch == "?" || ch == "？") {
+      M5.Speaker.tone(pitch * 1.35f, 110);  // rising question chirp
+      vTaskDelay(pdMS_TO_TICKS(300));
+      pitch = base;
+      continue;
+    }
+    if (ch == "、" || ch == "," || ch == " " || ch == "　" || ch == "…") {
+      vTaskDelay(pdMS_TO_TICKS(130));
+      continue;
+    }
+    uint32_t h = 0;
+    for (size_t k = 0; k < ch.length(); ++k) h = h * 131 + (uint8_t)ch[k];
+    const float f = pitch * (0.82f + (h % 45) / 100.0f);
+    M5.Speaker.tone(f, 46);
+    pitch *= 0.994f;  // gentle downdrift across the sentence
+    vTaskDelay(pdMS_TO_TICKS(56 + (h % 24)));
+  }
+  M5.Speaker.stop();
+  animTask = nullptr;
+  vTaskDelete(nullptr);
+}
+
+static void speakAnimalese(const String &text) {
+  stopAnimalese();
+  animText = text;
+  animStopFlag = false;
+  xTaskCreatePinnedToCore(animaleseWorker, "animalese", 4096, nullptr, 1,
+                          &animTask, 0);
 }
 
 static void drawPhoto() {
@@ -395,7 +492,7 @@ static bool captureFromCam() {
     lastError = "カメラ未接続";
     return false;
   }
-  camGet("/api/v1/led_on", 500);
+  const uint32_t t0 = millis();
   HTTPClient http;
   http.setTimeout(8000);
   if (!http.begin(camBase + "/api/v1/capture")) return false;
@@ -406,16 +503,23 @@ static bool captureFromCam() {
     lastError = "camera HTTP " + String(code);
   }
   http.end();
-  camGet("/api/v1/led_off", 500);
+  Serial.printf("[toi] capture: %lums (%u bytes, HTTP %d)\n", millis() - t0,
+                (unsigned)jpegLen, code);
   return jpegBuf != nullptr;
 }
 
 static bool analyzePhoto() {
+  const uint32_t t0 = millis();
   WiFiClientSecure client;
   client.setInsecure();  // own Worker only; documented trade-off in README
   HTTPClient http;
   http.setTimeout(30000);
-  if (!http.begin(client, String(WORKER_URL) + "/analyze")) return false;
+  String url = String(WORKER_URL) + "/analyze";
+  if (gps.location.isValid() && gps.location.age() < 120000) {
+    url += "?lat=" + String(gps.location.lat(), 6) +
+           "&lon=" + String(gps.location.lng(), 6);
+  }
+  if (!http.begin(client, url)) return false;
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("X-Device-Token", DEVICE_TOKEN);
   const int code = http.POST(jpegBuf, jpegLen);
@@ -431,43 +535,25 @@ static bool analyzePhoto() {
     lastError = "analyze HTTP " + String(code);
   }
   http.end();
+  Serial.printf("[toi] analyze: %lums (HTTP %d, gps=%s)\n", millis() - t0, code,
+                gps.location.isValid() ? "yes" : "no");
   return ok;
 }
 
-static bool fetchTts() {
-  free(wavBuf);
-  wavBuf = nullptr;
-  wavLen = 0;
+// Live viewfinder: fetch the freshest frame and paint it. The HTTPClient is
+// persistent (keep-alive) so each frame skips the TCP handshake.
+static HTTPClient previewHttp;
+static bool previewHttpUp = false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(30000);
-  if (!http.begin(client, String(WORKER_URL) + "/tts")) return false;
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Device-Token", DEVICE_TOKEN);
-
-  JsonDocument doc;
-  doc["text"] = caption + "。" + detailText;
-  String body;
-  serializeJson(doc, body);
-
-  const int code = http.POST(body);
-  if (code == HTTP_CODE_OK) {
-    wavBuf = readBody(http, kMaxWav, wavLen);
-  } else {
-    lastError = "tts HTTP " + String(code);
-  }
-  http.end();
-  return wavBuf != nullptr;
-}
-
-// Live viewfinder: fetch the freshest frame and paint it. Kept blocking and
-// simple — each frame is one short HTTP GET on the private AP link.
 static void previewTick() {
-  HTTPClient http;
-  http.setTimeout(2500);
-  if (!http.begin(camBase + "/api/v1/capture")) return;
+  HTTPClient &http = previewHttp;
+  if (!previewHttpUp) {
+    http.setTimeout(2500);
+    http.setReuse(true);
+    if (!http.begin(camBase + "/api/v1/capture")) return;
+    previewHttpUp = true;
+  }
+  const uint32_t t0 = millis();
   const int code = http.GET();
   if (code == HTTP_CODE_OK) {
     size_t len = 0;
@@ -483,11 +569,20 @@ static void previewTick() {
       M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
       free(buf);
       previewFails = 0;
+      static uint32_t frames = 0, windowStart = 0;
+      if (++frames % 20 == 0) {
+        Serial.printf("[toi] preview: %.1f fps (last frame %lums, %u bytes)\n",
+                      20000.0f / (millis() - windowStart), millis() - t0,
+                      (unsigned)len);
+        windowStart = millis();
+      }
     }
   } else {
     ++previewFails;
+    Serial.printf("[toi] preview fail %d (HTTP %d)\n", previewFails, code);
+    http.end();
+    previewHttpUp = false;  // force reconnect next tick
   }
-  http.end();
   if (previewFails >= 5) {
     gCamOk = false;
     previewFails = 0;
@@ -506,35 +601,37 @@ static void enterError(const String &msg) {
 }
 
 static void runCaptureCycle() {
+  const uint32_t cycleStart = millis();
   state = AppState::Capturing;
-  M5.Speaker.tone(2000, 60);  // shutter feedback
+  stopAnimalese();
+  sfxShutter();
 
-  showStatus("撮影中...");
+  drawBusy("カメラ通信中", TFT_YELLOW);
   if (!captureFromCam()) {
+    sfxError();
     enterError(lastError.length() ? lastError : "カメラに接続できません");
     return;
   }
-  drawPhoto();
+  {
+    const uint32_t t0 = millis();
+    drawPhoto();
+    Serial.printf("[toi] drawJpg: %lums\n", millis() - t0);
+  }
 
   state = AppState::Analyzing;
-  M5.Display.setFont(&fonts::efontJA_16);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString("AIが考えています...", M5.Display.width() / 2, 420);
+  drawBusy("AI解析中...", TFT_CYAN);
   if (!analyzePhoto()) {
+    sfxError();
     enterError(lastError.length() ? lastError : "解析に失敗しました");
     return;
   }
 
   buildResultCanvas();
   drawResult();
-  state = AppState::FetchingAudio;
-  if (fetchTts()) {
-    M5.Speaker.playWav(wavBuf, wavLen);
-  }
-  // Audio failure is non-fatal — text result is already on screen.
   autoScrollAt = millis() + 2500;
-  state = AppState::Result;
+  state = AppState::Result;  // interactive immediately — speech runs in a task
+  speakAnimalese(caption + "。" + detailText);
+  Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
 void setup() {
@@ -548,6 +645,10 @@ void setup() {
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
   Serial.begin(115200);
+  // Unit GPS v1.1 (AT6668, 9600bps NMEA) on the Grove port. RX/TX assignment
+  // is auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
+  Serial1.begin(9600, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
+  gpsSwapDeadline = millis() + 10000;
   WiFi.mode(WIFI_AP_STA);
   gNetOk = connectWifi();  // internet is only needed for the AI call
   Serial.printf("[toi] STA %s ip=%s ch=%d\n", gNetOk ? "ok" : "FAIL",
@@ -564,6 +665,27 @@ void setup() {
 
 void loop() {
   M5.update();
+
+  // GPS: feed NMEA continuously; auto-swap RX pin once if the line is silent
+  while (Serial1.available()) {
+    gps.encode(Serial1.read());
+    ++gpsBytes;
+  }
+  if (!gpsBytes && !gpsPinsSwapped && millis() > gpsSwapDeadline) {
+    gpsPinsSwapped = true;
+    Serial1.end();
+    Serial1.begin(9600, SERIAL_8N1, 11 /*RX*/, 10 /*TX*/);
+    Serial.println("[toi] gps: no data on RX=G10, swapped to RX=G11");
+  }
+  if (millis() - gpsLastLogAt > 10000) {
+    gpsLastLogAt = millis();
+    Serial.printf("[toi] gps: bytes=%lu sats=%d fix=%s%s\n",
+                  (unsigned long)gpsBytes, gps.satellites.isValid() ? (int)gps.satellites.value() : -1,
+                  gps.location.isValid() ? "yes " : "no",
+                  gps.location.isValid()
+                      ? (String(gps.location.lat(), 4) + "," + String(gps.location.lng(), 4)).c_str()
+                      : "");
+  }
 
   switch (state) {
     case AppState::Idle:
@@ -594,8 +716,9 @@ void loop() {
         break;
       }
       if (M5.BtnB.wasPressed()) {
-        // Cancel: stop audio, back to the finder
-        M5.Speaker.stop();
+        // Cancel: stop speech, back to the finder
+        stopAnimalese();
+        sfxCancel();
         state = AppState::Idle;
         if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
         break;
@@ -626,6 +749,7 @@ void loop() {
 
     case AppState::Error:
       if (M5.BtnB.wasPressed()) {
+        sfxCancel();
         state = AppState::Idle;
         if (!gCamOk) showIdleWithWarnings(gNetOk, gCamOk);
         break;
