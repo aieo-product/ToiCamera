@@ -209,6 +209,87 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   });
 }
 
+const ANSWER_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: { type: "string", description: "2文以内・120文字以内の日本語回答" },
+  },
+  required: ["answer"],
+  additionalProperties: false,
+} as const;
+
+// Voice question about the last shot: WAV body -> STT -> answer using the
+// prior explanation (caption/detail passed as query params) as context.
+async function handleAsk(request: Request, env: Env): Promise<Response> {
+  const audio = await request.arrayBuffer();
+  if (audio.byteLength < 4000) return json({ error: "audio too short" }, 400);
+  if (audio.byteLength > 2 * 1024 * 1024) return json({ error: "audio too large" }, 413);
+
+  const { searchParams } = new URL(request.url);
+  const caption = searchParams.get("caption") ?? "";
+  const detail = searchParams.get("detail") ?? "";
+
+  // STT — try the free-token key first, fall back to the paid key + whisper-1
+  async function transcribe(key: string, model: string): Promise<string | null> {
+    const form = new FormData();
+    form.append("file", new File([audio], "q.wav", { type: "audio/wav" }));
+    form.append("model", model);
+    form.append("language", "ja");
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}` },
+      body: form,
+    });
+    if (!res.ok) {
+      console.warn("stt failed", model, res.status, await res.text());
+      return null;
+    }
+    const data = (await res.json()) as { text?: string };
+    return data.text?.trim() || null;
+  }
+
+  const question =
+    (await transcribe(env.OPENAI_FREE_API_KEY, "gpt-4o-mini-transcribe")) ??
+    (await transcribe(env.OPENAI_API_KEY, "whisper-1"));
+  if (!question) return json({ error: "stt failed" }, 502);
+
+  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: env.ANALYZE_MODEL,
+      max_completion_tokens: 300,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `さっき撮った写真をあなたはこう解説しました:「${caption}。${detail}」
+ユーザーからの質問: ${question}
+写真の内容を踏まえて、2文以内の日本語で親しみやすく答えてください。`,
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "toi_answer", strict: true, schema: ANSWER_SCHEMA },
+      },
+    }),
+  });
+  if (!upstream.ok) {
+    console.error("ask upstream error", upstream.status, await upstream.text());
+    return json({ error: "ask upstream failed" }, 502);
+  }
+  const data = (await upstream.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) return json(FALLBACK_RESULT);
+  const parsed = JSON.parse(content) as { answer: string };
+  return json({ question, answer: parsed.answer });
+}
+
 async function handleTts(request: Request, env: Env): Promise<Response> {
   const body = (await request.json().catch(() => null)) as { text?: string } | null;
   const text = body?.text?.trim();
@@ -260,6 +341,8 @@ export default {
       switch (url.pathname) {
         case "/analyze":
           return await handleAnalyze(request, env);
+        case "/ask":
+          return await handleAsk(request, env);
         case "/tts":
           return await handleTts(request, env);
         default:

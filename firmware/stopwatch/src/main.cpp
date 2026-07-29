@@ -759,6 +759,129 @@ static void previewTick() {
   }
 }
 
+// ------------------------------------------------------- voice question (ask)
+
+static String urlenc(const String &in) {
+  String out;
+  const char *hex = "0123456789ABCDEF";
+  for (size_t i = 0; i < in.length(); ++i) {
+    const uint8_t c = in[i];
+    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out += (char)c;
+    } else {
+      out += '%';
+      out += hex[c >> 4];
+      out += hex[c & 15];
+    }
+  }
+  return out;
+}
+
+// Hold-to-talk: record from the built-in mic while KEYA is held, wrap as WAV,
+// send to the Worker (/ask) with the current explanation as context, then
+// show + speak the answer.
+static void voiceQuestionFlow() {
+  stopAnimalese();
+  M5.Speaker.tone(900, 40);  // "listening" blip before the speaker is released
+  delay(60);
+  M5.Speaker.end();  // mic and speaker share the codec/I2S
+  if (!M5.Mic.begin()) {
+    M5.Speaker.begin();
+    M5.Speaker.setVolume(255);
+    Serial.println("[toi] ask: mic begin FAILED");
+    return;
+  }
+
+  constexpr uint32_t kRate = 16000;
+  constexpr size_t kMaxSamples = kRate * 10;  // up to 10s
+  constexpr size_t kChunk = 1024;
+  int16_t *pcm = (int16_t *)ps_malloc(kMaxSamples * 2 + 44);
+  size_t total = 0;
+  drawBusy("録音中(離すと送信)", TFT_RED);
+  const uint32_t t0 = millis();
+  while (total + kChunk <= kMaxSamples) {
+    M5.update();
+    if (!M5.BtnA.isPressed() && millis() - t0 > 300) break;
+    if (M5.Mic.record(pcm + 22 + total, kChunk, kRate)) {
+      while (M5.Mic.isRecording()) delay(1);
+      total += kChunk;
+    }
+  }
+  M5.Mic.end();
+  M5.Speaker.begin();
+  M5.Speaker.setVolume(255);
+  Serial.printf("[toi] ask: recorded %u samples (%.1fs)\n", (unsigned)total,
+                total / (float)kRate);
+  if (!pcm || total < kRate / 2) {  // under 0.5s — treat as accidental
+    free(pcm);
+    drawResult(true);
+    return;
+  }
+
+  // WAV header in front of the PCM (44 bytes = 22 int16 slots)
+  uint8_t *wav = (uint8_t *)pcm;
+  const uint32_t dataLen = total * 2;
+  memcpy(wav, "RIFF", 4);
+  *(uint32_t *)(wav + 4) = 36 + dataLen;
+  memcpy(wav + 8, "WAVEfmt ", 8);
+  *(uint32_t *)(wav + 16) = 16;
+  *(uint16_t *)(wav + 20) = 1;  // PCM
+  *(uint16_t *)(wav + 22) = 1;  // mono
+  *(uint32_t *)(wav + 24) = kRate;
+  *(uint32_t *)(wav + 28) = kRate * 2;
+  *(uint16_t *)(wav + 32) = 2;
+  *(uint16_t *)(wav + 34) = 16;
+  memcpy(wav + 36, "data", 4);
+  *(uint32_t *)(wav + 40) = dataLen;
+
+  drawBusy("考え中...", TFT_CYAN);
+  const uint32_t ta = millis();
+  bool ok = false;
+  {
+    if (!analyzeInit) {
+      analyzeClient.setInsecure();
+      analyzeHttp.setReuse(true);
+      analyzeHttp.setConnectTimeout(5000);
+      analyzeHttp.setTimeout(30000);
+      analyzeInit = true;
+    }
+    const String url = String(WORKER_URL) + "/ask?caption=" + urlenc(caption) +
+                       "&detail=" + urlenc(detailText);
+    if (analyzeHttp.begin(analyzeClient, url)) {
+      analyzeHttp.addHeader("Content-Type", "audio/wav");
+      analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+      const int code = analyzeHttp.POST(wav, 44 + dataLen);
+      if (code == HTTP_CODE_OK) {
+        JsonDocument doc;
+        if (deserializeJson(doc, analyzeHttp.getString()) ==
+            DeserializationError::Ok) {
+          const String q = doc["question"].as<String>();
+          const String a = doc["answer"].as<String>();
+          Serial.printf("[toi] ask: %lums Q=%s A=%s\n", millis() - ta,
+                        q.c_str(), a.c_str());
+          if (a.length()) {
+            caption = "Q: " + q;
+            detailText = a;
+            buildResultCanvas();
+            drawResult(true);
+            autoScrollAt = millis() + 2500;
+            speakAnimalese(a);
+            ok = true;
+          }
+        }
+      } else {
+        Serial.printf("[toi] ask: HTTP %d\n", code);
+        analyzeHttp.end();
+      }
+    }
+  }
+  free(pcm);
+  if (!ok) {
+    sfxError();
+    drawResult(true);  // restore previous explanation view
+  }
+}
+
 // ------------------------------------------------------------------ lifecycle
 
 static void enterError(const String &msg) {
@@ -797,6 +920,11 @@ static void runCaptureCycle() {
 
   buildResultCanvas();
   drawResult(true);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.drawString("黄長押し:質問 黄:撮影 青:戻る", M5.Display.width() / 2, 442);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
   speakAnimalese(caption + "。" + detailText);
@@ -808,7 +936,7 @@ void setup() {
   cfg.output_power = true;  // Grove 5V out — powers the CamS3
   M5.begin(cfg);
   M5.Power.setExtOutput(true);  // PMIC-gated 5V bus: enable explicitly
-  M5.Speaker.setVolume(180);
+  M5.Speaker.setVolume(255);
   M5.Display.setBrightness(200);
 
   showStatus("WiFi接続中...");
@@ -917,7 +1045,11 @@ void loop() {
       break;
 
     case AppState::Result: {
-      if (M5.BtnA.wasPressed()) {
+      if (M5.BtnA.wasHold()) {
+        voiceQuestionFlow();  // hold-to-talk question about this shot
+        break;
+      }
+      if (M5.BtnA.wasClicked()) {
         runCaptureCycle();
         break;
       }
