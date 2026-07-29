@@ -1,8 +1,43 @@
+diff --git a/app/app.cpp b/app/app.cpp
+index 38f275f..b8a90cb 100644
+--- a/app/app.cpp
++++ b/app/app.cpp
+@@ -56,6 +56,8 @@ void APP::Setup(SetupCallback_t callback)
+     // Simple
+     if (HAL::GetSystemConfig().startPoster == "yes")
+         HAL::StartPosterServer();
++    else if (!HAL::GetSystemConfig().wifiSsid.empty())
++        HAL::StartStaServer();
+     else
+         HAL::StartApServer();
+ 
+diff --git a/app/hal/hal.h b/app/hal/hal.h
+index 8122774..5239930 100644
+--- a/app/hal/hal.h
++++ b/app/hal/hal.h
+@@ -461,6 +461,10 @@ public:
+     static void StartPosterServer() { Get()->startPosterServer(); }
+     virtual void startPosterServer() {}
+ 
++    // ToiCamera: join an existing WiFi as station and serve the REST API
++    static void StartStaServer() { Get()->startStaServer(); }
++    virtual void startStaServer() {}
++
+     /* -------------------------------------------------------------------------- */
+     /*                                     SD                                     */
+     /* -------------------------------------------------------------------------- */
 diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
-index f8bd015..9b98773 100644
+index f8bd015..d54c8ba 100644
 --- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
 +++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
-@@ -42,6 +42,9 @@ void HAL_UnitCamS3_5MP::_camera_init()
+@@ -38,10 +38,16 @@ void HAL_UnitCamS3_5MP::_camera_init()
+     config.pin_reset = CAMERA_PIN_RESET;
+     config.xclk_freq_hz = XCLK_FREQ_HZ;
+     config.pixel_format = PIXFORMAT_JPEG;
++    // Factory defaults. NOTE (ToiCamera): keep VGA at init — this driver's
++    // init tables only produce correct output for the factory sizes; the host
++    // switches to HVGA at runtime (proven path). 320x* modes are corrupt.
+     config.frame_size = FRAMESIZE_VGA;
      config.jpeg_quality = 12;
      config.fb_count = 1;
      config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -12,34 +47,85 @@ index f8bd015..9b98773 100644
      config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
  
      // camera init
+diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
+index 44bf396..765592b 100644
+--- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
++++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/hal_unitcam_s3_5mp.h
+@@ -55,6 +55,7 @@ public:
+     void startApServer() override;
+     void stopApServer() override;
+     void startPosterServer() override;
++    void startStaServer() override;
+ 
+     bool sdCardInit(bool passImagePath) override;
+     bool sdCardDeInit() override;
 diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
-index 1dfa005..412b7ec 100644
---- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
+new file mode 100644
+index 0000000..412b7ec
+--- /dev/null
 +++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
-@@ -23,6 +23,7 @@ void HAL_UnitCamS3_5MP::startStaServer()
-     spdlog::info("start sta server, try connect: {}", HAL::GetSystemConfig().wifiSsid);
- 
-     WiFi.mode(WIFI_STA);
+@@ -0,0 +1,64 @@
++/**
++ * @file server_sta.cpp
++ * @brief ToiCamera: connect to the host's WiFi (STA) and serve the same
++ *        REST API as the factory AP server. Falls back to the AP server if
++ *        the connection cannot be established (lockout prevention).
++ */
++#include "../hal_unitcam_s3_5mp.h"
++#include "../hal_config.h"
++#include <mooncake.h>
++#include <Arduino.h>
++#include <WiFi.h>
++#include <AsyncTCP.h>
++#include <ESPAsyncWebServer.h>
++#include <FS.h>
++#include <LittleFS.h>
++#include "apis/apis.h"
++#include <assets/assets.h>
++
++static AsyncWebServer* _sta_server = nullptr;
++
++void HAL_UnitCamS3_5MP::startStaServer()
++{
++    spdlog::info("start sta server, try connect: {}", HAL::GetSystemConfig().wifiSsid);
++
++    WiFi.mode(WIFI_STA);
 +    WiFi.setSleep(false);  // minimize DTIM latency for stream/capture requests
-     WiFi.setAutoReconnect(true);
-     WiFi.begin(HAL::GetSystemConfig().wifiSsid.c_str(), HAL::GetSystemConfig().wifiPass.c_str());
- 
-@@ -32,9 +33,17 @@ void HAL_UnitCamS3_5MP::startStaServer()
-     {
-         if (millis() - t0 > 30000)
-         {
--            spdlog::error("sta connect timeout, fall back to ap server");
++    WiFi.setAutoReconnect(true);
++    WiFi.begin(HAL::GetSystemConfig().wifiSsid.c_str(), HAL::GetSystemConfig().wifiPass.c_str());
++
++    uint32_t t0 = millis();
++    bool led = false;
++    while (WiFi.status() != WL_CONNECTED)
++    {
++        if (millis() - t0 > 30000)
++        {
 +            // Fall back to the factory AP (pairing window), but reboot after
 +            // 3 minutes so we retry STA once the host AP comes back up —
 +            // otherwise a camera that boots before the Stopwatch would stay
 +            // stuck in AP mode forever.
 +            spdlog::error("sta connect timeout, fall back to ap server (reboot in 3min)");
-             WiFi.disconnect(true);
-             startApServer();
++            WiFi.disconnect(true);
++            startApServer();
 +            xTaskCreate([](void*) {
 +                vTaskDelay(pdMS_TO_TICKS(180000));
 +                esp_restart();
 +            }, "sta_retry", 2048, nullptr, 1, nullptr);
-             return;
-         }
-         delay(250);
++            return;
++        }
++        delay(250);
++        led = !led;
++        HAL::SetLedState(led);  // fast blink while connecting
++    }
++    spdlog::info("sta ip: {}", WiFi.localIP().toString().c_str());
++
++    _sta_server = new AsyncWebServer(80);
++    load_cam_apis(*_sta_server);
++    load_mic_apis(*_sta_server);
++    load_system_apis(*_sta_server);
++    load_poster_apis(*_sta_server);
++    _sta_server->begin();
++    spdlog::info("sta web server started");
++
++    HAL::SetLedState(true);
++}

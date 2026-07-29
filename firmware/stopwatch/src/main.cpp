@@ -205,10 +205,11 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // Same framing the finder showed, scaled to fill the round panel.
-  M5.Display.drawJpg(jpegBuf, jpegLen, 0, 0, M5.Display.width(),
-                     M5.Display.height(), 0, 0, M5.Display.width() / 320.0f,
-                     M5.Display.height() / 320.0f, datum_t::middle_center);
+  // Same framing the finder showed (QVGA scaled to panel width).
+  const float sc = M5.Display.width() / 320.0f;
+  M5.Display.drawJpg(jpegBuf, jpegLen, 0,
+                     (int)((M5.Display.height() - 240 * sc) / 2),
+                     M5.Display.width(), (int)(240 * sc), 0, 0, sc, sc);
 }
 
 // Word-wrap UTF-8 text into the canvas, minimal kinsoku (no line-leading 、。」).
@@ -481,14 +482,16 @@ static void configureCamera() {
       "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",
       "/api/v1/control?var=aec&val=1",  "/api/v1/control?var=agc&val=1",
       "/api/v1/control?var=gainceiling&val=2",
-      // This fork's framesize enum: 7=320x320, 9=HVGA, 10=VGA, 11=SVGA.
-      // 320x320 square suits the round panel and keeps frames ~31KB — the
-      // SoftAP link tops out near 190KB/s, so small frames = fluid finder.
-      // One mode for finder AND stills (the shot IS the last finder frame).
-      "/api/v1/control?var=framesize&val=7",
-      "/api/v1/control?var=quality&val=18",
+      // PY260/mega_ccm driver: supported sizes are QVGA/VGA/HD/UXGA/FHD/5MP
+      // (+96/128/320 squares); quality is 3-step (0=high,1=default,2=low).
+      // Unsupported values return "ok" without touching the sensor!
+      "/api/v1/control?var=framesize&val=6",  // QVGA 320x240 finder
+      "/api/v1/control?var=quality&val=1",
   };
-  for (auto p : kInit) camGet(p);
+  for (auto p : kInit) {
+    const bool ok = camGet(p);
+    Serial.printf("[toi] camcfg %s -> %s\n", p, ok ? "ok" : "FAIL");
+  }
 }
 
 static bool captureFromCam() {
@@ -585,10 +588,23 @@ static bool sInJpeg = false;
 static uint32_t sFrames = 0, sWindowStart = 0, sLastFrameAt = 0;
 static constexpr size_t kStreamBufCap = 300 * 1024;
 
+// HTTP de-chunking state — AsyncWebServer streams with Transfer-Encoding:
+// chunked, and chunk framing bytes MUST NOT reach the JPEG reassembler
+// (they corrupt frames with periodic garbage bands).
+enum class CkState { Header, Size, Data, CrLf };
+static CkState ckState = CkState::Header;
+static String ckLine;
+static size_t ckRemain = 0;
+static bool ckChunked = false;
+
 static void streamStop() {
   streamClient.stop();
   sLen = 0;
   sInJpeg = false;
+  ckState = CkState::Header;
+  ckLine = "";
+  ckRemain = 0;
+  ckChunked = false;
 }
 
 static bool streamConnect() {
@@ -598,14 +614,80 @@ static bool streamConnect() {
                      "\r\n\r\n");
   sLen = 0;
   sInJpeg = false;
+  ckState = CkState::Header;
+  ckLine = "";
+  ckRemain = 0;
+  ckChunked = false;
   if (!sBuf) sBuf = (uint8_t *)ps_malloc(kStreamBufCap);
   Serial.println("[toi] finder: stream connected");
   return true;
 }
 
-// Transfer-encoding agnostic MJPEG parsing: scan the raw byte stream for JPEG
-// SOI (FFD8) / EOI (FFD9) markers. Chunked-encoding noise between frames is
-// skipped naturally because we only trust the markers.
+// JPEG reassembly from a clean (de-chunked) byte stream: collect FFD8..FFD9.
+static void feedJpeg(const uint8_t *d, size_t n) {
+  if (sLen + n > kStreamBufCap) {  // resync
+    sLen = 0;
+    sInJpeg = false;
+  }
+  memcpy(sBuf + sLen, d, n);
+  sLen += n;
+
+  if (!sInJpeg) {
+    for (size_t i = 0; i + 1 < sLen; ++i) {
+      if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD8) {
+        memmove(sBuf, sBuf + i, sLen - i);
+        sLen -= i;
+        sInJpeg = true;
+        break;
+      }
+    }
+    if (!sInJpeg && sLen > 1) {
+      sBuf[0] = sBuf[sLen - 1];
+      sLen = 1;
+    }
+  }
+  if (sInJpeg) {
+    for (size_t i = 2; i + 1 < sLen; ++i) {
+      if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD9) {
+        const size_t frameLen = i + 2;
+        if (frameLen > retainCap) {
+          free(retainBuf);
+          retainCap = frameLen + 16384;
+          retainBuf = (uint8_t *)ps_malloc(retainCap);
+        }
+        if (retainBuf) {
+          memcpy(retainBuf, sBuf, frameLen);
+          retainLen = frameLen;
+          retainAt = millis();
+        }
+        if (state == AppState::Idle) {
+          // QVGA 320x240 scaled to panel width (full frame visible)
+          const float sc = M5.Display.width() / 320.0f;
+          M5.Display.drawJpg(sBuf, frameLen, 0,
+                             (int)((M5.Display.height() - 240 * sc) / 2),
+                             M5.Display.width(), (int)(240 * sc), 0, 0, sc, sc);
+          M5.Display.setFont(&fonts::efontJA_16);
+          M5.Display.setTextSize(1);
+          M5.Display.setTextDatum(middle_center);
+          M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+          M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
+        }
+        memmove(sBuf, sBuf + frameLen, sLen - frameLen);
+        sLen -= frameLen;
+        sInJpeg = false;
+        sLastFrameAt = millis();
+        if (++sFrames % 20 == 0) {
+          Serial.printf("[toi] finder: %.1f fps (%u bytes/frame)\n",
+                        20000.0f / (millis() - sWindowStart),
+                        (unsigned)frameLen);
+          sWindowStart = millis();
+        }
+        break;
+      }
+    }
+  }
+}
+
 static void previewTick() {
   if (!streamClient.connected()) {
     if (!streamConnect()) {
@@ -622,77 +704,53 @@ static void previewTick() {
   }
   if (!sBuf) return;
 
-  int budget = 24 * 1024;  // bytes per tick — bounds time spent per loop pass
+  uint8_t tmp[1460];
+  int budget = 24 * 1024;
   while (budget > 0) {
     const int avail = streamClient.available();
     if (avail <= 0) break;
-    const size_t want =
-        min((size_t)avail, min((size_t)budget, kStreamBufCap - sLen));
-    if (want == 0) {  // buffer full without a frame — resync
-      sLen = 0;
-      sInJpeg = false;
-      break;
-    }
-    const int n = streamClient.read(sBuf + sLen, want);
-    if (n <= 0) break;
-    sLen += n;
-    budget -= n;
 
-    if (!sInJpeg) {
-      // Find SOI, discard everything before it
-      for (size_t i = 0; i + 1 < sLen; ++i) {
-        if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD8) {
-          memmove(sBuf, sBuf + i, sLen - i);
-          sLen -= i;
-          sInJpeg = true;
-          break;
+    if (ckState == CkState::Header || ckState == CkState::Size ||
+        ckState == CkState::CrLf) {
+      // line-oriented states — read one byte at a time (short lines)
+      const char c = (char)streamClient.read();
+      --budget;
+      if (ckState == CkState::Header) {
+        ckLine += c;
+        if (ckLine.length() > 800) ckLine = ckLine.substring(400);
+        if (ckLine.endsWith("\r\n\r\n")) {
+          ckChunked = ckLine.indexOf("chunked") >= 0;
+          ckLine = "";
+          ckState = ckChunked ? CkState::Size : CkState::Data;
+          if (!ckChunked) ckRemain = SIZE_MAX;  // raw until close
+        }
+      } else if (ckState == CkState::Size) {
+        ckLine += c;
+        if (ckLine.endsWith("\r\n")) {
+          ckRemain = strtoul(ckLine.c_str(), nullptr, 16);
+          ckLine = "";
+          ckState = ckRemain ? CkState::Data : CkState::Header;  // 0 = end
+        }
+      } else {  // CrLf after chunk data
+        ckLine += c;
+        if (ckLine.endsWith("\r\n")) {
+          ckLine = "";
+          ckState = CkState::Size;
         }
       }
-      if (!sInJpeg && sLen > 2) {  // keep last byte (may be first half of SOI)
-        sBuf[0] = sBuf[sLen - 1];
-        sLen = 1;
-      }
+      continue;
     }
-    if (sInJpeg) {
-      // Find EOI after the SOI
-      for (size_t i = 2; i + 1 < sLen; ++i) {
-        if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD9) {
-          const size_t frameLen = i + 2;
-          // Retain a copy — the shutter reuses it as the shot (zero latency)
-          if (frameLen > retainCap) {
-            free(retainBuf);
-            retainCap = frameLen + 16384;
-            retainBuf = (uint8_t *)ps_malloc(retainCap);
-          }
-          if (retainBuf) {
-            memcpy(retainBuf, sBuf, frameLen);
-            retainLen = frameLen;
-            retainAt = millis();
-          }
-          // 320x320 scaled ~1.46x to fill the round panel
-          M5.Display.drawJpg(sBuf, frameLen, 0, 0, M5.Display.width(),
-                             M5.Display.height(), 0, 0,
-                             M5.Display.width() / 320.0f,
-                             M5.Display.height() / 320.0f,
-                             datum_t::middle_center);
-          M5.Display.setFont(&fonts::efontJA_16);
-          M5.Display.setTextSize(1);
-          M5.Display.setTextDatum(middle_center);
-          M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-          M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
-          memmove(sBuf, sBuf + frameLen, sLen - frameLen);
-          sLen -= frameLen;
-          sInJpeg = false;
-          sLastFrameAt = millis();
-          if (++sFrames % 20 == 0) {
-            Serial.printf("[toi] finder: %.1f fps (%u bytes/frame)\n",
-                          20000.0f / (millis() - sWindowStart),
-                          (unsigned)frameLen);
-            sWindowStart = millis();
-          }
-          break;
-        }
-      }
+
+    // Data state: bulk-read min(chunk remainder, available, budget, tmp)
+    const size_t want = min(min((size_t)avail, (size_t)budget),
+                            min(ckRemain, sizeof(tmp)));
+    const int n = streamClient.read(tmp, want);
+    if (n <= 0) break;
+    budget -= n;
+    feedJpeg(tmp, n);
+    if (ckChunked) {
+      ckRemain -= n;
+      if (ckRemain == 0) ckState = CkState::CrLf;
     }
   }
   if (streamClient.connected() && millis() - sLastFrameAt > 6000) {
@@ -775,8 +833,45 @@ void setup() {
   state = AppState::Idle;
 }
 
+static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Debug: 'd' over USB serial dumps the latest finder frame as base64
+static void debugDumpFrame() {
+  if (!retainBuf || !retainLen) {
+    Serial.println("[toi] dump: no frame retained");
+    return;
+  }
+  Serial.printf("[toi] dump-begin %u\n", (unsigned)retainLen);
+  for (size_t i = 0; i < retainLen; i += 3) {
+    const uint32_t v = ((uint32_t)retainBuf[i] << 16) |
+                       ((i + 1 < retainLen ? retainBuf[i + 1] : 0) << 8) |
+                       (i + 2 < retainLen ? retainBuf[i + 2] : 0);
+    char q[5] = {kB64[(v >> 18) & 63], kB64[(v >> 12) & 63],
+                 (char)(i + 1 < retainLen ? kB64[(v >> 6) & 63] : '='),
+                 (char)(i + 2 < retainLen ? kB64[v & 63] : '='), 0};
+    Serial.print(q);
+    if (i % 57 == 54) Serial.println();
+  }
+  Serial.println("\n[toi] dump-end");
+}
+
 void loop() {
   M5.update();
+
+  if (Serial.available()) {
+    const char cmd = Serial.read();
+    if (cmd == 'd') debugDumpFrame();
+    // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
+    // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
+    else if (cmd >= '0' && cmd <= '2') {
+      const String q = String("/api/v1/control?var=quality&val=") + cmd;
+      Serial.printf("[toi] set %s -> %s\n", q.c_str(), camGet(q) ? "ok" : "FAIL");
+    } else if (cmd == 'a' || cmd == 'b') {
+      const String f = String("/api/v1/control?var=framesize&val=") +
+                       (cmd == 'a' ? "6" : "10");  // a=QVGA, b=VGA
+      Serial.printf("[toi] set %s -> %s\n", f.c_str(), camGet(f) ? "ok" : "FAIL");
+    }
+  }
 
   // GPS: feed NMEA continuously; auto-swap RX pin once if the line is silent
   while (Serial1.available()) {
