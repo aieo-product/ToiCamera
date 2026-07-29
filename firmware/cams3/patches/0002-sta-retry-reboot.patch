@@ -1,19 +1,17 @@
 diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
-index f8bd015..48c9837 100644
+index f8bd015..9b98773 100644
 --- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
 +++ b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/components/hal_camera.cpp
-@@ -40,9 +40,9 @@ void HAL_UnitCamS3_5MP::_camera_init()
-     config.pixel_format = PIXFORMAT_JPEG;
-     config.frame_size = FRAMESIZE_VGA;
+@@ -42,6 +42,9 @@ void HAL_UnitCamS3_5MP::_camera_init()
      config.jpeg_quality = 12;
--    config.fb_count = 1;
-+    config.fb_count = 2;
+     config.fb_count = 1;
      config.fb_location = CAMERA_FB_IN_PSRAM;
--    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-+    config.grab_mode = CAMERA_GRAB_LATEST;  // ToiCamera: always return the freshest frame
++    // ToiCamera: fb_count=2 + GRAB_LATEST fails cam_dma_config on this fork's
++    // driver ("frame buffer malloc failed"). Keep factory buffering; frame
++    // freshness is provided by the host's continuous finder polling instead.
+     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
  
      // camera init
-     esp_err_t err = esp_camera_init(&config);
 diff --git a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp b/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp
 index 1dfa005..6b8b317 100644
 --- a/platforms/unitcam_s3_5mp/main/hal_unitcam_s3_5mp/servers/server_sta.cpp

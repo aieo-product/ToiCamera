@@ -578,6 +578,13 @@ void loop() {
       } else if (gCamOk && millis() - lastPreviewAt > 100) {
         previewTick();  // live viewfinder
         lastPreviewAt = millis();
+      } else if (!gCamOk && WiFi.softAPgetStationNum() > 0 &&
+                 millis() - lastPreviewAt > 5000) {
+        // A client joined our AP while we thought the camera was gone —
+        // re-discover automatically (covers boot-order races).
+        lastPreviewAt = millis();
+        gCamOk = cameraReachable();
+        if (gCamOk) configureCamera();
       }
       break;
 
