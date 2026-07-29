@@ -540,53 +540,130 @@ static bool analyzePhoto() {
   return ok;
 }
 
-// Live viewfinder: fetch the freshest frame and paint it. The HTTPClient is
-// persistent (keep-alive) so each frame skips the TCP handshake.
-static HTTPClient previewHttp;
-static bool previewHttpUp = false;
+// Live viewfinder — subscribes to the camera's MJPEG stream over a single
+// persistent connection and consumes it in small per-loop slices, so buttons
+// stay responsive and there is no per-frame connection/request overhead.
+// Finder mode = HVGA/q20 (small, fluid); capture mode = VGA/q12 (quality).
+static bool previewQuality = false;  // camera currently in finder mode?
 
+static void setFinderQuality(bool finder) {
+  if (previewQuality == finder) return;
+  bool ok = camGet(finder ? "/api/v1/control?var=framesize&val=7"   // HVGA 480x320
+                          : "/api/v1/control?var=framesize&val=8",  // VGA 640x480
+                   800);
+  ok &= camGet(finder ? "/api/v1/control?var=quality&val=20"
+                      : "/api/v1/control?var=quality&val=12",
+               800);
+  if (ok) previewQuality = finder;
+}
+
+static WiFiClient streamClient;
+static uint8_t *sBuf = nullptr;
+static size_t sLen = 0;
+static bool sInJpeg = false;
+static uint32_t sFrames = 0, sWindowStart = 0, sLastFrameAt = 0;
+static constexpr size_t kStreamBufCap = 300 * 1024;
+
+static void streamStop() {
+  streamClient.stop();
+  sLen = 0;
+  sInJpeg = false;
+}
+
+static bool streamConnect() {
+  const String host = camBase.substring(7);  // strip "http://"
+  if (!streamClient.connect(host.c_str(), 80, 1500)) return false;
+  streamClient.print("GET /api/v1/stream HTTP/1.1\r\nHost: " + host +
+                     "\r\n\r\n");
+  sLen = 0;
+  sInJpeg = false;
+  if (!sBuf) sBuf = (uint8_t *)ps_malloc(kStreamBufCap);
+  Serial.println("[toi] finder: stream connected");
+  return true;
+}
+
+// Transfer-encoding agnostic MJPEG parsing: scan the raw byte stream for JPEG
+// SOI (FFD8) / EOI (FFD9) markers. Chunked-encoding noise between frames is
+// skipped naturally because we only trust the markers.
 static void previewTick() {
-  HTTPClient &http = previewHttp;
-  if (!previewHttpUp) {
-    http.setTimeout(2500);
-    http.setReuse(true);
-    if (!http.begin(camBase + "/api/v1/capture")) return;
-    previewHttpUp = true;
+  if (!streamClient.connected()) {
+    setFinderQuality(true);
+    if (!streamConnect()) {
+      if (++previewFails >= 5) {
+        gCamOk = false;
+        previewFails = 0;
+        streamStop();
+        showIdleWithWarnings(gNetOk, false);
+      }
+      return;
+    }
+    previewFails = 0;
+    sLastFrameAt = millis();
   }
-  const uint32_t t0 = millis();
-  const int code = http.GET();
-  if (code == HTTP_CODE_OK) {
-    size_t len = 0;
-    uint8_t *buf = readBody(http, kMaxJpeg, len);
-    if (buf) {
-      M5.Display.drawJpg(buf, len, 0, 0, M5.Display.width(),
-                         M5.Display.height(), 0, 0, 0.0f, 0.0f,
-                         datum_t::middle_center);
-      M5.Display.setFont(&fonts::efontJA_16);
-      M5.Display.setTextSize(1);
-      M5.Display.setTextDatum(middle_center);
-      M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-      M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
-      free(buf);
-      previewFails = 0;
-      static uint32_t frames = 0, windowStart = 0;
-      if (++frames % 20 == 0) {
-        Serial.printf("[toi] preview: %.1f fps (last frame %lums, %u bytes)\n",
-                      20000.0f / (millis() - windowStart), millis() - t0,
-                      (unsigned)len);
-        windowStart = millis();
+  if (!sBuf) return;
+
+  int budget = 24 * 1024;  // bytes per tick — bounds time spent per loop pass
+  while (budget > 0) {
+    const int avail = streamClient.available();
+    if (avail <= 0) break;
+    const size_t want =
+        min((size_t)avail, min((size_t)budget, kStreamBufCap - sLen));
+    if (want == 0) {  // buffer full without a frame — resync
+      sLen = 0;
+      sInJpeg = false;
+      break;
+    }
+    const int n = streamClient.read(sBuf + sLen, want);
+    if (n <= 0) break;
+    sLen += n;
+    budget -= n;
+
+    if (!sInJpeg) {
+      // Find SOI, discard everything before it
+      for (size_t i = 0; i + 1 < sLen; ++i) {
+        if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD8) {
+          memmove(sBuf, sBuf + i, sLen - i);
+          sLen -= i;
+          sInJpeg = true;
+          break;
+        }
+      }
+      if (!sInJpeg && sLen > 2) {  // keep last byte (may be first half of SOI)
+        sBuf[0] = sBuf[sLen - 1];
+        sLen = 1;
       }
     }
-  } else {
-    ++previewFails;
-    Serial.printf("[toi] preview fail %d (HTTP %d)\n", previewFails, code);
-    http.end();
-    previewHttpUp = false;  // force reconnect next tick
+    if (sInJpeg) {
+      // Find EOI after the SOI
+      for (size_t i = 2; i + 1 < sLen; ++i) {
+        if (sBuf[i] == 0xFF && sBuf[i + 1] == 0xD9) {
+          const size_t frameLen = i + 2;
+          // HVGA 480x320 drawn 1:1, centered (no scaler cost)
+          M5.Display.drawJpg(sBuf, frameLen, 0, 0, M5.Display.width(),
+                             M5.Display.height(), 7, -73);
+          M5.Display.setFont(&fonts::efontJA_16);
+          M5.Display.setTextSize(1);
+          M5.Display.setTextDatum(middle_center);
+          M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+          M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
+          memmove(sBuf, sBuf + frameLen, sLen - frameLen);
+          sLen -= frameLen;
+          sInJpeg = false;
+          sLastFrameAt = millis();
+          if (++sFrames % 20 == 0) {
+            Serial.printf("[toi] finder: %.1f fps (%u bytes/frame)\n",
+                          20000.0f / (millis() - sWindowStart),
+                          (unsigned)frameLen);
+            sWindowStart = millis();
+          }
+          break;
+        }
+      }
+    }
   }
-  if (previewFails >= 5) {
-    gCamOk = false;
-    previewFails = 0;
-    showIdleWithWarnings(gNetOk, false);
+  if (streamClient.connected() && millis() - sLastFrameAt > 6000) {
+    Serial.println("[toi] finder: stream stalled, reconnecting");
+    streamStop();
   }
 }
 
@@ -606,7 +683,9 @@ static void runCaptureCycle() {
   stopAnimalese();
   sfxShutter();
 
+  streamStop();  // release the camera before the still capture
   drawBusy("カメラ通信中", TFT_YELLOW);
+  setFinderQuality(false);  // full quality + VGA for the real shot
   if (!captureFromCam()) {
     sfxError();
     enterError(lastError.length() ? lastError : "カメラに接続できません");
@@ -650,6 +729,7 @@ void setup() {
   Serial1.begin(9600, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
   gpsSwapDeadline = millis() + 10000;
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);  // modem sleep adds 100-300ms bursts to every request
   gNetOk = connectWifi();  // internet is only needed for the AI call
   Serial.printf("[toi] STA %s ip=%s ch=%d\n", gNetOk ? "ok" : "FAIL",
                 WiFi.localIP().toString().c_str(), WiFi.channel());
@@ -697,9 +777,8 @@ void loop() {
         gCamOk = cameraReachable() || pairCamera();
         if (gCamOk) configureCamera();
         showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
-      } else if (gCamOk && millis() - lastPreviewAt > 100) {
-        previewTick();  // live viewfinder
-        lastPreviewAt = millis();
+      } else if (gCamOk) {
+        previewTick();  // live viewfinder (consumes stream in small slices)
       } else if (!gCamOk && WiFi.softAPgetStationNum() > 0 &&
                  millis() - lastPreviewAt > 5000) {
         // A client joined our AP while we thought the camera was gone —
