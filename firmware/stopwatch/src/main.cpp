@@ -16,6 +16,7 @@
 
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -43,6 +44,7 @@ enum class AppState {
   Boot,
   WifiConnecting,
   Home,
+  WifiSetup,
   Idle,
   Capturing,
   Analyzing,
@@ -84,6 +86,11 @@ static int homeHistoryScrollStartY = 0;
 
 static Preferences toiPrefs;
 static bool toiPrefsReady = false;
+static WebServer wifiPortal(80);
+static bool wifiPortalRoutesRegistered = false;
+static String wifiOptionsHtml;
+static String nvsWifiSsid;
+static String nvsWifiPass;
 static uint32_t inquiryTotal = 0;
 static uint32_t inquiryToday = 0;
 static int32_t inquiryDateKey = -1;
@@ -189,7 +196,23 @@ static void showStatus(const char *msg, uint32_t color = TFT_WHITE) {
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(color, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.drawString(msg, M5.Display.width() / 2, M5.Display.height() / 2);
+  const String text = msg ? msg : "";
+  int lineCount = 1;
+  for (int newline = text.indexOf('\n'); newline >= 0;
+       newline = text.indexOf('\n', newline + 1)) {
+    ++lineCount;
+  }
+  constexpr int kLineSpacing = 44;
+  const int firstLineY =
+      M5.Display.height() / 2 - ((lineCount - 1) * kLineSpacing) / 2;
+  int lineStart = 0;
+  for (int line = 0; line < lineCount; ++line) {
+    const int lineEnd = text.indexOf('\n', lineStart);
+    M5.Display.drawString(
+        text.substring(lineStart, lineEnd >= 0 ? lineEnd : text.length()),
+        M5.Display.width() / 2, firstLineY + line * kLineSpacing);
+    lineStart = lineEnd >= 0 ? lineEnd + 1 : text.length();
+  }
 }
 
 static void showIdle() {
@@ -629,8 +652,9 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
-// Four rows: model / volume slider / capture quality / AI detail. Touch
-// zones in homeTouchTick() mirror this layout — keep them in sync.
+// Five rows: model / volume / quality / AI detail / WiFi. Touch zones mirror
+// the layout: model 66-130, slider 132-196 (x 126-404), quality 198-274,
+// AI detail 276-352, and WiFi 354-430.
 static void drawPageSettings() {
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
@@ -641,38 +665,48 @@ static void drawPageSettings() {
   homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("モデル", 90, 92);
+  homeCanvas.drawString("モデル", 90, 84);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-  homeCanvas.drawString(selectedModelName(), 90, 120);
-  homeCanvas.drawFastHLine(40, 142, 386, 0x2124);
+  homeCanvas.drawString(selectedModelName(), 90, 110);
+  homeCanvas.drawFastHLine(40, 130, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("音量", 90, 184);
-  homeCanvas.fillRoundRect(150, 181, 230, 6, 3, TFT_DARKGREY);
+  homeCanvas.drawString("音量", 90, 162);
+  homeCanvas.fillRoundRect(150, 159, 230, 6, 3, TFT_DARKGREY);
   const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
-  homeCanvas.fillCircle(volumeX, 184, 14, TFT_CYAN);
-  homeCanvas.drawFastHLine(40, 226, 386, 0x2124);
+  homeCanvas.fillCircle(volumeX, 162, 14, TFT_CYAN);
+  homeCanvas.drawFastHLine(40, 196, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("画質", 90, 268);
+  homeCanvas.drawString("画質", 90, 228);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
                                             : "速度優先(QVGA)",
-                        90, 296);
-  homeCanvas.drawFastHLine(40, 318, 386, 0x2124);
+                        90, 254);
+  homeCanvas.drawFastHLine(40, 274, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("AI精度", 90, 360);
+  homeCanvas.drawString("AI精度", 90, 306);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
                                      : "低(速い・省トークン)",
-                        90, 388);
+                        90, 332);
+  homeCanvas.drawFastHLine(40, 352, 386, 0x2124);
+
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("WiFi", 90, 384);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  const String currentWifi =
+      WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
+  homeCanvas.drawString(fitHomeText(currentWifi, 300), 90, 410);
 }
 
 static void drawHomePageDots() {
@@ -942,7 +976,9 @@ static void pollNtpSync() {
 
 static bool connectWifi() {
   struct { const char *ssid, *pass; } slots[] = {
-      {WIFI_SSID1, WIFI_PASS1}, {WIFI_SSID2, WIFI_PASS2}};
+      {nvsWifiSsid.c_str(), nvsWifiPass.c_str()},
+      {WIFI_SSID1, WIFI_PASS1},
+      {WIFI_SSID2, WIFI_PASS2}};
   for (auto &s : slots) {
     if (!strlen(s.ssid)) continue;
     WiFi.begin(s.ssid, s.pass);
@@ -1374,7 +1410,7 @@ static bool analyzePhoto() {
         resetAt = doc["reset_jst"].as<String>();
       }
       lastError = resetAt.length()
-                      ? "AI無料枠が上限(" + resetAt + "頃リセット)"
+                      ? "AI無料枠が上限\n(" + resetAt + "頃リセット)"
                       : "AI無料枠が上限です";
       analyzeHttp.end();
       break;  // retrying is pointless until the quota resets
@@ -1747,12 +1783,12 @@ static void stepCounterTick() {
   }
 }
 
-static void enterHome() {
+static void enterHome(int targetPage = 0) {
   stopAnimalese();
   streamStop();
   Serial.println("[toi] finder: stream stopped (home)");
   state = AppState::Home;
-  homePage = 0;
+  homePage = constrain(targetPage, 0, 2);
   homeHistoryScrollY = 0;
   historyDetailIndex = -1;
   homeTouchActive = false;
@@ -1766,6 +1802,219 @@ static void enterHome() {
   homeHadGpsFix = hasFreshGpsFix();
   homeDirty = true;
   drawHome();
+}
+
+static String escapeHtml(const String &value) {
+  String escaped;
+  escaped.reserve(value.length());
+  for (size_t i = 0; i < value.length(); ++i) {
+    switch (value[i]) {
+      case '&':
+        escaped += "&amp;";
+        break;
+      case '<':
+        escaped += "&lt;";
+        break;
+      case '>':
+        escaped += "&gt;";
+        break;
+      case '"':
+        escaped += "&quot;";
+        break;
+      case '\'':
+        escaped += "&#39;";
+        break;
+      default:
+        escaped += value[i];
+        break;
+    }
+  }
+  return escaped;
+}
+
+static void scanWifiOptions() {
+  constexpr int kMaxOptions = 10;
+  String ssids[kMaxOptions];
+  int32_t rssis[kMaxOptions] = {};
+  int optionCount = 0;
+  const int networkCount = WiFi.scanNetworks();
+
+  for (int network = 0; network < networkCount; ++network) {
+    const String ssid = WiFi.SSID(network);
+    if (!ssid.length()) continue;
+    const int32_t rssi = WiFi.RSSI(network);
+
+    int existing = -1;
+    for (int option = 0; option < optionCount; ++option) {
+      if (ssids[option] == ssid) {
+        existing = option;
+        break;
+      }
+    }
+    if (existing >= 0) {
+      if (rssi <= rssis[existing]) continue;
+      rssis[existing] = rssi;
+      while (existing > 0 && rssis[existing] > rssis[existing - 1]) {
+        const String previousSsid = ssids[existing - 1];
+        const int32_t previousRssi = rssis[existing - 1];
+        ssids[existing - 1] = ssids[existing];
+        rssis[existing - 1] = rssis[existing];
+        ssids[existing] = previousSsid;
+        rssis[existing] = previousRssi;
+        --existing;
+      }
+      continue;
+    }
+
+    int insertAt = 0;
+    while (insertAt < optionCount && rssis[insertAt] >= rssi) ++insertAt;
+    if (insertAt >= kMaxOptions) continue;
+    const int last = min(optionCount, kMaxOptions - 1);
+    for (int option = last; option > insertAt; --option) {
+      ssids[option] = ssids[option - 1];
+      rssis[option] = rssis[option - 1];
+    }
+    ssids[insertAt] = ssid;
+    rssis[insertAt] = rssi;
+    if (optionCount < kMaxOptions) ++optionCount;
+  }
+
+  wifiOptionsHtml = "";
+  for (int option = 0; option < optionCount; ++option) {
+    const String escapedSsid = escapeHtml(ssids[option]);
+    wifiOptionsHtml += "<option value=\"" + escapedSsid + "\">" +
+                       escapedSsid + " (" + String(rssis[option]) +
+                       " dBm)</option>";
+  }
+  if (networkCount >= 0) WiFi.scanDelete();
+  Serial.printf("[toi] wifi portal: scan=%d unique=%d\n", networkCount,
+                optionCount);
+}
+
+static void drawWifiSetup() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString("WiFi設定", M5.Display.width() / 2, 40);
+
+  static constexpr const char *kWifiQr =
+      "WIFI:T:WPA;S:ToiCamera;P:toi-cam-2026;;";
+  constexpr int kQrWidth = 170;
+  M5.Display.qrcode(kWifiQr, (M5.Display.width() - kQrWidth) / 2, 70,
+                    kQrWidth);
+
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString("1. スマホのWiFiで ToiCamera に接続",
+                        M5.Display.width() / 2, 260);
+  M5.Display.drawString("2. ブラウザで 192.168.4.1 を開く",
+                        M5.Display.width() / 2, 288);
+  const String currentWifi = WiFi.status() == WL_CONNECTED
+                                 ? WiFi.SSID()
+                                 : String("未接続");
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.drawString("現在: " + currentWifi, M5.Display.width() / 2, 330);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.drawString("青:戻る", M5.Display.width() / 2, 420);
+}
+
+static bool saveWifiCredentials(const String &ssid, const String &pass) {
+  if (!toiPrefsReady) return false;
+  bool saved = true;
+  if (ssid != nvsWifiSsid) {
+    // putString returns bytes written — compare with the value length so an
+    // empty password (open network) still counts as success.
+    if (toiPrefs.putString("wifi_ssid", ssid) == ssid.length()) {
+      nvsWifiSsid = ssid;
+    } else {
+      saved = false;
+    }
+  }
+  if (pass != nvsWifiPass) {
+    if (toiPrefs.putString("wifi_pass", pass) == pass.length()) {
+      nvsWifiPass = pass;
+    } else {
+      saved = false;
+    }
+  }
+  return saved;
+}
+
+static void registerWifiPortalRoutes() {
+  if (wifiPortalRoutesRegistered) return;
+
+  wifiPortal.on("/", HTTP_GET, []() {
+    String html = R"HTML(<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ToiCamera WiFi設定</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+main{max-width:34rem;margin:auto;padding:2rem 1.25rem}
+h1{color:#41d9ff;font-size:1.6rem}label{display:block;margin-top:1.2rem}
+select,input,button{box-sizing:border-box;width:100%;margin-top:.45rem;padding:.8rem;
+border:1px solid #555;border-radius:.5rem;background:#222;color:#fff;font-size:1rem}
+button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bold}
+</style></head><body><main><h1>ToiCamera WiFi設定</h1>
+<form method="post" action="/save">
+<label for="ssid">周辺のWiFi</label><select id="ssid" name="ssid">
+<option value="">選択してください</option>)HTML";
+    html += wifiOptionsHtml;
+    html += R"HTML(</select>
+<label for="other_ssid">その他の SSID</label>
+<input id="other_ssid" name="other_ssid" maxlength="32" autocomplete="off">
+<label for="pass">パスワード</label>
+<input id="pass" name="pass" type="password" maxlength="63" autocomplete="new-password">
+<button type="submit">保存</button></form></main></body></html>)HTML";
+    wifiPortal.sendHeader("Cache-Control", "no-store");
+    wifiPortal.send(200, "text/html; charset=utf-8", html);
+  });
+
+  wifiPortal.on("/save", HTTP_POST, []() {
+    String ssid = wifiPortal.arg("ssid");
+    const String otherSsid = wifiPortal.arg("other_ssid");
+    if (otherSsid.length()) ssid = otherSsid;
+    const String pass = wifiPortal.arg("pass");
+    if (!ssid.length()) {
+      wifiPortal.send(400, "text/html; charset=utf-8",
+                      "<!doctype html><meta charset=\"utf-8\">"
+                      "<p>SSIDを選択または入力してください。</p>"
+                      "<p><a href=\"/\">戻る</a></p>");
+      return;
+    }
+    if (!saveWifiCredentials(ssid, pass)) {
+      wifiPortal.send(500, "text/html; charset=utf-8",
+                      "<!doctype html><meta charset=\"utf-8\">"
+                      "<p>保存に失敗しました。もう一度お試しください。</p>"
+                      "<p><a href=\"/\">戻る</a></p>");
+      Serial.println("[toi] wifi portal: save failed");
+      return;
+    }
+    wifiPortal.send(200, "text/html; charset=utf-8",
+                    "<!doctype html><meta charset=\"utf-8\">"
+                    "<p>保存しました。ToiCamera を再起動します。</p>");
+    String loggedSsid = ssid;
+    loggedSsid.replace("\r", " ");
+    loggedSsid.replace("\n", " ");
+    Serial.printf("[toi] wifi portal: saved ssid=%s\n", loggedSsid.c_str());
+    showStatus("保存しました\n再起動します...", TFT_CYAN);
+    delay(1500);
+    ESP.restart();
+  });
+
+  wifiPortalRoutesRegistered = true;
+}
+
+static void enterWifiSetup() {
+  state = AppState::WifiSetup;
+  streamStop();
+  scanWifiOptions();
+  registerWifiPortalRoutes();
+  wifiPortal.begin();
+  Serial.println("[toi] wifi portal: started on 192.168.4.1");
+  drawWifiSetup();
 }
 
 static void enterIdle() {
@@ -1898,7 +2147,7 @@ static void homeTouchTick() {
       homeHistoryScrolled = false;
       // Slider gestures are captured so the full 0-255 range is reachable.
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
-                           t.y >= 154 && t.y <= 214;
+                           t.y >= 132 && t.y <= 196;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
       return;
     }
@@ -1967,22 +2216,24 @@ static void homeTouchTick() {
         }
       }
     } else if (homePage == 2) {
-      if (homeTouchLastY >= 66 && homeTouchLastY <= 142) {
+      if (homeTouchLastY >= 66 && homeTouchLastY <= 130) {
         selectedModel = (selectedModel + 1) % 3;
         if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
         Serial.printf("[toi] model: %s\n", selectedModelName());
         homeDirty = true;
-      } else if (homeTouchLastY >= 240 && homeTouchLastY <= 318) {
+      } else if (homeTouchLastY >= 198 && homeTouchLastY <= 274) {
         captureQuality = captureQuality == 0 ? 1 : 0;
         if (toiPrefsReady) toiPrefs.putUChar("qual", captureQuality);
         Serial.printf("[toi] quality: %s\n",
                       captureQuality == 1 ? "VGA" : "QVGA");
         homeDirty = true;
-      } else if (homeTouchLastY >= 326 && homeTouchLastY <= 400) {
+      } else if (homeTouchLastY >= 276 && homeTouchLastY <= 352) {
         aiDetailHigh = !aiDetailHigh;
         if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
         homeDirty = true;
+      } else if (homeTouchLastY >= 354 && homeTouchLastY <= 430) {
+        enterWifiSetup();
       }
     }
   }
@@ -2138,6 +2389,8 @@ void setup() {
     selectedModel = toiPrefs.getUChar("model", 2);
     if (selectedModel > 2) selectedModel = 2;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
+    nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
+    nvsWifiPass = toiPrefs.getString("wifi_pass", "");
     Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
                   (unsigned)inquiryHistory.length());
@@ -2260,6 +2513,16 @@ void loop() {
       homeTick();
       break;
     }
+
+    case AppState::WifiSetup:
+      wifiPortal.handleClient();
+      if (M5.BtnB.wasPressed()) {
+        wifiPortal.stop();
+        Serial.println("[toi] wifi portal: stopped");
+        enterHome(2);
+        flushButtons();
+      }
+      break;
 
     case AppState::Idle:
       if (M5.BtnA.wasPressed()) {
