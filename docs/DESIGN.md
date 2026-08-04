@@ -70,12 +70,20 @@ Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(A
 単一スレッド状態機械(PlatformIO + Arduino + M5Unified):
 
 ```
-BOOT → WIFI_CONNECTING → IDLE
-IDLE --[KEYA]--> CAPTURING → (photo 表示) → ANALYZING → FETCHING_AUDIO → RESULT
-RESULT --[KEYA]--> CAPTURING(再撮影)   RESULT --[KEYB]--> 音声リプレイ
-任意状態 --失敗--> ERROR --[KEYA]--> リトライ
+BOOT → WIFI_CONNECTING → HOME
+HOME --[KEYA 黄]--> IDLE(ファインダー) --[KEYA 黄]--> CAPTURING → ANALYZING → RESULT
+HOME --[KEYB 青]--> SLEEPING --[KEYA/KEYB]--> WIFI_CONNECTING → HOME
+IDLE --[KEYB 青]--> HOME
+IDLE --[KEYB 青長押し]--> カメラ再探索/再ペアリング → IDLE
+RESULT --[KEYA 黄]--> CAPTURING(再撮影)   RESULT --[KEYA 黄長押し]--> 音声質問
+RESULT / ERROR --[KEYB 青]--> IDLE
+任意状態 --失敗--> ERROR --[KEYA 黄]--> リトライ
 ```
 
+- HOME / SLEEPING では MJPEG ストリームを停止。カメラ探索・初回ペアリングは
+  起動時ではなく、最初の IDLE 進入時まで遅延する
+- HOME は RTC/NTP 時計・バッテリー・GPS 地名/最寄駅・ソフトウェア歩数を表示し、
+  1 分ごとまたは表示データ更新時だけ M5Canvas から再描画する
 - バッファは全て PSRAM(`ps_malloc`): JPEG ≤2MB、WAV ≤4MB。撮影サイクル毎に解放
 - 表示: `drawJpg`(scale-to-fit)、解説文は 320px 幅の 8bit `M5Canvas` に禁則付き
   折返し描画し、タッチドラッグ+自動スクロール
@@ -99,7 +107,8 @@ RESULT --[KEYA]--> CAPTURING(再撮影)   RESULT --[KEYB]--> 音声リプレイ
   で設定を初期化してから焼く(→ AP モードで起動しペアリング可能な状態になる)
 
 **露出の罠**: 工場初期値は awb/aec/agc 全 OFF で画像が真っ黒(vlogCamera 検証)。
-Stopwatch 側が起動時に `configureCamera()` で自動露出 ON + SVGA/q12 を適用する。
+Stopwatch 側が初回ファインダー進入時に `configureCamera()` で自動露出 ON +
+QVGA/quality 1 を適用する。
 
 **再起動の制約**: Grove 5V は常時給電(ALWAYS_ON)で Stopwatch からの電源断は
 不可。設定反映のカメラ再起動は USB 経由(esptool reset)か Grove/USB の物理
@@ -110,13 +119,14 @@ Stopwatch 側が起動時に `configureCamera()` で自動露出 ON + SVGA/q12 �
 ### 4.2b ペアリングフロー(初回のみ・全自動)
 
 ```
-Stopwatch 起動 → カメラ探索(SoftAP の DHCP リース .2〜.12 を probe)
+Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
+  → カメラ探索(SoftAP の DHCP リース .2〜.12 を probe)
   → 見つからない場合:
       工場 AP "UnitCamS3-WiFi" に直接 join(3 回試行)
       → POST set_config {wifiSsid: "ToiCamera", startPoster: "no"}(readback 検証)
       → 自 AP+STA 復帰 → カメラ再起動(USB reset or 抜き差し)を待つ
       → カメラが SoftAP に参加 → 発見 → configureCamera()
-青ボタン: 手動再探索/再ペアリング
+ファインダーで青長押し: 手動再探索/再ペアリング
 ```
 
 ### 4.3 AI 中継 Worker(`worker/`)
@@ -125,6 +135,7 @@ Stopwatch 起動 → カメラ探索(SoftAP の DHCP リース .2〜.12 を prob
 |---|---|---|---|
 | `GET /health` | なし | — | `{ok, model}` |
 | `POST /analyze` | `X-Device-Token` | raw `image/jpeg` | `{caption(≤15字), detail(≤150字)}` — Claude structured outputs でスキーマ強制 |
+| `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` — 地名 + 最寄駅/徒歩分(取得失敗時は駅情報を空で返す) |
 | `POST /tts` | `X-Device-Token` | `{text}` | `audio/wav`(パススルーストリーム) |
 
 シークレット(`wrangler secret`): `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEVICE_TOKEN`。
