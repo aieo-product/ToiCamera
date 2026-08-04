@@ -49,7 +49,6 @@ enum class AppState {
   Result,
   Error,
   Sleeping,
-  Settings,  // stub until #11 — entered by tapping the Home screen button
 };
 
 static AppState state = AppState::Boot;
@@ -71,23 +70,27 @@ static M5Canvas homeCanvas(&M5.Display);
 static bool homeCanvasReady = false;
 static bool homeDirty = true;
 static int32_t homeLastMinute = -1;
-// Settings-entry pill on the Home screen (touch hit zone, panel coords).
-static constexpr int kSettingsTouchW = 220;
-static constexpr int kSettingsTouchH = 40;
-static constexpr int kSettingsTouchX = (466 - kSettingsTouchW) / 2;
-static constexpr int kSettingsTouchY = 400;
-// Fat-finger margin accepted around the visible pill.
-static constexpr int kSettingsTouchPad = 20;
+static int homePage = 0;
+static int homeHistoryScrollY = 0;
+static bool homeTouchActive = false;
+static bool homeVolumeDragging = false;
+static int homeTouchStartX = 0;
+static int homeTouchStartY = 0;
+static int homeTouchLastX = 0;
+static int homeTouchLastY = 0;
+static int homeHistoryScrollStartY = 0;
 
 static Preferences toiPrefs;
 static bool toiPrefsReady = false;
 static uint32_t inquiryTotal = 0;
 static uint32_t inquiryToday = 0;
 static int32_t inquiryDateKey = -1;
-static String inquiryCaptions;
+static String inquiryHistory;
 static String inquiryDigest;
 static int32_t inquiryDigestCount = -1;
-static constexpr size_t kInquiryCaptionsMaxBytes = 900;
+static constexpr size_t kInquiryHistoryMaxBytes = 1500;
+static uint8_t speakerVolume = 255;
+static uint8_t savedSpeakerVolume = 255;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -187,15 +190,20 @@ static void recordInquiry(const String &inquiryCaption) {
   const uint32_t previousTotal = inquiryTotal;
   const uint32_t previousToday = inquiryToday;
   const int32_t previousDateKey = inquiryDateKey;
-  const String previousCaptions = inquiryCaptions;
+  const String previousHistory = inquiryHistory;
   const String previousDigest = inquiryDigest;
   const int32_t previousDigestCount = inquiryDigestCount;
 
-  const int32_t dateKey = localDateKey();
+  struct tm local {};
+  const bool clockKnown = getLocalClock(local);
+  const int32_t dateKey =
+      clockKnown ? (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 +
+                       local.tm_mday
+                 : -1;
   if (dateKey >= 0 && dateKey != inquiryDateKey) {
     inquiryDateKey = dateKey;
     inquiryToday = 0;
-    inquiryCaptions = "";
+    inquiryHistory = "";
     inquiryDigest = "";
     inquiryDigestCount = -1;
   }
@@ -203,20 +211,23 @@ static void recordInquiry(const String &inquiryCaption) {
   ++inquiryTotal;
   ++inquiryToday;
   if (inquiryCaption.length()) {
-    if (inquiryCaptions.length()) inquiryCaptions += "、";
-    inquiryCaptions += inquiryCaption;
-    while (inquiryCaptions.length() > kInquiryCaptionsMaxBytes) {
-      const int separator = inquiryCaptions.indexOf("、");
-      if (separator >= 0) {
-        inquiryCaptions.remove(0, separator + String("、").length());
-        continue;
+    char timeText[6] = "--:--";
+    if (clockKnown) {
+      snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
+               local.tm_min);
+    }
+    String storedCaption = inquiryCaption;
+    storedCaption.replace("\r", " ");
+    storedCaption.replace("\n", " ");
+    if (inquiryHistory.length()) inquiryHistory += "\n";
+    inquiryHistory += String(timeText) + "|" + storedCaption;
+    while (inquiryHistory.length() > kInquiryHistoryMaxBytes) {
+      const int lineEnd = inquiryHistory.indexOf('\n');
+      if (lineEnd < 0) {
+        inquiryHistory = "";
+        break;
       }
-      size_t first = inquiryCaptions.length() - kInquiryCaptionsMaxBytes;
-      while (first < inquiryCaptions.length() &&
-             (static_cast<uint8_t>(inquiryCaptions[first]) & 0xC0) == 0x80) {
-        ++first;
-      }
-      inquiryCaptions.remove(0, first);
+      inquiryHistory.remove(0, lineEnd + 1);
     }
   }
 
@@ -226,8 +237,8 @@ static void recordInquiry(const String &inquiryCaption) {
     if (inquiryDateKey != previousDateKey) {
       toiPrefs.putInt("dkey", inquiryDateKey);
     }
-    if (inquiryCaptions != previousCaptions) {
-      toiPrefs.putString("caps", inquiryCaptions);
+    if (inquiryHistory != previousHistory) {
+      toiPrefs.putString("hist", inquiryHistory);
     }
     if (inquiryDigest != previousDigest) {
       toiPrefs.putString("digest", inquiryDigest);
@@ -238,9 +249,9 @@ static void recordInquiry(const String &inquiryCaption) {
   }
   digestLookupPending = true;
   homeDirty = true;
-  Serial.printf("[toi] inquiries: today=%lu total=%lu caps=%u bytes\n",
+  Serial.printf("[toi] inquiries: today=%lu total=%lu hist=%u bytes\n",
                 (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
-                (unsigned)inquiryCaptions.length());
+                (unsigned)inquiryHistory.length());
 }
 
 static void drawHomeDigest(const String &text) {
@@ -257,7 +268,7 @@ static void drawHomeDigest(const String &text) {
     if (ch == "\n") {
       if (line.length()) {
         homeCanvas.drawString(line, M5.Display.width() / 2,
-                              330 + lineNumber * 20);
+                              340 + lineNumber * 20);
         ++lineNumber;
         line = "";
       }
@@ -266,7 +277,7 @@ static void drawHomeDigest(const String &text) {
     if (line.length() && homeCanvas.textWidth(line + ch) > 320 &&
         !(ch == "、" || ch == "。" || ch == "」" || ch == ")")) {
       homeCanvas.drawString(line, M5.Display.width() / 2,
-                            330 + lineNumber * 20);
+                            340 + lineNumber * 20);
       ++lineNumber;
       line = "";
       if (lineNumber >= 2) break;
@@ -275,26 +286,56 @@ static void drawHomeDigest(const String &text) {
   }
   if (line.length() && lineNumber < 2) {
     homeCanvas.drawString(line, M5.Display.width() / 2,
-                          330 + lineNumber * 20);
+                          340 + lineNumber * 20);
   }
 }
 
-static void drawHome() {
-  if (!homeCanvasReady) {
-    homeCanvas.setColorDepth(8);
-    homeCanvasReady =
-        homeCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr;
+static int inquiryHistoryLineCount() {
+  if (!inquiryHistory.length()) return 0;
+  int count = 1;
+  for (int pos = inquiryHistory.indexOf('\n'); pos >= 0;
+       pos = inquiryHistory.indexOf('\n', pos + 1)) {
+    ++count;
   }
-  if (!homeCanvasReady) {
-    showStatus("ホーム画面を表示できません", TFT_RED);
-    return;
+  return count;
+}
+
+static int maxHomeHistoryScrollY() {
+  return max(0, inquiryHistoryLineCount() * 56 - 280);
+}
+
+static String fitHomeText(const String &text, int maxWidth) {
+  if (homeCanvas.textWidth(text) <= maxWidth) return text;
+  const String ellipsis = "…";
+  String fitted;
+  size_t i = 0;
+  while (i < text.length()) {
+    const uint8_t b = text[i];
+    const size_t charLen =
+        (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
+    const String candidate = fitted + text.substring(i, i + charLen);
+    if (homeCanvas.textWidth(candidate + ellipsis) > maxWidth) break;
+    fitted = candidate;
+    i += charLen;
   }
+  return fitted + ellipsis;
+}
 
-  homeCanvas.fillSprite(TFT_BLACK);
-  homeCanvas.setFont(&fonts::efontJA_16);
-  homeCanvas.setTextDatum(middle_center);
-
+static void drawPageDashboard() {
   const int battery = M5.Power.getBatteryLevel();
+  const int batteryLevel = battery >= 0 ? constrain(battery, 0, 100) : 0;
+  static constexpr int kBatterySegments = 40;
+  const int litSegments =
+      (batteryLevel * kBatterySegments + 50) / 100;
+  for (int i = 0; i < kBatterySegments; ++i) {
+    const float segmentStart = -210.0f + i * 6.0f;
+    const uint32_t color =
+        i < litSegments ? (batteryLevel < 20 ? TFT_RED : TFT_YELLOW)
+                        : 0x39E7;
+    homeCanvas.fillArc(233, 233, 228, 216, segmentStart,
+                       segmentStart + 4.0f, color);
+  }
+
   char batteryText[8];
   if (battery >= 0) {
     snprintf(batteryText, sizeof(batteryText), "%d%%", battery);
@@ -303,22 +344,7 @@ static void drawHome() {
   }
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  const int batteryTextWidth = homeCanvas.textWidth(batteryText);
-  const int batteryGroupWidth = 34 + 3 + 8 + batteryTextWidth;
-  const int batteryX = M5.Display.width() / 2 - batteryGroupWidth / 2;
-  const int batteryY = 32;
-  homeCanvas.drawRoundRect(batteryX, batteryY, 34, 16, 3, TFT_LIGHTGREY);
-  homeCanvas.fillRect(batteryX + 35, batteryY + 5, 3, 6, TFT_LIGHTGREY);
-  if (battery >= 0) {
-    const int level = constrain(battery, 0, 100);
-    const int fillWidth = 28 * level / 100;
-    if (fillWidth > 0) {
-      homeCanvas.fillRect(batteryX + 3, batteryY + 3, fillWidth, 10,
-                          level < 20 ? TFT_RED : TFT_LIGHTGREY);
-    }
-  }
-  homeCanvas.drawString(batteryText,
-                        batteryX + 34 + 3 + 8 + batteryTextWidth / 2, 40);
+  homeCanvas.drawString(batteryText, M5.Display.width() / 2, 64);
 
   struct tm local {};
   if (getLocalClock(local)) {
@@ -326,41 +352,39 @@ static void drawHome() {
         "日", "月", "火", "水", "木", "金", "土"};
     char dateText[40];
     char timeText[8];
-    snprintf(dateText, sizeof(dateText), "%04d/%02d/%02d (%s)",
-             local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+    snprintf(dateText, sizeof(dateText), "%d月%d日 %s曜日", local.tm_mon + 1,
+             local.tm_mday,
              kWeekdays[local.tm_wday]);
     snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
              local.tm_min);
-    homeCanvas.setTextSize(1);
-    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    homeCanvas.drawString(dateText, M5.Display.width() / 2, 84);
     homeCanvas.setTextSize(4);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    homeCanvas.drawString(timeText, M5.Display.width() / 2, 148);
+    homeCanvas.drawString(timeText, M5.Display.width() / 2, 140);
+    homeCanvas.setTextSize(1);
+    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    homeCanvas.drawString(dateText, M5.Display.width() / 2, 190);
   } else {
-    homeCanvas.setTextSize(1);
-    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 84);
     homeCanvas.setTextSize(4);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    homeCanvas.drawString("--:--", M5.Display.width() / 2, 148);
+    homeCanvas.drawString("--:--", M5.Display.width() / 2, 140);
+    homeCanvas.setTextSize(1);
+    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 190);
   }
-
-  homeCanvas.drawFastHLine(83, 196, 300, TFT_DARKGREY);
 
   const auto drawStatTile = [&](int centerX, const char *label,
                                 const String &value, uint32_t valueColor) {
     const int tileW = 118;
     const int tileH = 88;
-    const int tileY = 258 - tileH / 2;
+    const int tileY = 262 - tileH / 2;
     homeCanvas.drawRoundRect(centerX - tileW / 2, tileY, tileW, tileH, 12,
-                             TFT_DARKGREY);
+                             valueColor);
     homeCanvas.setTextSize(1);
-    homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    homeCanvas.drawString(label, centerX, 233);
+    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    homeCanvas.drawString(label, centerX, 242);
     homeCanvas.setTextSize(value.length() >= 5 ? 2 : 3);
     homeCanvas.setTextColor(valueColor, TFT_BLACK);
-    homeCanvas.drawString(value, centerX, 270);
+    homeCanvas.drawString(value, centerX, 278);
   };
   drawStatTile(112, "今日の問い", String(inquiryToday), TFT_YELLOW);
   drawStatTile(233, "歩数", stepCounterAvailable ? String(stepCount) : String("--"),
@@ -387,21 +411,128 @@ static void drawHome() {
       }
     }
     if (locationText.length()) {
-      homeCanvas.drawString(locationText, M5.Display.width() / 2, 376);
+      homeCanvas.drawString(locationText, M5.Display.width() / 2, 384);
     }
   }
 
-  // Settings entry (#11) — tappable pill; hit zone is kSettingsTouch*.
-  homeCanvas.drawRoundRect(kSettingsTouchX, kSettingsTouchY, kSettingsTouchW,
-                           kSettingsTouchH, 20, TFT_DARKGREY);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  homeCanvas.drawString("設定", M5.Display.width() / 2,
-                        kSettingsTouchY + kSettingsTouchH / 2 + 1);
-
   homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
   homeCanvas.drawString("黄:カメラ 青:スリープ",
-                        M5.Display.width() / 2, 452);
+                        M5.Display.width() / 2, 420);
+}
+
+static void drawPageHistory() {
+  homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
+  homeCanvas.setTextDatum(middle_center);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.drawString("今日の問い", M5.Display.width() / 2, 48);
+
+  if (!inquiryHistory.length()) {
+    homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    homeCanvas.drawString("まだ問いがありません", M5.Display.width() / 2,
+                          M5.Display.height() / 2);
+    return;
+  }
+
+  homeHistoryScrollY =
+      constrain(homeHistoryScrollY, 0, maxHomeHistoryScrollY());
+  homeCanvas.setClipRect(50, 100, 366, 280);
+  int lineEnd = inquiryHistory.length();
+  int newestIndex = 0;
+  while (lineEnd > 0) {
+    const int separator = inquiryHistory.lastIndexOf('\n', lineEnd - 1);
+    const int lineStart = separator + 1;
+    const int rowY = 100 + newestIndex * 56 - homeHistoryScrollY;
+    if (rowY < 380 && rowY + 56 > 100) {
+      const String line = inquiryHistory.substring(lineStart, lineEnd);
+      const int timeEnd = line.indexOf('|');
+      const String timeText =
+          timeEnd >= 0 ? line.substring(0, timeEnd) : String("--:--");
+      const String captionText =
+          timeEnd >= 0 ? line.substring(timeEnd + 1) : line;
+      homeCanvas.setTextSize(1);
+      homeCanvas.setTextDatum(middle_right);
+      homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+      homeCanvas.drawString(timeText, 90, rowY + 27);
+      homeCanvas.setTextSize(2);
+      homeCanvas.setTextDatum(middle_left);
+      homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+      homeCanvas.drawString(fitHomeText(captionText, 300), 110, rowY + 27);
+      homeCanvas.drawFastHLine(55, rowY + 55, 356, 0x2124);
+    }
+    ++newestIndex;
+    if (separator < 0) break;
+    lineEnd = separator;
+  }
+  homeCanvas.clearClipRect();
+}
+
+static void drawPageSettings() {
+  homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
+  homeCanvas.setTextDatum(middle_center);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("設定", M5.Display.width() / 2, 48);
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("モデル", 90, 108);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  homeCanvas.drawString("gpt-5.6-luna", 90, 140);
+  homeCanvas.drawFastHLine(40, 170, 386, 0x2124);
+
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("音量", 90, 220);
+  homeCanvas.fillRoundRect(150, 217, 230, 6, 3, TFT_DARKGREY);
+  const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
+  homeCanvas.fillCircle(volumeX, 220, 14, TFT_CYAN);
+  homeCanvas.drawFastHLine(40, 270, 386, 0x2124);
+
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("画質", 90, 316);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.drawString("速度優先(QVGA)", 90, 350);
+}
+
+static void drawHomePageDots() {
+  for (int page = 0; page < 3; ++page) {
+    const uint32_t color = page == homePage ? TFT_YELLOW : TFT_DARKGREY;
+    homeCanvas.fillCircle(209 + page * 24, 446, 5, color);
+  }
+}
+
+static void drawHome() {
+  if (!homeCanvasReady) {
+    homeCanvas.setColorDepth(8);
+    homeCanvasReady =
+        homeCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr;
+  }
+  if (!homeCanvasReady) {
+    showStatus("ホーム画面を表示できません", TFT_RED);
+    return;
+  }
+
+  homeCanvas.fillSprite(TFT_BLACK);
+  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setTextDatum(middle_center);
+  switch (homePage) {
+    case 1:
+      drawPageHistory();
+      break;
+    case 2:
+      drawPageSettings();
+      break;
+    default:
+      drawPageDashboard();
+      break;
+  }
+  drawHomePageDots();
   homeCanvas.pushSprite(0, 0);
   homeDirty = false;
 }
@@ -937,7 +1068,7 @@ static bool fetchHomePlace() {
 }
 
 static bool fetchDigest() {
-  if (WiFi.status() != WL_CONNECTED || !inquiryCaptions.length() ||
+  if (WiFi.status() != WL_CONNECTED || !inquiryHistory.length() ||
       inquiryDigestCount == static_cast<int32_t>(inquiryToday)) {
     return false;
   }
@@ -949,26 +1080,23 @@ static bool fetchDigest() {
     digestHttpInit = true;
   }
 
-  const String separator = "、";
-  size_t itemCount = 1;
-  for (int pos = inquiryCaptions.indexOf(separator); pos >= 0;
-       pos = inquiryCaptions.indexOf(separator, pos + separator.length())) {
-    ++itemCount;
-  }
+  const size_t itemCount = inquiryHistoryLineCount();
   size_t itemsToSkip = itemCount > 50 ? itemCount - 50 : 0;
   JsonDocument requestDoc;
   JsonArray items = requestDoc["items"].to<JsonArray>();
   int start = 0;
-  while (start <= static_cast<int>(inquiryCaptions.length())) {
-    const int next = inquiryCaptions.indexOf(separator, start);
-    const int end = next >= 0 ? next : inquiryCaptions.length();
+  while (start < static_cast<int>(inquiryHistory.length())) {
+    const int next = inquiryHistory.indexOf('\n', start);
+    const int end = next >= 0 ? next : inquiryHistory.length();
+    const String line = inquiryHistory.substring(start, end);
+    const int captionStart = line.indexOf('|');
     if (itemsToSkip > 0) {
       --itemsToSkip;
-    } else {
-      items.add(inquiryCaptions.substring(start, end));
+    } else if (captionStart >= 0) {
+      items.add(line.substring(captionStart + 1));
     }
     if (next < 0) break;
-    start = next + separator.length();
+    start = next + 1;
   }
 
   String body;
@@ -1258,7 +1386,7 @@ static void voiceQuestionFlow() {
   M5.Speaker.end();  // mic and speaker share the codec/I2S
   if (!M5.Mic.begin()) {
     M5.Speaker.begin();
-    M5.Speaker.setVolume(255);
+    M5.Speaker.setVolume(speakerVolume);
     Serial.println("[toi] ask: mic begin FAILED");
     return;
   }
@@ -1280,7 +1408,7 @@ static void voiceQuestionFlow() {
   }
   M5.Mic.end();
   M5.Speaker.begin();
-  M5.Speaker.setVolume(255);
+  M5.Speaker.setVolume(speakerVolume);
   Serial.printf("[toi] ask: recorded %u samples (%.1fs)\n", (unsigned)total,
                 total / (float)kRate);
   if (!pcm || total < kRate / 2) {  // under 0.5s — treat as accidental
@@ -1405,6 +1533,10 @@ static void enterHome() {
   streamStop();
   Serial.println("[toi] finder: stream stopped (home)");
   state = AppState::Home;
+  homePage = 0;
+  homeHistoryScrollY = 0;
+  homeTouchActive = false;
+  homeVolumeDragging = false;
   homeLastMinute = -1;
   placeLookupPending = true;
   lastPlaceAt = 0;
@@ -1461,7 +1593,7 @@ static void homeTick() {
     requestSent = true;
   }
   if (!requestSent && WiFi.status() == WL_CONNECTED &&
-      inquiryCaptions.length() &&
+      inquiryHistory.length() &&
       inquiryDigestCount != static_cast<int32_t>(inquiryToday) &&
       (digestLookupPending ||
        (lastDigestAt && millis() - lastDigestAt >= 5 * 60 * 1000UL))) {
@@ -1483,13 +1615,14 @@ static void homeTick() {
       if (dateKey >= 0 && inquiryDateKey >= 0 && dateKey != inquiryDateKey) {
         inquiryDateKey = dateKey;
         inquiryToday = 0;
-        inquiryCaptions = "";
+        inquiryHistory = "";
+        homeHistoryScrollY = 0;
         inquiryDigest = "";
         inquiryDigestCount = -1;
         if (toiPrefsReady) {
           toiPrefs.putInt("dkey", inquiryDateKey);
           toiPrefs.putUInt("today", 0);
-          toiPrefs.putString("caps", "");
+          toiPrefs.putString("hist", "");
           toiPrefs.putString("digest", "");
           toiPrefs.putInt("digN", -1);
         }
@@ -1500,21 +1633,88 @@ static void homeTick() {
   if (homeDirty) drawHome();
 }
 
-// Placeholder screen until #11 lands — proves out the Home touch entry.
-static void enterSettings() {
-  state = AppState::Settings;
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setFont(&fonts::efontJA_16);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString("設定", M5.Display.width() / 2, 150);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  M5.Display.drawString("モデル・音量・画質は #11 で実装予定",
-                        M5.Display.width() / 2, 230);
-  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  M5.Display.drawString("青:戻る", M5.Display.width() / 2, 320);
+static void setSpeakerVolumeFromTouch(int touchX) {
+  const int sliderX = constrain(touchX, 150, 380);
+  const uint8_t nextVolume =
+      static_cast<uint8_t>(((sliderX - 150) * 255 + 115) / 230);
+  if (nextVolume == speakerVolume) return;
+  speakerVolume = nextVolume;
+  M5.Speaker.setVolume(speakerVolume);
+  homeDirty = true;
+}
+
+static void saveSpeakerVolume() {
+  if (!toiPrefsReady || speakerVolume == savedSpeakerVolume) return;
+  toiPrefs.putUChar("vol", speakerVolume);
+  savedSpeakerVolume = speakerVolume;
+  Serial.printf("[toi] volume: saved=%u\n", (unsigned)speakerVolume);
+}
+
+static void homeTouchTick() {
+  const auto t = M5.Touch.getDetail();
+  if (t.isPressed()) {
+    if (!homeTouchActive) {
+      homeTouchActive = true;
+      homeTouchStartX = t.x;
+      homeTouchStartY = t.y;
+      homeTouchLastX = t.x;
+      homeTouchLastY = t.y;
+      homeHistoryScrollStartY = homeHistoryScrollY;
+      // Slider gestures are captured so the full 0-255 range is reachable.
+      homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
+                           t.y >= 190 && t.y <= 250;
+      if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
+      return;
+    }
+
+    const int previousY = homeTouchLastY;
+    homeTouchLastX = t.x;
+    homeTouchLastY = t.y;
+    if (homeVolumeDragging) {
+      setSpeakerVolumeFromTouch(t.x);
+      return;
+    }
+
+    if (homePage == 1) {
+      const int dx = homeTouchLastX - homeTouchStartX;
+      const int dy = homeTouchLastY - homeTouchStartY;
+      const int absDx = abs(dx);
+      const int absDy = abs(dy);
+      if (absDx > 12 && absDx * 2 > absDy * 3) {
+        if (homeHistoryScrollY != homeHistoryScrollStartY) {
+          homeHistoryScrollY = homeHistoryScrollStartY;
+          homeDirty = true;
+        }
+      } else if (homeTouchLastY != previousY) {
+        const int nextScroll = constrain(
+            homeHistoryScrollY - (homeTouchLastY - previousY), 0,
+            maxHomeHistoryScrollY());
+        if (nextScroll != homeHistoryScrollY) {
+          homeHistoryScrollY = nextScroll;
+          homeDirty = true;
+        }
+      }
+    }
+    return;
+  }
+
+  if (!homeTouchActive) return;
+  const int dx = homeTouchLastX - homeTouchStartX;
+  const int dy = homeTouchLastY - homeTouchStartY;
+  const int absDx = abs(dx);
+  const int absDy = abs(dy);
+  if (homeVolumeDragging) {
+    saveSpeakerVolume();
+  } else if (absDx >= 60 && absDx * 2 > absDy * 3) {
+    if (homePage == 1) homeHistoryScrollY = homeHistoryScrollStartY;
+    const int nextPage = constrain(homePage + (dx < 0 ? 1 : -1), 0, 2);
+    if (nextPage != homePage) {
+      homePage = nextPage;
+      homeDirty = true;
+    }
+  }
+  homeTouchActive = false;
+  homeVolumeDragging = false;
 }
 
 static void enterSleeping() {
@@ -1618,7 +1818,6 @@ void setup() {
   cfg.output_power = true;  // Grove 5V out — powers the CamS3
   M5.begin(cfg);
   M5.Power.setExtOutput(true);  // PMIC-gated 5V bus: enable explicitly
-  M5.Speaker.setVolume(255);
   M5.Display.setBrightness(200);
   Serial.begin(115200);
   restoreSystemClockFromRtc();
@@ -1627,15 +1826,18 @@ void setup() {
     inquiryTotal = toiPrefs.getUInt("total", 0);
     inquiryToday = toiPrefs.getUInt("today", 0);
     inquiryDateKey = toiPrefs.getInt("dkey", -1);
-    inquiryCaptions = toiPrefs.getString("caps", "");
+    inquiryHistory = toiPrefs.getString("hist", "");
     inquiryDigest = toiPrefs.getString("digest", "");
     inquiryDigestCount = toiPrefs.getInt("digN", -1);
-    Serial.printf("[toi] inquiries: loaded today=%lu total=%lu caps=%u bytes\n",
+    speakerVolume = toiPrefs.getUChar("vol", 255);
+    savedSpeakerVolume = speakerVolume;
+    Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
-                  (unsigned)inquiryCaptions.length());
+                  (unsigned)inquiryHistory.length());
   } else {
     Serial.println("[toi] inquiries: Preferences begin failed");
   }
+  M5.Speaker.setVolume(speakerVolume);
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
@@ -1729,24 +1931,10 @@ void loop() {
         enterSleeping();
         break;
       }
-      const auto t = M5.Touch.getDetail();
-      if (t.wasClicked() && t.x >= kSettingsTouchX - kSettingsTouchPad &&
-          t.x < kSettingsTouchX + kSettingsTouchW + kSettingsTouchPad &&
-          t.y >= kSettingsTouchY - kSettingsTouchPad &&
-          t.y < kSettingsTouchY + kSettingsTouchH + kSettingsTouchPad) {
-        enterSettings();
-        break;
-      }
+      homeTouchTick();
       homeTick();
       break;
     }
-
-    case AppState::Settings:
-      if (M5.BtnB.wasPressed()) {
-        sfxCancel();
-        enterHome();
-      }
-      break;
 
     case AppState::Idle:
       if (M5.BtnA.wasPressed()) {
