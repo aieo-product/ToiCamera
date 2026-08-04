@@ -81,39 +81,54 @@ const FALLBACK_RESULT = {
   detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
 };
 
+// Chat completion against OpenAI. The free data-sharing key has a daily
+// token quota — on 429 (or upstream 5xx) retry once with the paid key so
+// the device keeps working when the free pool runs dry.
+async function openaiChat(env: Env, payload: unknown): Promise<Response> {
+  const body = JSON.stringify(payload);
+  const call = (key: string) =>
+    fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body,
+    });
+  let upstream = await call(env.OPENAI_FREE_API_KEY);
+  if ((upstream.status === 429 || upstream.status >= 500) && env.OPENAI_API_KEY) {
+    console.warn("free key upstream", upstream.status, "— retrying with paid key");
+    upstream = await call(env.OPENAI_API_KEY);
+  }
+  return upstream;
+}
+
 async function analyzeWithOpenAI(
   env: Env,
   imageB64: string,
   userText: string,
   model: string,
 ): Promise<Response> {
-  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_completion_tokens: 500,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: { url: `data:image/jpeg;base64,${imageB64}`, detail: "low" },
-            },
-            { type: "text", text: userText },
-          ],
-        },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "toi_result", strict: true, schema: RESULT_SCHEMA },
+  const upstream = await openaiChat(env, {
+    model,
+    max_completion_tokens: 500,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: { url: `data:image/jpeg;base64,${imageB64}`, detail: "low" },
+          },
+          { type: "text", text: userText },
+        ],
       },
-    }),
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "toi_result", strict: true, schema: RESULT_SCHEMA },
+    },
   });
 
   if (!upstream.ok) {
@@ -411,29 +426,22 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   if (!question) return json({ error: "stt failed" }, 502);
   const model = pickModel(request, env);
 
-  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_completion_tokens: 300,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `さっき撮った写真をあなたはこう解説しました:「${caption}。${detail}」
+  const upstream = await openaiChat(env, {
+    model,
+    max_completion_tokens: 300,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `さっき撮った写真をあなたはこう解説しました:「${caption}。${detail}」
 ユーザーからの質問: ${question}
 写真の内容を踏まえて、2文以内の日本語で親しみやすく答えてください。`,
-        },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "toi_answer", strict: true, schema: ANSWER_SCHEMA },
       },
-    }),
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "toi_answer", strict: true, schema: ANSWER_SCHEMA },
+    },
   });
   if (!upstream.ok) {
     console.error("ask upstream error", upstream.status, await upstream.text());
@@ -469,27 +477,20 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
   const model = pickModel(request, env);
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        max_completion_tokens: 100,
-        messages: [
-          { role: "system", content: DIGEST_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
-          },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "toi_digest", strict: true, schema: DIGEST_SCHEMA },
+    const upstream = await openaiChat(env, {
+      model,
+      max_completion_tokens: 100,
+      messages: [
+        { role: "system", content: DIGEST_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
         },
-      }),
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "toi_digest", strict: true, schema: DIGEST_SCHEMA },
+      },
     });
     if (!upstream.ok) {
       console.error("[toi] digest upstream error", upstream.status, await upstream.text());

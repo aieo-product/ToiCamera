@@ -792,10 +792,24 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // Preserve the finder framing for both QVGA and the optional VGA capture.
   const int sourceWidth = captureQuality == 1 ? 640 : 320;
   const int sourceHeight = captureQuality == 1 ? 480 : 240;
   const float sc = M5.Display.width() / static_cast<float>(sourceWidth);
+  if (captureQuality == 1) {
+    // drawJpg's fractional downscale renders a cropped view for VGA frames;
+    // decode 1:1 into a PSRAM sprite, then zoom-blit to fill the panel width.
+    M5Canvas photo(&M5.Display);
+    photo.setPsram(true);
+    photo.setColorDepth(16);
+    if (photo.createSprite(sourceWidth, sourceHeight)) {
+      photo.drawJpg(jpegBuf, jpegLen, 0, 0);
+      photo.pushRotateZoom(M5.Display.width() / 2.0f,
+                           M5.Display.height() / 2.0f, 0.0f, sc, sc);
+      photo.deleteSprite();
+      return;
+    }
+    // sprite allocation failed — fall back to the direct path below
+  }
   M5.Display.drawJpg(jpegBuf, jpegLen, 0,
                      (int)((M5.Display.height() - sourceHeight * sc) / 2),
                      M5.Display.width(), (int)(sourceHeight * sc), 0, 0, sc,
