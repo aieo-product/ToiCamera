@@ -5,7 +5,9 @@
 // Blue hold                 : re-pair the camera from the live finder
 // Speech: on-device "animalese" (per-character chirps with intonation) — no TTS
 // Touch drag             : scroll explanation text
-// Home screen            : clock, place, steps; camera stream is stopped
+// Home screen            : clock, place, steps, pet; camera stream is stopped
+// Pet (#13)              : shooting a meal feeds a character that evolves into
+//                          one of five adults depending on what it was fed
 // Idle screen            : live viewfinder (continuous QVGA preview)
 //
 // Networking: the Stopwatch runs SoftAP + STA simultaneously. The CamS3 joins
@@ -19,6 +21,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <TinyGPSPlus.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
@@ -26,6 +29,9 @@
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
+
+#include "character_logic.h"
+#include "sprites/sprites.h"
 
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
@@ -71,12 +77,34 @@ static bool homeCanvasReady = false;
 static bool homeDirty = true;
 static int32_t homeLastMinute = -1;
 // Settings-entry pill on the Home screen (touch hit zone, panel coords).
+// Nudged down and slimmed since #13 to clear the character and its stat line;
+// the pill is drawn from these same constants, so the two cannot drift apart.
 static constexpr int kSettingsTouchW = 240;
-static constexpr int kSettingsTouchH = 56;
+static constexpr int kSettingsTouchH = 48;
 static constexpr int kSettingsTouchX = (466 - kSettingsTouchW) / 2;
-static constexpr int kSettingsTouchY = 370;
+static constexpr int kSettingsTouchY = 378;
 // Fat-finger margin accepted around the visible pill.
 static constexpr int kSettingsTouchPad = 20;
+
+// Character (#13): 32x32 sprite drawn at 6x = a 192x192 box centred here.
+static constexpr int kCharCenterX = 232;
+static constexpr int kCharCenterY = 264;
+static constexpr int kCharZoom = 6;
+static constexpr int kCharBox = 32 * kCharZoom;
+static constexpr uint32_t kCharIdleMs = 600;  // puni-puni breathing period
+static CharState charState = toiCharInit();
+// Off-screen buffer for the character-only redraws (feed animation, idle
+// breathing) so a partial update never flashes black.
+static M5Canvas charCanvas(&M5.Display);
+static bool charCanvasReady = false;
+static bool charIdleFrameB = false;
+static uint32_t charIdleNextAt = 0;
+
+// Latest /analyze food fields — reset per request, consumed by the feed hook.
+static bool lastIsFood = false;
+static String lastFoodName;
+static uint32_t lastKcal = 0;
+static uint8_t lastFoodCategory = TOI_CAT_OTHER;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -163,6 +191,86 @@ static bool getLocalClock(struct tm &local) {
   return localtime_r(&now, &local) != nullptr && local.tm_year >= 125;
 }
 
+// ------------------------------------------------------------ character (#13)
+
+// YYYYMMDD, or 0 when the clock is not trustworthy — see the dayKey sentinel
+// rule in character_logic.h.
+static uint32_t currentDateKey() {
+  struct tm local {};
+  if (!getLocalClock(local)) return 0;
+  return (uint32_t)((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 +
+                    local.tm_mday);
+}
+
+// The whole struct is one NVS blob: a half-written character (form saved but
+// not its counts) would be worse than losing the last meal.
+static void loadCharState() {
+  charState = toiCharInit();
+  Preferences prefs;
+  if (prefs.begin("toichar", true)) {
+    CharState stored {};
+    const size_t got = prefs.getBytes("state", &stored, sizeof(stored));
+    if (got == sizeof(stored) && toiCharValid(stored)) charState = stored;
+    prefs.end();
+  }
+  Serial.printf("[toi] char: loaded stage=%u form=%u meals=%u kcalDay=%u day=%u\n",
+                charState.stage, charState.form, toiTotalMeals(charState),
+                charState.kcalDay, charState.dayKey);
+}
+
+// Only called on a feed event and on the way into sleep — never from the loop.
+static void saveCharState() {
+  Preferences prefs;
+  if (!prefs.begin("toichar", false)) {
+    Serial.println("[toi] char: NVS open FAILED");
+    return;
+  }
+  const size_t wrote = prefs.putBytes("state", &charState, sizeof(charState));
+  prefs.end();
+  if (wrote != sizeof(charState)) Serial.println("[toi] char: NVS write short");
+}
+
+enum class CharFrame { IdleA, IdleB, Eat, Happy };
+
+static const uint8_t *charFrame(uint8_t form, CharFrame which) {
+  const ToiSpriteSet &set = TOI_SPRITES[form <= TOI_FORM_RAINBOW ? form : 0];
+  switch (which) {
+    case CharFrame::IdleB: return set.idle_b;
+    case CharFrame::Eat: return set.eat;
+    case CharFrame::Happy: return set.happy;
+    default: return set.idle_a;
+  }
+}
+
+static bool ensureCharCanvas() {
+  if (!charCanvasReady) {
+    charCanvas.setPsram(true);
+    charCanvas.setColorDepth(8);
+    charCanvasReady = charCanvas.createSprite(kCharBox, kCharBox) != nullptr;
+  }
+  return charCanvasReady;
+}
+
+// Character-sized partial redraw straight to the panel. Non-AA zoom keeps the
+// dots crisp, and the transparency key must stay a uint8_t: an int would be
+// read as rgb888 and the mask would silently stop matching.
+static void drawCharacterDirect(const uint8_t *frame) {
+  const int x = kCharCenterX - kCharBox / 2;
+  const int y = kCharCenterY - kCharBox / 2;
+  if (ensureCharCanvas()) {
+    charCanvas.fillSprite(TFT_BLACK);
+    charCanvas.pushImageRotateZoom(kCharBox / 2, kCharBox / 2, 16, 16, 0,
+                                   (float)kCharZoom, (float)kCharZoom, 32, 32,
+                                   frame, (uint8_t)TOI_SPR_TRANSPARENT);
+    charCanvas.pushSprite(x, y);
+    return;
+  }
+  M5.Display.fillRect(x, y, kCharBox, kCharBox, TFT_BLACK);
+  M5.Display.pushImageRotateZoom(kCharCenterX, kCharCenterY, 16, 16, 0,
+                                 (float)kCharZoom, (float)kCharZoom, 32, 32,
+                                 frame, (uint8_t)TOI_SPR_TRANSPARENT);
+}
+
 static void drawHome() {
   if (!homeCanvasReady) {
     homeCanvas.setColorDepth(8);
@@ -187,8 +295,9 @@ static void drawHome() {
   }
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  // Centered near the top — (360,42) sits on the round panel's clipped edge.
-  homeCanvas.drawString(batteryText, M5.Display.width() / 2, 48);
+  // Everything above the character is pulled up to make room for it; the round
+  // panel clips the corners, so nothing may drift outward either.
+  homeCanvas.drawString(batteryText, M5.Display.width() / 2, 40);
 
   struct tm local {};
   if (getLocalClock(local)) {
@@ -202,37 +311,38 @@ static void drawHome() {
     snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
              local.tm_min);
     homeCanvas.setTextSize(1);
-    homeCanvas.drawString(dateText, M5.Display.width() / 2, 98);
+    homeCanvas.drawString(dateText, M5.Display.width() / 2, 80);
     homeCanvas.setTextSize(4);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    homeCanvas.drawString(timeText, M5.Display.width() / 2, 165);
+    homeCanvas.drawString(timeText, M5.Display.width() / 2, 130);
   } else {
     homeCanvas.setTextSize(1);
-    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 98);
+    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 80);
     homeCanvas.setTextSize(4);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    homeCanvas.drawString("--:--", M5.Display.width() / 2, 165);
+    homeCanvas.drawString("--:--", M5.Display.width() / 2, 130);
   }
 
-  if (stepCounterAvailable) {
+  // The pet, 32x32 blown up 6x into a 192x192 box (y 168..360). Non-AA zoom
+  // only — the anti-aliased variant blurs pixel art into mush — and the
+  // transparency key has to be a uint8_t or it is taken for an rgb888 value.
+  homeCanvas.pushImageRotateZoom(
+      kCharCenterX, kCharCenterY, 16, 16, 0, (float)kCharZoom, (float)kCharZoom,
+      32, 32, charFrame(charState.form, CharFrame::IdleA),
+      (uint8_t)TOI_SPR_TRANSPARENT);
+
+  // Steps and today's intake share one line so the character keeps its box.
+  String stats;
+  if (stepCounterAvailable) stats = String(stepCount) + "歩";
+  if (charState.kcalDay > 0) {
+    if (stats.length()) stats += " ・ ";
+    stats += String(charState.kcalDay) + "kcal";
+  }
+  if (stats.length()) {
     homeCanvas.setTextSize(1);
     homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-    // efontJA_16 has no emoji glyphs — keep the step display text-only.
-    homeCanvas.drawString(String(stepCount) + " 歩", M5.Display.width() / 2,
-                          260);
-  }
-
-  if (hasFreshGpsFix()) {
-    homeCanvas.setTextSize(1);
-    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    if (homePlace.length()) {
-      homeCanvas.drawString(homePlace, M5.Display.width() / 2, 330);
-    }
-    if (homeStation.length()) {
-      homeCanvas.drawString("最寄り:" + homeStation + " 徒歩" +
-                                String(homeWalkMin) + "分",
-                            M5.Display.width() / 2, 362);
-    }
+    // efontJA_16 has no emoji glyphs — keep the stat line text-only.
+    homeCanvas.drawString(stats, M5.Display.width() / 2, 362);
   }
 
   // Settings entry (#11) — tappable pill; hit zone is kSettingsTouch*.
@@ -243,11 +353,28 @@ static void drawHome() {
   homeCanvas.drawString("設定", M5.Display.width() / 2,
                         kSettingsTouchY + kSettingsTouchH / 2 + 1);
 
-  homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  homeCanvas.drawString("黄:カメラ 青:スリープ",
-                        M5.Display.width() / 2, 438);
+  // Bottom row: place and nearest station squeezed into one line when we have
+  // a fix, otherwise the button legend. Only one of them fits under the pill.
+  String place;
+  if (hasFreshGpsFix()) {
+    place = homePlace;
+    if (homeStation.length()) {
+      if (place.length()) place += " ";
+      place += homeStation + "駅" + String(homeWalkMin) + "分";
+    }
+  }
+  homeCanvas.setTextSize(1);
+  if (place.length()) {
+    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    homeCanvas.drawString(place, M5.Display.width() / 2, 438);
+  } else {
+    homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    homeCanvas.drawString("黄:カメラ 青:スリープ", M5.Display.width() / 2, 438);
+  }
   homeCanvas.pushSprite(0, 0);
   homeDirty = false;
+  charIdleFrameB = false;
+  charIdleNextAt = millis() + kCharIdleMs;
 }
 
 // Small pill at the top of the round screen showing what we're waiting on.
@@ -278,6 +405,76 @@ static void sfxCancel() {
 
 static void sfxError() {
   M5.Speaker.tone(300, 120);
+}
+
+// ------------------------------------------------------------ feeding (#13)
+
+// Blocking on purpose: the whole ~2s of animation and chirps has to be over
+// before speakAnimalese() starts its speaker task, or the two fight over the
+// speaker. Runs full-screen, so it must not be called from Idle/Result where
+// the finder is repainting.
+static void playFeedAnimation(uint32_t kcal, const String &foodName) {
+  static const CharFrame kSeq[] = {CharFrame::Eat, CharFrame::Happy,
+                                   CharFrame::Eat, CharFrame::Happy,
+                                   CharFrame::Happy};
+  static const uint16_t kTones[] = {784, 988, 880, 1175, 0};
+
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  char msg[40];
+  snprintf(msg, sizeof(msg), "たべた! +%ukcal", kcal);
+  M5.Display.drawString(msg, M5.Display.width() / 2, 386);
+  if (foodName.length()) {
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    M5.Display.drawString(foodName, M5.Display.width() / 2, 430);
+  }
+
+  for (size_t i = 0; i < sizeof(kSeq) / sizeof(kSeq[0]); ++i) {
+    drawCharacterDirect(charFrame(charState.form, kSeq[i]));
+    if (kTones[i]) M5.Speaker.tone(kTones[i], 90);
+    delay(320);
+  }
+  M5.Speaker.stop();
+}
+
+// Evolution fanfare: the new form waving, plus a rising arpeggio.
+static void playEvolveAnimation() {
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.fillRect(0, 366, M5.Display.width(), 40, TFT_BLACK);
+  M5.Display.drawString("しんかした!", M5.Display.width() / 2, 386);
+  static const uint16_t kJingle[] = {880, 1109, 1319, 1760};
+  for (size_t i = 0; i < 4; ++i) {
+    drawCharacterDirect(
+        charFrame(charState.form, (i & 1) ? CharFrame::IdleA : CharFrame::Happy));
+    M5.Speaker.tone(kJingle[i], 110);
+    delay(180);
+  }
+  M5.Speaker.stop();
+  delay(200);
+}
+
+// One meal: play it out, fold it into the character, persist. The NVS write
+// happens here (and in enterSleeping) only — never on the loop path.
+static void runFeedEvent(uint8_t category, uint32_t kcal,
+                         const String &foodName) {
+  playFeedAnimation(kcal, foodName);
+  const bool evolved = toiApplyFeed(charState, category, kcal, currentDateKey());
+  if (evolved) playEvolveAnimation();
+  saveCharState();
+  homeDirty = true;
+  Serial.printf(
+      "[toi] char: fed %s +%ukcal -> stage=%u form=%u meals=%u kcalDay=%u "
+      "day=%u%s\n",
+      toiCategoryName(category), kcal, charState.stage, charState.form,
+      toiTotalMeals(charState), charState.kcalDay, charState.dayKey,
+      evolved ? " EVOLVED" : "");
 }
 
 // --------------------------------------------------- animalese speech engine
@@ -793,6 +990,11 @@ static bool analyzePhoto() {
   }
   bool ok = false;
   int code = -1;
+  // Cleared up front so a failed retry can never replay the previous meal.
+  lastIsFood = false;
+  lastFoodName = "";
+  lastKcal = 0;
+  lastFoodCategory = TOI_CAT_OTHER;
   for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
     if (!analyzeHttp.begin(analyzeClient, url)) continue;
     analyzeHttp.addHeader("Content-Type", "image/jpeg");
@@ -804,6 +1006,12 @@ static bool analyzePhoto() {
           DeserializationError::Ok) {
         caption = doc["caption"].as<String>();
         detailText = doc["detail"].as<String>();
+        // Food fields are #13 additions — defaults keep older Workers working.
+        lastIsFood = doc["is_food"] | false;
+        lastFoodName = doc["food_name"] | "";
+        const int kcal = doc["kcal_est"] | 0;
+        lastKcal = kcal > 0 ? (uint32_t)kcal : 0;
+        lastFoodCategory = toiCategoryFromName(doc["food_category"] | "other");
         ok = caption.length() > 0;
       }
     } else {
@@ -811,8 +1019,11 @@ static bool analyzePhoto() {
       analyzeHttp.end();  // drop the (possibly stale) connection, retry fresh
     }
   }
-  Serial.printf("[toi] analyze: %lums (HTTP %d, attempt-reuse, gps=%s)\n",
-                millis() - t0, code, gps.location.isValid() ? "yes" : "no");
+  Serial.printf(
+      "[toi] analyze: %lums (HTTP %d, attempt-reuse, gps=%s) food=%d %s "
+      "%ukcal/%s\n",
+      millis() - t0, code, gps.location.isValid() ? "yes" : "no", lastIsFood,
+      lastFoodName.c_str(), lastKcal, toiCategoryName(lastFoodCategory));
   return ok;
 }
 
@@ -1233,7 +1444,27 @@ static void homeTick() {
       homeDirty = true;
     }
   }
-  if (homeDirty) drawHome();
+
+  // Midnight rollover of the displayed daily intake. RAM only — the NVS write
+  // stays on the feed / enterSleeping path.
+  if (toiApplyDayRoll(charState, currentDateKey())) {
+    homeDirty = true;
+    Serial.println("[toi] char: daily kcal reset for new day");
+  }
+
+  if (homeDirty) {
+    drawHome();
+    return;
+  }
+  // Puni-puni breathing. Deliberately a partial redraw of the character box
+  // only: re-running drawHome() at this rate would repaint the whole 466x466
+  // canvas twice a second.
+  if ((int32_t)(millis() - charIdleNextAt) >= 0) {
+    charIdleNextAt = millis() + kCharIdleMs;
+    charIdleFrameB = !charIdleFrameB;
+    drawCharacterDirect(charFrame(
+        charState.form, charIdleFrameB ? CharFrame::IdleB : CharFrame::IdleA));
+  }
 }
 
 // Placeholder screen until #11 lands — proves out the Home touch entry.
@@ -1255,6 +1486,7 @@ static void enterSettings() {
 
 static void enterSleeping() {
   state = AppState::Sleeping;
+  saveCharState();  // last chance before the panel and radio go down
   stopAnimalese();
   streamStop();
   Serial.println("[toi] finder: stream stopped (sleep)");
@@ -1323,6 +1555,13 @@ static void runCaptureCycle() {
     return;
   }
 
+  // Feed hook: a meal is animated, counted and persisted here, in full before
+  // buildResultCanvas() paints the explanation and speakAnimalese() below grabs
+  // the speaker. Anything the model did not call food leaves the pet untouched.
+  if (lastIsFood) {
+    runFeedEvent(lastFoodCategory, lastKcal, lastFoodName);
+  }
+
   buildResultCanvas();
   drawResult(true);
   M5.Display.setFont(&fonts::efontJA_16);
@@ -1345,6 +1584,7 @@ void setup() {
   M5.Display.setBrightness(200);
   Serial.begin(115200);
   restoreSystemClockFromRtc();
+  loadCharState();
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
@@ -1393,6 +1633,15 @@ void loop() {
   if (Serial.available()) {
     const char cmd = Serial.read();
     if (cmd == 'd') debugDumpFrame();
+    // 'F' fakes a meal so the evolution tree can be demoed without a plate of
+    // food (and without flashing a seeded NVS). Home only — the animation is
+    // full-screen and would fight the finder anywhere else.
+    else if (cmd == 'F' && state == AppState::Home) {
+      static uint8_t debugCat = TOI_CAT_VEGETABLE;
+      runFeedEvent(debugCat, 500, String("debug:") + toiCategoryName(debugCat));
+      debugCat = (uint8_t)((debugCat + 1) % TOI_CAT_COUNT);
+      drawHome();
+    }
     // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
     // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
     else if (cmd >= '0' && cmd <= '2') {
