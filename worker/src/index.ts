@@ -46,6 +46,18 @@ const DIGEST_SCHEMA = {
 } as const;
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // CamS3 は SVGA〜UXGA JPEG を送る想定 (~100-500KB)
+const ALLOWED_MODELS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+
+function pickModel(request: Request, env: Env): string {
+  const requestedModel = request.headers.get("x-model");
+  return requestedModel && ALLOWED_MODELS.has(requestedModel)
+    ? requestedModel
+    : env.ANALYZE_MODEL;
+}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -69,7 +81,12 @@ const FALLBACK_RESULT = {
   detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
 };
 
-async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): Promise<Response> {
+async function analyzeWithOpenAI(
+  env: Env,
+  imageB64: string,
+  userText: string,
+  model: string,
+): Promise<Response> {
   const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -77,7 +94,7 @@ async function analyzeWithOpenAI(env: Env, imageB64: string, userText: string): 
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: env.ANALYZE_MODEL,
+      model,
       max_completion_tokens: 500,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -301,7 +318,12 @@ async function handleAnalyze(
   }
 
   if (env.ANALYZE_PROVIDER !== "anthropic") {
-    return analyzeWithOpenAI(env, toBase64(image), userText);
+    return analyzeWithOpenAI(
+      env,
+      toBase64(image),
+      userText,
+      pickModel(request, env),
+    );
   }
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -387,6 +409,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     (await transcribe(env.OPENAI_FREE_API_KEY, "gpt-4o-mini-transcribe")) ??
     (await transcribe(env.OPENAI_API_KEY, "whisper-1"));
   if (!question) return json({ error: "stt failed" }, 502);
+  const model = pickModel(request, env);
 
   const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -395,7 +418,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: env.ANALYZE_MODEL,
+      model,
       max_completion_tokens: 300,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -443,6 +466,7 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
   if (items.length === 0) {
     return json({ error: "items must not be empty" }, 400);
   }
+  const model = pickModel(request, env);
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -452,7 +476,7 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: env.ANALYZE_MODEL,
+        model,
         max_completion_tokens: 100,
         messages: [
           { role: "system", content: DIGEST_SYSTEM_PROMPT },

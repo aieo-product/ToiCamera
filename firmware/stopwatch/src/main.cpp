@@ -72,8 +72,10 @@ static bool homeDirty = true;
 static int32_t homeLastMinute = -1;
 static int homePage = 0;
 static int homeHistoryScrollY = 0;
+static int historyDetailIndex = -1;
 static bool homeTouchActive = false;
 static bool homeVolumeDragging = false;
+static bool homeHistoryScrolled = false;
 static int homeTouchStartX = 0;
 static int homeTouchStartY = 0;
 static int homeTouchLastX = 0;
@@ -88,9 +90,13 @@ static int32_t inquiryDateKey = -1;
 static String inquiryHistory;
 static String inquiryDigest;
 static int32_t inquiryDigestCount = -1;
-static constexpr size_t kInquiryHistoryMaxBytes = 1500;
+static constexpr size_t kInquiryHistoryMaxBytes = 16000;
 static uint8_t speakerVolume = 255;
 static uint8_t savedSpeakerVolume = 255;
+static uint8_t paBoostPulses = 0;
+static bool es8311DacBoost = false;
+static uint8_t captureQuality = 0;
+static uint8_t selectedModel = 2;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -134,6 +140,23 @@ static size_t retainLen = 0, retainCap = 0;
 static uint32_t retainAt = 0;
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
+
+static const char *selectedModelName() {
+  static constexpr const char *kModels[] = {
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"};
+  return kModels[selectedModel < 3 ? selectedModel : 2];
+}
+
+static void applyPaBoost() {
+  for (uint8_t pulse = 0; pulse < paBoostPulses; ++pulse) {
+    m5::In_I2C.bitOff(0x4F, 0x06, 0b10, 400000);
+    m5::In_I2C.bitOn(0x4F, 0x06, 0b10, 400000);
+  }
+  m5::In_I2C.writeRegister8(0x18, 0x32,
+                            es8311DacBoost ? 0xD3 : 0xBF, 400000);
+  Serial.printf("[toi] pa: boost pulses=%u applied\n",
+                (unsigned)paBoostPulses);
+}
 
 // ---------------------------------------------------------------- UI helpers
 
@@ -186,7 +209,25 @@ static int32_t localDateKey() {
          local.tm_mday;
 }
 
-static void recordInquiry(const String &inquiryCaption) {
+static String sanitizeHistoryField(const String &value) {
+  String sanitized = value;
+  sanitized.replace("\r", " ");
+  sanitized.replace("\n", " ");
+  sanitized.replace("|", " ");
+  return sanitized;
+}
+
+static void saveInquiryHistory(const String &previousHistory) {
+  if (!toiPrefsReady || inquiryHistory == previousHistory) return;
+  if (inquiryHistory.length()) {
+    toiPrefs.putBytes("histb", inquiryHistory.c_str(), inquiryHistory.length());
+  } else if (toiPrefs.getBytesLength("histb") > 0) {
+    toiPrefs.remove("histb");
+  }
+}
+
+static void recordInquiry(const String &inquiryCaption,
+                          const String &inquiryDetail) {
   const uint32_t previousTotal = inquiryTotal;
   const uint32_t previousToday = inquiryToday;
   const int32_t previousDateKey = inquiryDateKey;
@@ -216,11 +257,11 @@ static void recordInquiry(const String &inquiryCaption) {
       snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
                local.tm_min);
     }
-    String storedCaption = inquiryCaption;
-    storedCaption.replace("\r", " ");
-    storedCaption.replace("\n", " ");
+    const String storedCaption = sanitizeHistoryField(inquiryCaption);
+    const String storedDetail = sanitizeHistoryField(inquiryDetail);
     if (inquiryHistory.length()) inquiryHistory += "\n";
-    inquiryHistory += String(timeText) + "|" + storedCaption;
+    inquiryHistory +=
+        String(timeText) + "|" + storedCaption + "|" + storedDetail;
     while (inquiryHistory.length() > kInquiryHistoryMaxBytes) {
       const int lineEnd = inquiryHistory.indexOf('\n');
       if (lineEnd < 0) {
@@ -237,9 +278,7 @@ static void recordInquiry(const String &inquiryCaption) {
     if (inquiryDateKey != previousDateKey) {
       toiPrefs.putInt("dkey", inquiryDateKey);
     }
-    if (inquiryHistory != previousHistory) {
-      toiPrefs.putString("hist", inquiryHistory);
-    }
+    saveInquiryHistory(previousHistory);
     if (inquiryDigest != previousDigest) {
       toiPrefs.putString("digest", inquiryDigest);
     }
@@ -300,6 +339,34 @@ static int inquiryHistoryLineCount() {
   return count;
 }
 
+static bool getHistoryEntry(int newestIndex, String &timeText,
+                            String &captionText, String &detailValue) {
+  if (newestIndex < 0) return false;
+  int lineEnd = inquiryHistory.length();
+  int index = 0;
+  while (lineEnd > 0) {
+    const int separator = inquiryHistory.lastIndexOf('\n', lineEnd - 1);
+    if (index == newestIndex) {
+      const String line = inquiryHistory.substring(separator + 1, lineEnd);
+      const int timeEnd = line.indexOf('|');
+      const int captionEnd =
+          timeEnd >= 0 ? line.indexOf('|', timeEnd + 1) : -1;
+      timeText = timeEnd >= 0 ? line.substring(0, timeEnd) : String("--:--");
+      captionText =
+          timeEnd >= 0
+              ? line.substring(timeEnd + 1,
+                               captionEnd >= 0 ? captionEnd : line.length())
+              : line;
+      detailValue = captionEnd >= 0 ? line.substring(captionEnd + 1) : "";
+      return true;
+    }
+    ++index;
+    if (separator < 0) break;
+    lineEnd = separator;
+  }
+  return false;
+}
+
 static int maxHomeHistoryScrollY() {
   return max(0, inquiryHistoryLineCount() * 56 - 280);
 }
@@ -319,6 +386,36 @@ static String fitHomeText(const String &text, int maxWidth) {
     i += charLen;
   }
   return fitted + ellipsis;
+}
+
+static void appendHomeWrapped(const String &utf8, int32_t x, int32_t &y,
+                              int lineHeight, int maxWidth) {
+  String line;
+  size_t i = 0;
+  while (i < utf8.length()) {
+    const uint8_t b = utf8[i];
+    const size_t charLen =
+        (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
+    const String ch = utf8.substring(i, i + charLen);
+    i += charLen;
+    if (ch == "\n") {
+      homeCanvas.drawString(line, x, y);
+      y += lineHeight;
+      line = "";
+      continue;
+    }
+    if (homeCanvas.textWidth(line + ch) > maxWidth &&
+        !(ch == "、" || ch == "。" || ch == "」" || ch == ")")) {
+      homeCanvas.drawString(line, x, y);
+      y += lineHeight;
+      line = "";
+    }
+    line += ch;
+  }
+  if (line.length()) {
+    homeCanvas.drawString(line, x, y);
+    y += lineHeight;
+  }
 }
 
 static void drawPageDashboard() {
@@ -421,7 +518,43 @@ static void drawPageDashboard() {
                         M5.Display.width() / 2, 420);
 }
 
+static void drawPageHistoryDetail() {
+  String timeText;
+  String captionText;
+  String detailValue;
+  if (!getHistoryEntry(historyDetailIndex, timeText, captionText,
+                       detailValue)) {
+    historyDetailIndex = -1;
+    return;
+  }
+
+  homeCanvas.setClipRect(73, 35, kTextWidth, 370);
+  homeCanvas.setTextDatum(top_left);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  homeCanvas.drawString(timeText, 73, 44);
+
+  int32_t y = 74;
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+  appendHomeWrapped(captionText, 73, y, 36, kTextWidth);
+  y += 12;
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  appendHomeWrapped(detailValue, 73, y, 38, kTextWidth);
+  homeCanvas.clearClipRect();
+
+  homeCanvas.setTextDatum(middle_center);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  homeCanvas.drawString("タップで戻る", M5.Display.width() / 2, 420);
+}
+
 static void drawPageHistory() {
+  if (historyDetailIndex >= 0) {
+    drawPageHistoryDetail();
+    if (historyDetailIndex >= 0) return;
+  }
+
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(1);
@@ -447,10 +580,15 @@ static void drawPageHistory() {
     if (rowY < 380 && rowY + 56 > 100) {
       const String line = inquiryHistory.substring(lineStart, lineEnd);
       const int timeEnd = line.indexOf('|');
+      const int captionEnd =
+          timeEnd >= 0 ? line.indexOf('|', timeEnd + 1) : -1;
       const String timeText =
           timeEnd >= 0 ? line.substring(0, timeEnd) : String("--:--");
       const String captionText =
-          timeEnd >= 0 ? line.substring(timeEnd + 1) : line;
+          timeEnd >= 0
+              ? line.substring(timeEnd + 1,
+                               captionEnd >= 0 ? captionEnd : line.length())
+              : line;
       homeCanvas.setTextSize(1);
       homeCanvas.setTextDatum(middle_right);
       homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -481,7 +619,7 @@ static void drawPageSettings() {
   homeCanvas.drawString("モデル", 90, 108);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-  homeCanvas.drawString("gpt-5.6-luna", 90, 140);
+  homeCanvas.drawString(selectedModelName(), 90, 140);
   homeCanvas.drawFastHLine(40, 170, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
@@ -497,7 +635,9 @@ static void drawPageSettings() {
   homeCanvas.drawString("画質", 90, 316);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  homeCanvas.drawString("速度優先(QVGA)", 90, 350);
+  homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
+                                            : "速度優先(QVGA)",
+                        90, 350);
 }
 
 static void drawHomePageDots() {
@@ -532,7 +672,7 @@ static void drawHome() {
       drawPageDashboard();
       break;
   }
-  drawHomePageDots();
+  if (historyDetailIndex < 0) drawHomePageDots();
   homeCanvas.pushSprite(0, 0);
   homeDirty = false;
 }
@@ -630,11 +770,14 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // Same framing the finder showed (QVGA scaled to panel width).
-  const float sc = M5.Display.width() / 320.0f;
+  // Preserve the finder framing for both QVGA and the optional VGA capture.
+  const int sourceWidth = captureQuality == 1 ? 640 : 320;
+  const int sourceHeight = captureQuality == 1 ? 480 : 240;
+  const float sc = M5.Display.width() / static_cast<float>(sourceWidth);
   M5.Display.drawJpg(jpegBuf, jpegLen, 0,
-                     (int)((M5.Display.height() - 240 * sc) / 2),
-                     M5.Display.width(), (int)(240 * sc), 0, 0, sc, sc);
+                     (int)((M5.Display.height() - sourceHeight * sc) / 2),
+                     M5.Display.width(), (int)(sourceHeight * sc), 0, 0, sc,
+                     sc);
 }
 
 // Word-wrap UTF-8 text into the canvas, minimal kinsoku (no line-leading 、。」).
@@ -973,12 +1116,12 @@ static void configureCamera() {
   }
 }
 
-static bool captureFromCam() {
+static bool captureFromCam(bool useRetained) {
   free(jpegBuf);
   jpegBuf = nullptr;
   jpegLen = 0;
 
-  if (retainBuf && retainLen && millis() - retainAt < 2000) {
+  if (useRetained && retainBuf && retainLen && millis() - retainAt < 2000) {
     // The shot IS the last finder frame — instant, and exactly WYSIWYG.
     if (jpegLen < retainLen || !jpegBuf) {
       free(jpegBuf);
@@ -1090,10 +1233,14 @@ static bool fetchDigest() {
     const int end = next >= 0 ? next : inquiryHistory.length();
     const String line = inquiryHistory.substring(start, end);
     const int captionStart = line.indexOf('|');
+    const int captionEnd =
+        captionStart >= 0 ? line.indexOf('|', captionStart + 1) : -1;
     if (itemsToSkip > 0) {
       --itemsToSkip;
     } else if (captionStart >= 0) {
-      items.add(line.substring(captionStart + 1));
+      items.add(line.substring(
+          captionStart + 1,
+          captionEnd >= 0 ? captionEnd : static_cast<int>(line.length())));
     }
     if (next < 0) break;
     start = next + 1;
@@ -1107,6 +1254,7 @@ static bool fetchDigest() {
   if (digestHttp.begin(digestClient, String(WORKER_URL) + "/digest")) {
     digestHttp.addHeader("Content-Type", "application/json");
     digestHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    digestHttp.addHeader("X-Model", selectedModelName());
     code = digestHttp.POST(body);
     if (code == HTTP_CODE_OK) {
       JsonDocument responseDoc;
@@ -1157,6 +1305,7 @@ static bool analyzePhoto() {
     if (!analyzeHttp.begin(analyzeClient, url)) continue;
     analyzeHttp.addHeader("Content-Type", "image/jpeg");
     analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    analyzeHttp.addHeader("X-Model", selectedModelName());
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1386,6 +1535,7 @@ static void voiceQuestionFlow() {
   M5.Speaker.end();  // mic and speaker share the codec/I2S
   if (!M5.Mic.begin()) {
     M5.Speaker.begin();
+    applyPaBoost();
     M5.Speaker.setVolume(speakerVolume);
     Serial.println("[toi] ask: mic begin FAILED");
     return;
@@ -1408,6 +1558,7 @@ static void voiceQuestionFlow() {
   }
   M5.Mic.end();
   M5.Speaker.begin();
+  applyPaBoost();
   M5.Speaker.setVolume(speakerVolume);
   Serial.printf("[toi] ask: recorded %u samples (%.1fs)\n", (unsigned)total,
                 total / (float)kRate);
@@ -1449,6 +1600,7 @@ static void voiceQuestionFlow() {
     if (analyzeHttp.begin(analyzeClient, url)) {
       analyzeHttp.addHeader("Content-Type", "audio/wav");
       analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+      analyzeHttp.addHeader("X-Model", selectedModelName());
       const int code = analyzeHttp.POST(wav, 44 + dataLen);
       if (code == HTTP_CODE_OK) {
         JsonDocument doc;
@@ -1459,7 +1611,7 @@ static void voiceQuestionFlow() {
           Serial.printf("[toi] ask: %lums Q=%s A=%s\n", millis() - ta,
                         q.c_str(), a.c_str());
           if (a.length()) {
-            recordInquiry(q);
+            recordInquiry("Q: " + q, a);
             caption = "Q: " + q;
             detailText = a;
             buildResultCanvas();
@@ -1535,8 +1687,10 @@ static void enterHome() {
   state = AppState::Home;
   homePage = 0;
   homeHistoryScrollY = 0;
+  historyDetailIndex = -1;
   homeTouchActive = false;
   homeVolumeDragging = false;
+  homeHistoryScrolled = false;
   homeLastMinute = -1;
   placeLookupPending = true;
   lastPlaceAt = 0;
@@ -1613,19 +1767,33 @@ static void homeTick() {
       // so "今日の問い" never shows yesterday's count.
       const int32_t dateKey = localDateKey();
       if (dateKey >= 0 && inquiryDateKey >= 0 && dateKey != inquiryDateKey) {
+        const int32_t previousDateKey = inquiryDateKey;
+        const uint32_t previousToday = inquiryToday;
+        const String previousHistory = inquiryHistory;
+        const String previousDigest = inquiryDigest;
+        const int32_t previousDigestCount = inquiryDigestCount;
         inquiryDateKey = dateKey;
         inquiryToday = 0;
         inquiryHistory = "";
         homeHistoryScrollY = 0;
+        historyDetailIndex = -1;
         inquiryDigest = "";
         inquiryDigestCount = -1;
         if (toiPrefsReady) {
-          toiPrefs.putInt("dkey", inquiryDateKey);
-          toiPrefs.putUInt("today", 0);
-          toiPrefs.putString("hist", "");
-          toiPrefs.putString("digest", "");
-          toiPrefs.putInt("digN", -1);
+          if (inquiryDateKey != previousDateKey) {
+            toiPrefs.putInt("dkey", inquiryDateKey);
+          }
+          if (inquiryToday != previousToday) {
+            toiPrefs.putUInt("today", inquiryToday);
+          }
+          if (inquiryDigest != previousDigest) {
+            toiPrefs.putString("digest", inquiryDigest);
+          }
+          if (inquiryDigestCount != previousDigestCount) {
+            toiPrefs.putInt("digN", inquiryDigestCount);
+          }
         }
+        saveInquiryHistory(previousHistory);
         Serial.println("[toi] inquiries: reset for new day");
       }
     }
@@ -1660,6 +1828,7 @@ static void homeTouchTick() {
       homeTouchLastX = t.x;
       homeTouchLastY = t.y;
       homeHistoryScrollStartY = homeHistoryScrollY;
+      homeHistoryScrolled = false;
       // Slider gestures are captured so the full 0-255 range is reachable.
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
                            t.y >= 190 && t.y <= 250;
@@ -1675,7 +1844,7 @@ static void homeTouchTick() {
       return;
     }
 
-    if (homePage == 1) {
+    if (homePage == 1 && historyDetailIndex < 0) {
       const int dx = homeTouchLastX - homeTouchStartX;
       const int dy = homeTouchLastY - homeTouchStartY;
       const int absDx = abs(dx);
@@ -1691,6 +1860,7 @@ static void homeTouchTick() {
             maxHomeHistoryScrollY());
         if (nextScroll != homeHistoryScrollY) {
           homeHistoryScrollY = nextScroll;
+          homeHistoryScrolled = true;
           homeDirty = true;
         }
       }
@@ -1703,18 +1873,50 @@ static void homeTouchTick() {
   const int dy = homeTouchLastY - homeTouchStartY;
   const int absDx = abs(dx);
   const int absDy = abs(dy);
+  const bool isSwipe = absDx >= 60 && absDx * 2 > absDy * 3;
+  const bool isTap = dx * dx + dy * dy < 12 * 12;
   if (homeVolumeDragging) {
     saveSpeakerVolume();
-  } else if (absDx >= 60 && absDx * 2 > absDy * 3) {
+  } else if (isSwipe) {
     if (homePage == 1) homeHistoryScrollY = homeHistoryScrollStartY;
+    historyDetailIndex = -1;
     const int nextPage = constrain(homePage + (dx < 0 ? 1 : -1), 0, 2);
     if (nextPage != homePage) {
       homePage = nextPage;
       homeDirty = true;
     }
+  } else if (isTap) {
+    if (homePage == 1) {
+      if (historyDetailIndex >= 0) {
+        historyDetailIndex = -1;
+        homeDirty = true;
+      } else if (!homeHistoryScrolled && homeTouchLastY >= 100 &&
+                 homeTouchLastY < 380) {
+        const int tappedIndex =
+            (homeHistoryScrollY + homeTouchLastY - 100) / 56;
+        if (tappedIndex >= 0 && tappedIndex < inquiryHistoryLineCount()) {
+          historyDetailIndex = tappedIndex;
+          homeDirty = true;
+        }
+      }
+    } else if (homePage == 2) {
+      if (homeTouchLastY >= 90 && homeTouchLastY <= 160) {
+        selectedModel = (selectedModel + 1) % 3;
+        if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
+        Serial.printf("[toi] model: %s\n", selectedModelName());
+        homeDirty = true;
+      } else if (homeTouchLastY >= 290 && homeTouchLastY <= 370) {
+        captureQuality = captureQuality == 0 ? 1 : 0;
+        if (toiPrefsReady) toiPrefs.putUChar("qual", captureQuality);
+        Serial.printf("[toi] quality: %s\n",
+                      captureQuality == 1 ? "VGA" : "QVGA");
+        homeDirty = true;
+      }
+    }
   }
   homeTouchActive = false;
   homeVolumeDragging = false;
+  homeHistoryScrolled = false;
 }
 
 static void enterSleeping() {
@@ -1779,7 +1981,21 @@ static void runCaptureCycle() {
   sfxShutter();
 
   drawBusy("カメラ通信中", TFT_YELLOW);
-  if (!captureFromCam()) {
+  bool captureOk = false;
+  if (captureQuality == 1) {
+    streamStop();
+    const bool vgaOk =
+        camGet("/api/v1/control?var=framesize&val=10");
+    delay(400);
+    captureOk = captureFromCam(false);
+    const bool qvgaOk =
+        camGet("/api/v1/control?var=framesize&val=6");
+    Serial.printf("[toi] capture quality: VGA=%s restore-QVGA=%s\n",
+                  vgaOk ? "ok" : "FAIL", qvgaOk ? "ok" : "FAIL");
+  } else {
+    captureOk = captureFromCam(true);
+  }
+  if (!captureOk) {
     sfxError();
     enterError(lastError.length() ? lastError : "カメラに接続できません");
     return;
@@ -1798,7 +2014,7 @@ static void runCaptureCycle() {
     return;
   }
 
-  recordInquiry(caption);
+  recordInquiry(caption, detailText);
 
   buildResultCanvas();
   drawResult(true);
@@ -1826,11 +2042,27 @@ void setup() {
     inquiryTotal = toiPrefs.getUInt("total", 0);
     inquiryToday = toiPrefs.getUInt("today", 0);
     inquiryDateKey = toiPrefs.getInt("dkey", -1);
-    inquiryHistory = toiPrefs.getString("hist", "");
+    const size_t historyLength = toiPrefs.getBytesLength("histb");
+    if (historyLength > 0 && historyLength <= kInquiryHistoryMaxBytes) {
+      char *historyData = static_cast<char *>(malloc(historyLength + 1));
+      if (historyData) {
+        const size_t bytesRead =
+            toiPrefs.getBytes("histb", historyData, historyLength);
+        historyData[bytesRead] = '\0';
+        inquiryHistory = String(historyData);
+        free(historyData);
+      }
+    }
     inquiryDigest = toiPrefs.getString("digest", "");
     inquiryDigestCount = toiPrefs.getInt("digN", -1);
     speakerVolume = toiPrefs.getUChar("vol", 255);
     savedSpeakerVolume = speakerVolume;
+    paBoostPulses = toiPrefs.getUChar("paboost", 0);
+    if (paBoostPulses > 3) paBoostPulses = 0;
+    captureQuality = toiPrefs.getUChar("qual", 0);
+    if (captureQuality > 1) captureQuality = 0;
+    selectedModel = toiPrefs.getUChar("model", 2);
+    if (selectedModel > 2) selectedModel = 2;
     Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
                   (unsigned)inquiryHistory.length());
@@ -1838,6 +2070,8 @@ void setup() {
     Serial.println("[toi] inquiries: Preferences begin failed");
   }
   M5.Speaker.setVolume(speakerVolume);
+  M5.Speaker.begin();
+  applyPaBoost();
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
@@ -1886,6 +2120,21 @@ void loop() {
   if (Serial.available()) {
     const char cmd = Serial.read();
     if (cmd == 'd') debugDumpFrame();
+    else if (cmd == 'v') {
+      paBoostPulses = (paBoostPulses + 1) % 4;
+      if (toiPrefsReady) toiPrefs.putUChar("paboost", paBoostPulses);
+      M5.Speaker.end();
+      M5.Speaker.begin();
+      applyPaBoost();
+      M5.Speaker.setVolume(speakerVolume);
+      M5.Speaker.tone(880, 200);
+    } else if (cmd == 'V') {
+      es8311DacBoost = !es8311DacBoost;
+      const uint8_t dacVolume = es8311DacBoost ? 0xD3 : 0xBF;
+      m5::In_I2C.writeRegister8(0x18, 0x32, dacVolume, 400000);
+      M5.Speaker.tone(880, 200);
+      Serial.printf("[toi] es8311: dacvol=0x%02X\n", dacVolume);
+    }
     // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
     // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
     else if (cmd >= '0' && cmd <= '2') {
