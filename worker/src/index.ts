@@ -33,6 +33,18 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const DIGEST_SYSTEM_PROMPT =
+  "あなたは行動ログの要約係。撮影・質問の見出しリストから、その人が今日なにをしているかを日本語 30 字以内の 1 文で要約する。体言止めか『〜中』で軽快に";
+
+const DIGEST_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+  },
+  required: ["summary"],
+  additionalProperties: false,
+} as const;
+
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // CamS3 は SVGA〜UXGA JPEG を送る想定 (~100-500KB)
 
 function json(data: unknown, status = 200): Response {
@@ -413,6 +425,71 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   return json({ question, answer: parsed.answer });
 }
 
+async function handleDigest(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as unknown;
+  if (
+    !isRecord(body) ||
+    !Array.isArray(body.items) ||
+    body.items.length === 0 ||
+    !body.items.every((item) => typeof item === "string")
+  ) {
+    return json({ error: "items must be a non-empty string array" }, 400);
+  }
+
+  const items = body.items
+    .slice(0, 50)
+    .map((item) => Array.from(item.trim()).slice(0, 100).join(""))
+    .filter(Boolean);
+  if (items.length === 0) {
+    return json({ error: "items must not be empty" }, 400);
+  }
+
+  try {
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: env.ANALYZE_MODEL,
+        max_completion_tokens: 100,
+        messages: [
+          { role: "system", content: DIGEST_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
+          },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "toi_digest", strict: true, schema: DIGEST_SCHEMA },
+        },
+      }),
+    });
+    if (!upstream.ok) {
+      console.error("[toi] digest upstream error", upstream.status, await upstream.text());
+      return json({ summary: "" });
+    }
+
+    const data = (await upstream.json()) as {
+      choices?: { message?: { content?: string; refusal?: string } }[];
+    };
+    const message = data.choices?.[0]?.message;
+    if (!message?.content || message.refusal) {
+      return json({ summary: "" });
+    }
+    const parsed = JSON.parse(message.content) as { summary?: unknown };
+    if (typeof parsed.summary !== "string") {
+      return json({ summary: "" });
+    }
+    return json({ summary: Array.from(parsed.summary).slice(0, 30).join("") });
+  } catch (err) {
+    console.error("[toi] digest failed", err);
+    return json({ summary: "" });
+  }
+}
+
 async function handleTts(request: Request, env: Env): Promise<Response> {
   const body = (await request.json().catch(() => null)) as { text?: string } | null;
   const text = body?.text?.trim();
@@ -469,6 +546,8 @@ export default {
           return await handleAsk(request, env);
         case "/place":
           return await handlePlace(request, ctx);
+        case "/digest":
+          return await handleDigest(request, env);
         case "/tts":
           return await handleTts(request, env);
         default:
