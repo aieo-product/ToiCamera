@@ -48,6 +48,7 @@ enum class AppState {
   Result,
   Error,
   Sleeping,
+  Settings,  // stub until #11 — entered by tapping the Home screen button
 };
 
 static AppState state = AppState::Boot;
@@ -69,6 +70,13 @@ static M5Canvas homeCanvas(&M5.Display);
 static bool homeCanvasReady = false;
 static bool homeDirty = true;
 static int32_t homeLastMinute = -1;
+// Settings-entry pill on the Home screen (touch hit zone, panel coords).
+static constexpr int kSettingsTouchW = 240;
+static constexpr int kSettingsTouchH = 56;
+static constexpr int kSettingsTouchX = (466 - kSettingsTouchW) / 2;
+static constexpr int kSettingsTouchY = 370;
+// Fat-finger margin accepted around the visible pill.
+static constexpr int kSettingsTouchPad = 20;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -227,7 +235,14 @@ static void drawHome() {
     }
   }
 
+  // Settings entry (#11) — tappable pill; hit zone is kSettingsTouch*.
+  homeCanvas.drawRoundRect(kSettingsTouchX, kSettingsTouchY, kSettingsTouchW,
+                           kSettingsTouchH, 18, TFT_DARKGREY);
   homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.drawString("設定", M5.Display.width() / 2,
+                        kSettingsTouchY + kSettingsTouchH / 2 + 1);
+
   homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
   homeCanvas.drawString("黄:カメラ 青:スリープ",
                         M5.Display.width() / 2, 438);
@@ -1221,6 +1236,23 @@ static void homeTick() {
   if (homeDirty) drawHome();
 }
 
+// Placeholder screen until #11 lands — proves out the Home touch entry.
+static void enterSettings() {
+  state = AppState::Settings;
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString("設定", M5.Display.width() / 2, 150);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  M5.Display.drawString("モデル・音量・画質は #11 で実装予定",
+                        M5.Display.width() / 2, 230);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.drawString("青:戻る", M5.Display.width() / 2, 320);
+}
+
 static void enterSleeping() {
   state = AppState::Sleeping;
   stopAnimalese();
@@ -1397,13 +1429,31 @@ void loop() {
   if (state != AppState::Sleeping) stepCounterTick();
 
   switch (state) {
-    case AppState::Home:
+    case AppState::Home: {
       if (M5.BtnA.wasPressed()) {
         enterIdle();
-      } else if (M5.BtnB.wasPressed()) {
+        break;
+      }
+      if (M5.BtnB.wasPressed()) {
         enterSleeping();
-      } else {
-        homeTick();
+        break;
+      }
+      const auto t = M5.Touch.getDetail();
+      if (t.wasClicked() && t.x >= kSettingsTouchX - kSettingsTouchPad &&
+          t.x < kSettingsTouchX + kSettingsTouchW + kSettingsTouchPad &&
+          t.y >= kSettingsTouchY - kSettingsTouchPad &&
+          t.y < kSettingsTouchY + kSettingsTouchH + kSettingsTouchPad) {
+        enterSettings();
+        break;
+      }
+      homeTick();
+      break;
+    }
+
+    case AppState::Settings:
+      if (M5.BtnB.wasPressed()) {
+        sfxCancel();
+        enterHome();
       }
       break;
 
