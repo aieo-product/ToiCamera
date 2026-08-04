@@ -100,6 +100,7 @@ static uint8_t paBoostPulses = 0;
 static bool es8311DacBoost = true;
 static uint8_t captureQuality = 0;
 static uint8_t selectedModel = 2;
+static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -628,38 +629,50 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
+// Four rows: model / volume slider / capture quality / AI detail. Touch
+// zones in homeTouchTick() mirror this layout — keep them in sync.
 static void drawPageSettings() {
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("設定", M5.Display.width() / 2, 48);
+  homeCanvas.drawString("設定", M5.Display.width() / 2, 44);
 
   homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("モデル", 90, 108);
+  homeCanvas.drawString("モデル", 90, 92);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-  homeCanvas.drawString(selectedModelName(), 90, 140);
-  homeCanvas.drawFastHLine(40, 170, 386, 0x2124);
+  homeCanvas.drawString(selectedModelName(), 90, 120);
+  homeCanvas.drawFastHLine(40, 142, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("音量", 90, 220);
-  homeCanvas.fillRoundRect(150, 217, 230, 6, 3, TFT_DARKGREY);
+  homeCanvas.drawString("音量", 90, 184);
+  homeCanvas.fillRoundRect(150, 181, 230, 6, 3, TFT_DARKGREY);
   const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
-  homeCanvas.fillCircle(volumeX, 220, 14, TFT_CYAN);
-  homeCanvas.drawFastHLine(40, 270, 386, 0x2124);
+  homeCanvas.fillCircle(volumeX, 184, 14, TFT_CYAN);
+  homeCanvas.drawFastHLine(40, 226, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("画質", 90, 316);
+  homeCanvas.drawString("画質", 90, 268);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
                                             : "速度優先(QVGA)",
-                        90, 350);
+                        90, 296);
+  homeCanvas.drawFastHLine(40, 318, 386, 0x2124);
+
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.drawString("AI精度", 90, 360);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
+                                     : "低(速い・省トークン)",
+                        90, 388);
 }
 
 static void drawHomePageDots() {
@@ -1342,6 +1355,7 @@ static bool analyzePhoto() {
     analyzeHttp.addHeader("Content-Type", "image/jpeg");
     analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
     analyzeHttp.addHeader("X-Model", selectedModelName());
+    analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1351,6 +1365,19 @@ static bool analyzePhoto() {
         detailText = doc["detail"].as<String>();
         ok = caption.length() > 0;
       }
+    } else if (code == 429) {
+      // Free-token quota exhausted — worker sends the JST reset time.
+      JsonDocument doc;
+      String resetAt;
+      if (deserializeJson(doc, analyzeHttp.getString()) ==
+          DeserializationError::Ok) {
+        resetAt = doc["reset_jst"].as<String>();
+      }
+      lastError = resetAt.length()
+                      ? "AI無料枠が上限(" + resetAt + "頃リセット)"
+                      : "AI無料枠が上限です";
+      analyzeHttp.end();
+      break;  // retrying is pointless until the quota resets
     } else {
       lastError = "analyze HTTP " + String(code);
       analyzeHttp.end();  // drop the (possibly stale) connection, retry fresh
@@ -1659,6 +1686,10 @@ static void voiceQuestionFlow() {
         }
       } else {
         Serial.printf("[toi] ask: HTTP %d\n", code);
+        if (code == 429) {
+          drawBusy("AI無料枠が上限です", TFT_RED);
+          delay(1800);
+        }
         analyzeHttp.end();
       }
     }
@@ -1867,7 +1898,7 @@ static void homeTouchTick() {
       homeHistoryScrolled = false;
       // Slider gestures are captured so the full 0-255 range is reachable.
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
-                           t.y >= 190 && t.y <= 250;
+                           t.y >= 154 && t.y <= 214;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
       return;
     }
@@ -1936,16 +1967,21 @@ static void homeTouchTick() {
         }
       }
     } else if (homePage == 2) {
-      if (homeTouchLastY >= 90 && homeTouchLastY <= 160) {
+      if (homeTouchLastY >= 66 && homeTouchLastY <= 142) {
         selectedModel = (selectedModel + 1) % 3;
         if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
         Serial.printf("[toi] model: %s\n", selectedModelName());
         homeDirty = true;
-      } else if (homeTouchLastY >= 290 && homeTouchLastY <= 370) {
+      } else if (homeTouchLastY >= 240 && homeTouchLastY <= 318) {
         captureQuality = captureQuality == 0 ? 1 : 0;
         if (toiPrefsReady) toiPrefs.putUChar("qual", captureQuality);
         Serial.printf("[toi] quality: %s\n",
                       captureQuality == 1 ? "VGA" : "QVGA");
+        homeDirty = true;
+      } else if (homeTouchLastY >= 326 && homeTouchLastY <= 400) {
+        aiDetailHigh = !aiDetailHigh;
+        if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
+        Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
         homeDirty = true;
       }
     }
@@ -2101,6 +2137,7 @@ void setup() {
     if (captureQuality > 1) captureQuality = 0;
     selectedModel = toiPrefs.getUChar("model", 2);
     if (selectedModel > 2) selectedModel = 2;
+    aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
                   (unsigned)inquiryHistory.length());

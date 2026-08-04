@@ -81,26 +81,56 @@ const FALLBACK_RESULT = {
   detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
 };
 
-// Chat completion against OpenAI. The free data-sharing key has a daily
-// token quota — on 429 (or upstream 5xx) retry once with the paid key so
-// the device keeps working when the free pool runs dry.
+// Chat completion against OpenAI, free data-sharing key only (no paid
+// fallback by owner's decision — the device surfaces quota exhaustion).
 async function openaiChat(env: Env, payload: unknown): Promise<Response> {
-  const body = JSON.stringify(payload);
-  const call = (key: string) =>
-    fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-      },
-      body,
-    });
-  let upstream = await call(env.OPENAI_FREE_API_KEY);
-  if ((upstream.status === 429 || upstream.status >= 500) && env.OPENAI_API_KEY) {
-    console.warn("free key upstream", upstream.status, "— retrying with paid key");
-    upstream = await call(env.OPENAI_API_KEY);
+  return fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+// The free training-token quota resets daily at midnight Pacific Time.
+// Returns that instant as HH:MM in JST for the device to display.
+function nextFreeResetJst(): string {
+  try {
+    const now = new Date();
+    const la = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now); // YYYY-MM-DD
+    const offsetName = new Intl.DateTimeFormat("en", {
+      timeZone: "America/Los_Angeles",
+      timeZoneName: "shortOffset",
+    })
+      .formatToParts(now)
+      .find((p) => p.type === "timeZoneName")?.value; // e.g. "GMT-7"
+    const offset = Number(offsetName?.replace("GMT", "") || -7);
+    const [y, m, d] = la.split("-").map(Number);
+    const nextMidnightUtc = Date.UTC(y, m - 1, d + 1, -offset, 0, 0);
+    return new Intl.DateTimeFormat("ja-JP", {
+      timeZone: "Asia/Tokyo",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(nextMidnightUtc));
+  } catch {
+    return "16:00"; // PDT fallback
   }
-  return upstream;
+}
+
+function quotaResponse(): Response {
+  return json({ error: "quota", reset_jst: nextFreeResetJst() }, 429);
+}
+
+function pickDetail(request: Request): "low" | "high" {
+  return request.headers.get("x-detail") === "high" ? "high" : "low";
 }
 
 async function analyzeWithOpenAI(
@@ -108,6 +138,7 @@ async function analyzeWithOpenAI(
   imageB64: string,
   userText: string,
   model: string,
+  detailLevel: "low" | "high",
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
@@ -119,7 +150,10 @@ async function analyzeWithOpenAI(
         content: [
           {
             type: "image_url",
-            image_url: { url: `data:image/jpeg;base64,${imageB64}`, detail: "low" },
+            image_url: {
+              url: `data:image/jpeg;base64,${imageB64}`,
+              detail: detailLevel,
+            },
           },
           { type: "text", text: userText },
         ],
@@ -134,6 +168,7 @@ async function analyzeWithOpenAI(
   if (!upstream.ok) {
     const detail = await upstream.text();
     console.error("OpenAI analyze error", upstream.status, detail);
+    if (upstream.status === 429) return quotaResponse();
     return json({ error: "analyze upstream failed", status: upstream.status }, 502);
   }
   const data = (await upstream.json()) as {
@@ -338,6 +373,7 @@ async function handleAnalyze(
       toBase64(image),
       userText,
       pickModel(request, env),
+      pickDetail(request),
     );
   }
 
@@ -401,29 +437,31 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   const caption = searchParams.get("caption") ?? "";
   const detail = searchParams.get("detail") ?? "";
 
-  // STT — try the free-token key first, fall back to the paid key + whisper-1
-  async function transcribe(key: string, model: string): Promise<string | null> {
+  // STT — free-token key only (paid fallback removed by owner's decision)
+  async function transcribe(model: string): Promise<{ text: string | null; status: number }> {
     const form = new FormData();
     form.append("file", new File([audio], "q.wav", { type: "audio/wav" }));
     form.append("model", model);
     form.append("language", "ja");
     const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
-      headers: { authorization: `Bearer ${key}` },
+      headers: { authorization: `Bearer ${env.OPENAI_FREE_API_KEY}` },
       body: form,
     });
     if (!res.ok) {
       console.warn("stt failed", model, res.status, await res.text());
-      return null;
+      return { text: null, status: res.status };
     }
     const data = (await res.json()) as { text?: string };
-    return data.text?.trim() || null;
+    return { text: data.text?.trim() || null, status: 200 };
   }
 
-  const question =
-    (await transcribe(env.OPENAI_FREE_API_KEY, "gpt-4o-mini-transcribe")) ??
-    (await transcribe(env.OPENAI_API_KEY, "whisper-1"));
-  if (!question) return json({ error: "stt failed" }, 502);
+  const stt = await transcribe("gpt-4o-mini-transcribe");
+  if (!stt.text) {
+    if (stt.status === 429) return quotaResponse();
+    return json({ error: "stt failed" }, 502);
+  }
+  const question = stt.text;
   const model = pickModel(request, env);
 
   const upstream = await openaiChat(env, {
@@ -445,6 +483,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   });
   if (!upstream.ok) {
     console.error("ask upstream error", upstream.status, await upstream.text());
+    if (upstream.status === 429) return quotaResponse();
     return json({ error: "ask upstream failed" }, 502);
   }
   const data = (await upstream.json()) as {
