@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `wrangler dev`. DUMMY VALUES ONLY — never commit real keys.
+# Real values live in the macOS Keychain (`akc get <NAME>`) and are pushed to
+# Cloudflare with `wrangler secret put <NAME>`.
+DEVICE_TOKEN=dev-local-token
+ANTHROPIC_API_KEY=dummy-anthropic-key
+OPENAI_API_KEY=dummy-openai-key
+OPENAI_FREE_API_KEY=dummy-openai-free-key

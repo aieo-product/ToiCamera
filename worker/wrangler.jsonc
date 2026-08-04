@@ -18,7 +18,18 @@
     // OpenAI TTS voice. Swap Worker-side only if Japanese quality disappoints
     // (fallback plan: Google Cloud TTS ja-JP-Neural2, LINEAR16).
     "TTS_VOICE": "marin"
-  }
+  },
+  // 食事履歴 (/history, /analyze の保存先)。
+  // database_id はプレースホルダ — ローカル検証用。本番 DB はマージ後に
+  // `wrangler d1 create toicamera` で作成して実 ID に差し替える。
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "toicamera",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
   // Secrets (set via `akc get <NAME> --reveal | wrangler secret put <NAME>`):
   //   ANTHROPIC_API_KEY    — Claude vision (when ANALYZE_PROVIDER=anthropic)
   //   OPENAI_API_KEY       — TTS
