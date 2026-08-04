@@ -1561,6 +1561,17 @@ static void enterError(const String &msg) {
   M5.Display.drawString("黄:再試行 青:戻る", M5.Display.width() / 2, 320);
 }
 
+// Blocking flows (capture cycle, state switches) run for seconds without
+// M5.update(), so the release of the press that started them is first seen
+// by the NEXT state's handler as wasClicked — firing a second action. Wait
+// for release here and consume the stale edge.
+static void flushButtons() {
+  do {
+    M5.update();
+    delay(10);
+  } while (M5.BtnA.isPressed() || M5.BtnB.isPressed());
+}
+
 static void runCaptureCycle() {
   const uint32_t cycleStart = millis();
   state = AppState::Capturing;
@@ -1740,6 +1751,7 @@ void loop() {
     case AppState::Idle:
       if (M5.BtnA.wasPressed()) {
         runCaptureCycle();
+        flushButtons();  // eat the release edge — else Result re-captures
       } else if (M5.BtnB.wasHold()) {
         // Manual camera re-pairing (e.g. after fixing power/placement).
         rePairCamera();
@@ -1764,6 +1776,7 @@ void loop() {
       }
       if (M5.BtnA.wasClicked()) {
         runCaptureCycle();
+        flushButtons();
         break;
       }
       if (M5.BtnB.wasPressed()) {
@@ -1771,6 +1784,7 @@ void loop() {
         stopAnimalese();
         sfxCancel();
         enterIdle();
+        flushButtons();  // eat the release — else Idle sees BtnB click -> Home
         break;
       }
       // Touch drag scroll — track absolute Y between frames (deltaY from the
@@ -1801,6 +1815,7 @@ void loop() {
       if (M5.BtnB.wasPressed()) {
         sfxCancel();
         enterIdle();
+        flushButtons();
         break;
       }
       if (M5.BtnA.wasPressed()) {
@@ -1813,6 +1828,7 @@ void loop() {
           }
         }
         runCaptureCycle();
+        flushButtons();
       }
       break;
 
