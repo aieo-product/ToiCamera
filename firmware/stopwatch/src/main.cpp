@@ -94,7 +94,10 @@ static constexpr size_t kInquiryHistoryMaxBytes = 16000;
 static uint8_t speakerVolume = 255;
 static uint8_t savedSpeakerVolume = 255;
 static uint8_t paBoostPulses = 0;
-static bool es8311DacBoost = false;
+// ES8311 DAC digital gain +10dB (reg 0x32: 0xBF=0dB, 0.5dB/step). Confirmed
+// on-device 2026-08-04: clearly louder than 0dB and than any AW-PA pulse
+// mode, no audible distortion — so it ships enabled.
+static bool es8311DacBoost = true;
 static uint8_t captureQuality = 0;
 static uint8_t selectedModel = 2;
 
@@ -145,6 +148,25 @@ static const char *selectedModelName() {
   static constexpr const char *kModels[] = {
       "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"};
   return kModels[selectedModel < 3 ? selectedModel : 2];
+}
+
+// On-screen banner + a long 3-note melody, so speaker A/B tests can be
+// followed by eye and ear. Blocks the loop ~1s (debug-only path).
+static void volumeTestFeedback(const String &label) {
+  M5.Display.fillRoundRect(83, 183, 300, 100, 16, TFT_BLACK);
+  M5.Display.drawRoundRect(83, 183, 300, 100, 16, TFT_YELLOW);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(3);
+  M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  M5.Display.drawString(label, M5.Display.width() / 2, 233);
+  M5.Speaker.tone(660, 250);
+  delay(280);
+  M5.Speaker.tone(880, 250);
+  delay(280);
+  M5.Speaker.tone(1100, 350);
+  delay(400);
+  homeDirty = true;  // Home repaints over the banner on the next tick
 }
 
 static void applyPaBoost() {
@@ -1952,6 +1974,7 @@ static void sleepingTick() {
   startSoftAp();
   Serial.printf("[toi] wake: light sleep result=%d STA=%s\n", sleepResult,
                 gNetOk ? "ok" : "FAIL");
+  applyPaBoost();  // codec registers may have reset across light sleep
   enterHome();
 }
 
@@ -2059,6 +2082,7 @@ void setup() {
     savedSpeakerVolume = speakerVolume;
     paBoostPulses = toiPrefs.getUChar("paboost", 0);
     if (paBoostPulses > 3) paBoostPulses = 0;
+    es8311DacBoost = toiPrefs.getUChar("dacboost", 1) != 0;
     captureQuality = toiPrefs.getUChar("qual", 0);
     if (captureQuality > 1) captureQuality = 0;
     selectedModel = toiPrefs.getUChar("model", 2);
@@ -2127,13 +2151,14 @@ void loop() {
       M5.Speaker.begin();
       applyPaBoost();
       M5.Speaker.setVolume(speakerVolume);
-      M5.Speaker.tone(880, 200);
+      volumeTestFeedback("PA " + String(paBoostPulses));
     } else if (cmd == 'V') {
       es8311DacBoost = !es8311DacBoost;
+      if (toiPrefsReady) toiPrefs.putUChar("dacboost", es8311DacBoost ? 1 : 0);
       const uint8_t dacVolume = es8311DacBoost ? 0xD3 : 0xBF;
       m5::In_I2C.writeRegister8(0x18, 0x32, dacVolume, 400000);
-      M5.Speaker.tone(880, 200);
       Serial.printf("[toi] es8311: dacvol=0x%02X\n", dacVolume);
+      volumeTestFeedback(es8311DacBoost ? "DAC +10dB" : "DAC 0dB");
     }
     // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
     // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
