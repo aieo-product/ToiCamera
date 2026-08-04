@@ -16,7 +16,7 @@ NAMES = {"baby": "たまぷに", "child_a": "すこやかぷに", "child_b": "�
          "adult_rainbow": "レインボーぷに"}
 
 W = H = 466
-CHAR_CX, CHAR_CY, ZOOM = 232, 264, 6
+CHAR_CX, CHAR_CY, ZOOM = 232, 258, 6
 PILL_W, PILL_H, PILL_Y = 240, 48, 378
 
 

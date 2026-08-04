@@ -54,7 +54,7 @@ food_category: enum ["vegetable","meat","seafood","sweet","grain","other"]  // �
 - ヘッダ: `firmware/stopwatch/src/sprites/<form>.h` + 集約 `sprites/sprites.h`
   (`ToiSpriteSet { idle_a, idle_b, eat, happy }` の form id 順テーブル `TOI_SPRITES[8]`、
   `TOI_SPR_SIZE=32`, `TOI_SPR_TRANSPARENT=0xE3`)。**プレースホルダ生成済み、シンボル名は固定契約**
-- 描画: `homeCanvas.pushImageRotateZoom(232, 264, 16, 16, 0, 6.0f, 6.0f, 32, 32,
+- 描画: `homeCanvas.pushImageRotateZoom(232, 258, 16, 16, 0, 6.0f, 6.0f, 32, 32,
   (const uint8_t*)frame, (uint8_t)0xE3)` — **非AA版必須**(WithAA 禁止=にじむ)、
   透明キーは **uint8_t キャスト必須**(int で渡すと rgb888 解釈で透過不一致)
 - 初回リリースは静止(idle_a)+食事演出のみ。ぷにぷに呼吸(idle_a/b 交互)は
@@ -62,8 +62,8 @@ food_category: enum ["vegetable","meat","seafood","sweet","grain","other"]  // �
 
 ## ホームレイアウト(確定)
 
-battery y=40 / date y=80 / time y=130(上詰め)/ **キャラ x=136..328(偶数開始), y=168..360、
-中心 (232,264)** / 歩数+当日kcal を 1 行統合 y=362(例「1234歩 ・ 560kcal」)/
+battery y=40 / date y=80 / time y=130(上詰め)/ **キャラ x=136..328(偶数開始), y=162..354、
+中心 (232,258)** / 歩数+当日kcal を 1 行統合 y=362(例「1234歩 ・ 560kcal」)/
 地名・駅は 1 行統合または省略(円形クリップ内で調整)/ 設定ピル y=378 へ微下げ
 (**タッチ判定定数も連動更新**、main.cpp L1441-1446)
 

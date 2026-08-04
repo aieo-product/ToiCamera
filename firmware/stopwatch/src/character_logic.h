@@ -63,8 +63,12 @@ inline CharState toiCharInit() {
 }
 
 inline bool toiCharValid(const CharState &s) {
-  return s.version == TOI_CHAR_VERSION && s.stage <= TOI_STAGE_ADULT &&
-         s.form <= TOI_FORM_RAINBOW;
+  return s.version == TOI_CHAR_VERSION &&
+         ((s.stage == TOI_STAGE_BABY && s.form == TOI_FORM_BABY) ||
+          (s.stage == TOI_STAGE_CHILD && s.form >= TOI_FORM_CHILD_A &&
+           s.form <= TOI_FORM_CHILD_B) ||
+          (s.stage == TOI_STAGE_ADULT && s.form >= TOI_FORM_LEAF &&
+           s.form <= TOI_FORM_RAINBOW));
 }
 
 // Every category counts toward the stage thresholds.

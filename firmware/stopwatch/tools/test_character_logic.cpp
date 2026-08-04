@@ -208,6 +208,48 @@ static void testDayKeySentinel() {
   printf("   toiApplyDayRoll sentinel/roll -> ok\n");
 }
 
+static void testStateValidation() {
+  printf("-- persisted state validation\n");
+
+  CharState s = toiCharInit();
+  CHECK(toiCharValid(s));
+
+  s.form = TOI_FORM_LEAF;
+  CHECK(!toiCharValid(s));  // babies can only use the baby form
+
+  s = toiCharInit();
+  s.stage = TOI_STAGE_ADULT;
+  s.form = TOI_FORM_CHILD_A;
+  CHECK(!toiCharValid(s));  // adults cannot use a child form
+
+  s = toiCharInit();
+  s.version = TOI_CHAR_VERSION + 1;
+  CHECK(!toiCharValid(s));
+
+  s = toiCharInit();
+  s.form = TOI_FORM_RAINBOW + 1;
+  CHECK(!toiCharValid(s));
+
+  printf("   invalid stage/form, version, and form combinations rejected\n");
+}
+
+static void testLargeCounters() {
+  printf("-- saturated meal counters / large kcal accumulation\n");
+
+  CharState s = toiCharInit();
+  s.cnt[TOI_CAT_VEGETABLE] = 0xFFFF;
+  toiApplyFeed(s, TOI_CAT_VEGETABLE, 1000000000U, 20260804);
+  CHECK(s.cnt[TOI_CAT_VEGETABLE] == 0xFFFF);
+  CHECK(s.kcalDay == 1000000000U);
+  CHECK(toiCharValid(s));
+
+  toiApplyFeed(s, TOI_CAT_MEAT, 2000000000U, 20260804);
+  CHECK(s.kcalDay == 3000000000U);
+  CHECK(toiCharValid(s));
+
+  printf("   counter stays at 0xFFFF; kcalDay accumulates to %u\n", s.kcalDay);
+}
+
 static void testMisc() {
   printf("-- category names and out-of-range guards\n");
   CHECK(toiCategoryFromName("vegetable") == TOI_CAT_VEGETABLE);
@@ -235,6 +277,8 @@ int main() {
   testGrainOtherExcludedFromDenominator();
   testNoDevolution();
   testDayKeySentinel();
+  testStateValidation();
+  testLargeCounters();
   testMisc();
   printf("\nAll %d checks passed.\n", gChecks);
   return 0;

@@ -88,7 +88,7 @@ static constexpr int kSettingsTouchPad = 20;
 
 // Character (#13): 32x32 sprite drawn at 6x = a 192x192 box centred here.
 static constexpr int kCharCenterX = 232;
-static constexpr int kCharCenterY = 264;
+static constexpr int kCharCenterY = 258;
 static constexpr int kCharZoom = 6;
 static constexpr int kCharBox = 32 * kCharZoom;
 static constexpr uint32_t kCharIdleMs = 600;  // puni-puni breathing period
@@ -323,7 +323,7 @@ static void drawHome() {
     homeCanvas.drawString("--:--", M5.Display.width() / 2, 130);
   }
 
-  // The pet, 32x32 blown up 6x into a 192x192 box (y 168..360). Non-AA zoom
+  // The pet, 32x32 blown up 6x into a 192x192 box (y 162..354). Non-AA zoom
   // only — the anti-aliased variant blurs pixel art into mush — and the
   // transparency key has to be a uint8_t or it is taken for an rgb888 value.
   homeCanvas.pushImageRotateZoom(
@@ -413,7 +413,8 @@ static void sfxError() {
 // before speakAnimalese() starts its speaker task, or the two fight over the
 // speaker. Runs full-screen, so it must not be called from Idle/Result where
 // the finder is repainting.
-static void playFeedAnimation(uint32_t kcal, const String &foodName) {
+static void playFeedAnimation(uint8_t form, uint32_t kcal,
+                              const String &foodName) {
   static const CharFrame kSeq[] = {CharFrame::Eat, CharFrame::Happy,
                                    CharFrame::Eat, CharFrame::Happy,
                                    CharFrame::Happy};
@@ -434,7 +435,7 @@ static void playFeedAnimation(uint32_t kcal, const String &foodName) {
   }
 
   for (size_t i = 0; i < sizeof(kSeq) / sizeof(kSeq[0]); ++i) {
-    drawCharacterDirect(charFrame(charState.form, kSeq[i]));
+    drawCharacterDirect(charFrame(form, kSeq[i]));
     if (kTones[i]) M5.Speaker.tone(kTones[i], 90);
     delay(320);
   }
@@ -460,14 +461,15 @@ static void playEvolveAnimation() {
   delay(200);
 }
 
-// One meal: play it out, fold it into the character, persist. The NVS write
-// happens here (and in enterSleeping) only — never on the loop path.
+// One meal: fold it into the character and persist before playing it out. The
+// NVS write happens here (and in enterSleeping) only — never on the loop path.
 static void runFeedEvent(uint8_t category, uint32_t kcal,
                          const String &foodName) {
-  playFeedAnimation(kcal, foodName);
+  const uint8_t oldForm = charState.form;
   const bool evolved = toiApplyFeed(charState, category, kcal, currentDateKey());
-  if (evolved) playEvolveAnimation();
   saveCharState();
+  playFeedAnimation(oldForm, kcal, foodName);
+  if (evolved) playEvolveAnimation();
   homeDirty = true;
   Serial.printf(
       "[toi] char: fed %s +%ukcal -> stage=%u form=%u meals=%u kcalDay=%u "

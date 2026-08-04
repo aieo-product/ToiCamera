@@ -50,7 +50,7 @@ const RESULT_SCHEMA = {
     detail: { type: "string", description: "2〜3文・150文字以内の日本語解説" },
     is_food: { type: "boolean", description: "写真が食べ物なら true" },
     food_name: { type: "string", description: "日本語の料理名。食べ物でなければ空文字" },
-    kcal_est: { type: "number", description: "一人前の推定カロリー。食べ物でなければ 0" },
+    kcal_est: { type: "integer", description: "一人前の推定カロリー。食べ物でなければ 0" },
     food_category: {
       type: "string",
       enum: FOOD_CATEGORIES,
@@ -99,15 +99,15 @@ const FALLBACK_RESULT: AnalyzeResult = {
 };
 
 // スキーマ準拠のはずだが、モデル出力を D1 に入れる前に型を確定させる。
-function parseAnalyzeResult(text: string): AnalyzeResult {
+function parseAnalyzeResult(text: string): AnalyzeResult | null {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch (err) {
     console.warn("analyze result parse failed", err);
-    return FALLBACK_RESULT;
+    return null;
   }
-  if (!isRecord(raw)) return FALLBACK_RESULT;
+  if (!isRecord(raw)) return null;
   const category = raw.food_category;
   return {
     caption: typeof raw.caption === "string" ? raw.caption : FALLBACK_RESULT.caption,
@@ -116,7 +116,7 @@ function parseAnalyzeResult(text: string): AnalyzeResult {
     food_name: typeof raw.food_name === "string" ? raw.food_name : "",
     kcal_est:
       typeof raw.kcal_est === "number" && Number.isFinite(raw.kcal_est)
-        ? Math.max(0, Math.round(raw.kcal_est))
+        ? Math.min(10000, Math.max(0, Math.round(raw.kcal_est)))
         : 0,
     food_category: FOOD_CATEGORIES.includes(category as FoodCategory)
       ? (category as FoodCategory)
@@ -172,14 +172,37 @@ async function analyzeWithOpenAI(
     };
   }
   const data = (await upstream.json()) as {
-    choices?: { message?: { content?: string; refusal?: string } }[];
+    choices?: {
+      finish_reason?: string | null;
+      message?: { content?: string; refusal?: string };
+    }[];
   };
-  const msg = data.choices?.[0]?.message;
-  if (!msg?.content || msg.refusal) {
+  const choice = data.choices?.[0];
+  const msg = choice?.message;
+  if (msg?.refusal) {
     return { ok: true, result: FALLBACK_RESULT };
   }
+  if (choice?.finish_reason !== "stop") {
+    return {
+      ok: false,
+      response: json(
+        {
+          error: "analyze output truncated",
+          finish_reason: choice?.finish_reason ?? null,
+        },
+        502,
+      ),
+    };
+  }
   // strict json_schema により content は RESULT_SCHEMA に適合した JSON
-  return { ok: true, result: parseAnalyzeResult(msg.content) };
+  const result = parseAnalyzeResult(msg?.content ?? "");
+  if (!result) {
+    return {
+      ok: false,
+      response: json({ error: "invalid analyze output" }, 502),
+    };
+  }
+  return { ok: true, result };
 }
 
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
@@ -440,6 +463,10 @@ async function handleAnalyze(
     ],
   });
 
+  if (response.stop_reason === "max_tokens") {
+    return json({ error: "analyze output truncated" }, 502);
+  }
+
   let result: AnalyzeResult;
   if (response.stop_reason === "refusal") {
     result = FALLBACK_RESULT;
@@ -449,7 +476,11 @@ async function handleAnalyze(
       return json({ error: "no text in model response" }, 502);
     }
     // output_config.format により text は RESULT_SCHEMA に適合した JSON
-    result = parseAnalyzeResult(text);
+    const parsed = parseAnalyzeResult(text);
+    if (!parsed) {
+      return json({ error: "invalid analyze output" }, 502);
+    }
+    result = parsed;
   }
 
   ctx.waitUntil(
