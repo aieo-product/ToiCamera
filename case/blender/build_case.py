@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Build the two-piece ToiCamera enclosure and export printable STL files.
+"""Build the v2 two-piece ToiCamera enclosure and export printable STL files.
+
+The v2 enclosure turns the StopWatch into a compact-camera style body: the
+display faces the photographer (-Y) and the CamS3 lens faces the subject (+Y).
+The first exported part is the front watch ring; the second is the rear pod,
+which also acts as the cover.
 
 Headless usage:
   /Applications/Blender.app/Contents/MacOS/Blender -b \
     --python case/blender/build_case.py -- \
     --out case/blender/out/toicamera_case.stl [--part shell|lid|all]
 
-Unit contract: 1 Blender Unit = 1 mm.  STL export deliberately uses
-``use_scene_unit=False`` and ``global_scale=1.0`` so the numeric mesh values are
-written as millimetres without an implicit metre conversion.
+For compatibility with the v1 filenames, ``shell`` means the watch ring and
+``lid`` means the rear pod.  Unit contract: 1 Blender Unit = 1 mm.  STL export
+uses ``use_scene_unit=False`` and ``global_scale=1.0`` so numeric mesh values
+are written as millimetres without an implicit metre conversion.
 """
 
 import argparse
@@ -20,31 +26,33 @@ import bmesh
 import bpy
 
 
-# All design dimensions live here.  Change PARAMS, then regenerate; never edit
-# the generated STL.  TOL is the per-side assembly clearance (0.2 mm gives the
-# specified +0.4 mm cavity dimensions).
-#
-# The exact StopWatch port/button angles and the CamS3 lens/microSD positions
-# were not available in the source measurements.  The values explicitly marked
-# ADJUST AFTER FIT TEST are therefore first-print defaults, not asserted facts.
+# All design dimensions and fit-test offsets live here. Change PARAMS, then
+# regenerate; never edit the generated STL. X/Z locations use rear-view
+# coordinates: +X is right, +Z is up, while -Y is the display side and +Y is
+# the subject/lens side.
 PARAMS = {
-    "TOL": 0.2,
+    "TOL_XY": 0.2,
+    "TOL_DEPTH": 0.1,
+    "WATCH_DEPTH_CLEARANCE": 0.2,
     "BBOX_TOL": 0.3,
     "BOOLEAN_EPS": 0.25,
-    "WALL": 2.0,
-    "FILLET": 2.0,
-    "FILLET_SEGMENTS": 8,
-    "LID_THICKNESS": 1.2,  # GPS antenna-facing skin; must stay <= 1.2 mm.
-    "CAM_GPS_SEPARATOR": 2.0,
-    "POD_WATCH_SEPARATOR": 2.5,  # Matches the 2.5 mm side step for a 45-degree shoulder.
     "OPEN_CUTTER_OVERTRAVEL": 2.0,
+    "WALL": 2.0,
+    "FRONT_BEZEL_DEPTH": 2.0,
+    "REAR_SKIN": 1.2,  # GPS antenna-facing skin; must stay <= 1.2 mm.
+    "POD_AIR_GAP": 2.0,
+    "POD_SHOULDER": 2.0,  # 2 mm run over 2 mm rise = 45 degrees.
+    "FILLET_SEGMENTS": 8,
+    "RING_OUTER_FILLET": 2.0,
     "WATCH_CAVITY_FILLET": 0.8,
+    "POD_OUTER_FILLET": 16.0,
     "POD_CAVITY_FILLET": 0.6,
 
     # Measured devices.
     "WATCH_W": 52.0,
     "WATCH_H": 52.0,
     "WATCH_D": 15.5,
+    "WATCH_HEADER_PROTRUSION": 2.0,
     "CAM_W": 40.0,
     "CAM_H": 24.0,
     "CAM_D": 11.0,
@@ -52,72 +60,93 @@ PARAMS = {
     "GPS_H": 24.0,
     "GPS_D": 8.0,
 
-    # Required finished cavities.
+    # Finished XY cavities. Depth receives one-sided clearance because each
+    # board is registered against the 1.2 mm rear skin.
     "WATCH_INNER_W": 52.4,
     "WATCH_INNER_H": 52.4,
-    "WATCH_INNER_D": 16.0,
+    "WATCH_INNER_D": 15.7,
     "CAM_INNER_W": 40.4,
     "CAM_INNER_H": 24.4,
-    "CAM_INNER_D": 11.4,
+    "CAM_INNER_D": 11.1,
     "GPS_INNER_W": 48.4,
     "GPS_INNER_H": 24.4,
-    "GPS_INNER_D": 8.4,
+    "GPS_INNER_D": 8.1,
+
+    # Rear pod envelope and rear-view component locations. The pod is a small
+    # vertical oval: GPS at the top, camera at centre-right, wiring below.
+    "POD_OUTER_W": 74.0,
+    "POD_OUTER_H": 96.0,
+    "POD_CENTER_Z": 9.5,
+    "CAM_CENTER_X": 12.0,
+    "CAM_CENTER_Z": -0.3,
+    "GPS_CENTER_X": 0.0,
+    "GPS_CENTER_Z": 38.5,
     "WIRE_BAY_W": 15.0,
     "WIRE_BAY_H": 24.0,
     "WIRE_BAY_D": 8.0,
-    "WIRE_DIVIDER": 2.0,
+    "WIRE_CENTER_X": -16.0,
+    "WIRE_CENTER_Z": -22.0,
 
-    # Front and access openings.
+    # Front/rear openings.
     "DISPLAY_OPENING_D": 48.0,
+    "SPEAKER_CENTER_X": -17.5,
+    "SPEAKER_CENTER_Z": 0.0,
+    "SPEAKER_OPENING_D": 16.5,
     "LENS_OPENING_D": 10.0,
     "MICROSD_SLOT_W": 12.0,
-    "MICROSD_SLOT_D": 4.0,
-    "DUCT_W": 8.0,
-    "DUCT_D": 6.0,
-    "BUTTON_WINDOW_W": 22.0,
-    "BUTTON_WINDOW_H": 8.0,
-    "USB_WINDOW_W": 10.0,
-    "USB_WINDOW_H": 5.0,
-    "GROVE_WINDOW_W": 8.0,
-    "GROVE_WINDOW_H": 6.0,
+    "MICROSD_SLOT_H": 4.0,
 
-    # ADJUST AFTER FIT TEST: angle is in the front X/Z plane, with 0 degrees
-    # at device-right, +90 at the top, 180 at device-left, and -90 at bottom.
-    # DEPTH_OFFSET shifts the window along the front/back Y axis.
-    "BUTTON_ANGLE_DEG": 0.0,
-    "BUTTON_DEPTH_OFFSET": -0.5,
-    "USB_ANGLE_DEG": 180.0,
-    "USB_DEPTH_OFFSET": -2.0,
-    "GROVE_ANGLE_DEG": -90.0,
-    "GROVE_DEPTH_OFFSET": 0.0,
-    "PORT_RADIAL_EXTRA": 1.0,
-
-    # ADJUST AFTER FIT TEST: offsets are from the CamS3 bay centre.
-    "CAM_LENS_X_OFFSET": -12.0,
+    # ADJUST AFTER FIT TEST: offsets are from the CamS3 bay centre in rear view.
+    "CAM_LENS_X_OFFSET": -11.0,
     "CAM_LENS_Z_OFFSET": 0.0,
-    "MICROSD_X_OFFSET": 0.0,
-    "MICROSD_Y_OFFSET": -4.0,
+    "MICROSD_X_OFFSET": 5.0,
+    "MICROSD_Z_OFFSET": -8.0,
 
-    # Four rear-driven M2 self-tapping screws.
+    # Parameterised StopWatch side windows. Angles are rear-view polar angles:
+    # 0 degrees=right, +90=top, 180=left, -90=bottom.
+    "PORT_RADIAL_EXTRA": 1.0,
+    "BUTTON_ANGLE_DEG": 180.0,
+    "BUTTON_WINDOW_DEPTH": 8.0,
+    "BUTTON_WINDOW_TANGENT": 22.0,
+    "BUTTON_DEPTH_OFFSET": 0.0,
+    "USB_ANGLE_DEG": 0.0,
+    "USB_WINDOW_DEPTH": 10.0,
+    "USB_WINDOW_TANGENT": 5.0,
+    "USB_DEPTH_OFFSET": 0.0,
+    "POWER_ANGLE_DEG": 20.0,
+    "POWER_WINDOW_DEPTH": 8.0,
+    "POWER_WINDOW_TANGENT": 5.0,
+    "POWER_DEPTH_OFFSET": 0.0,
+    "GROVE_ANGLE_DEG": -45.0,
+    "GROVE_WINDOW_DEPTH": 10.0,
+    "GROVE_WINDOW_TANGENT": 8.0,
+    "GROVE_RING_RADIAL_CENTER": 38.0,
+    "GROVE_RING_RADIAL_LENGTH": 14.0,
+    "GROVE_POD_NOTCH_DEPTH": 3.0,
+    "GROVE_POD_RADIAL_CENTER": 39.0,
+    "GROVE_POD_RADIAL_LENGTH": 22.0,
+
+    # Four rear-driven M2 self-tapping screws. The bosses are part of the ring
+    # and extend into clearance tunnels in the rear pod.
     "SCREW_BOSS_D": 5.6,
     "SCREW_PILOT_D": 1.7,
     "SCREW_CLEARANCE_D": 2.4,
-    "SCREW_BOSS_FRONT_OVERLAP": 0.2,
-    "SCREW_PILOT_DEPTH": 4.8,
-    "SCREW_X_INSET": 1.4,
-    "SCREW_Z_INSET": 3.2,
+    "SCREW_BOSS_FRONT_OVERLAP": 0.8,
+    "SCREW_PILOT_DEPTH": 8.0,
+    "SCREW_CENTER_X": 29.0,
+    "SCREW_CENTER_Z": 22.0,
 }
 
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    parser = argparse.ArgumentParser(description="Build the ToiCamera enclosure")
+    parser = argparse.ArgumentParser(description="Build the ToiCamera v2 enclosure")
     parser.add_argument("--out", required=True, help="output STL path")
     parser.add_argument(
         "--part",
         choices=("shell", "lid", "all"),
         default="all",
-        help="part to export; all adds _shell/_lid before the extension",
+        help="part to export: shell=watch ring, lid=rear pod",
     )
     parser.add_argument(
         "--bbox-tol",
@@ -130,57 +159,47 @@ def parse_args():
 
 def derived():
     p = PARAMS
-    pod_inner_w = p["CAM_INNER_W"] + p["WIRE_DIVIDER"] + p["WIRE_BAY_W"]
-    pod_outer_w = pod_inner_w + 2.0 * p["WALL"]
-    watch_outer_w = p["WATCH_INNER_W"] + 2.0 * p["WALL"]
-    pod_outer_h = p["WALL"] + p["CAM_INNER_H"] + p["POD_WATCH_SEPARATOR"]
-    total_h = (
-        p["WALL"]
-        + p["CAM_INNER_H"]
-        + p["POD_WATCH_SEPARATOR"]
-        + p["WATCH_INNER_H"]
-        + p["WALL"]
-    )
-    total_d = (
-        p["WALL"]
-        + p["CAM_INNER_D"]
-        + p["CAM_GPS_SEPARATOR"]
-        + p["GPS_INNER_D"]
-        + p["LID_THICKNESS"]
-    )
-    shell_d = total_d - p["LID_THICKNESS"]
-    front_y = -total_d / 2.0
-    shell_back_y = total_d / 2.0 - p["LID_THICKNESS"]
-    inner_front_y = front_y + p["WALL"]
-    cam_back_y = inner_front_y + p["CAM_INNER_D"]
-    gps_front_y = cam_back_y + p["CAM_GPS_SEPARATOR"]
-    watch_z0 = p["WALL"] + p["CAM_INNER_H"] + p["POD_WATCH_SEPARATOR"]
-    watch_z1 = watch_z0 + p["WATCH_INNER_H"]
-    pod_inner_z0 = p["WALL"]
-    pod_inner_z1 = pod_inner_z0 + p["CAM_INNER_H"]
-    cam_x = -pod_inner_w / 2.0 + p["CAM_INNER_W"] / 2.0
-    wire_x = pod_inner_w / 2.0 - p["WIRE_BAY_W"] / 2.0
+    ring_outer_w = p["WATCH_INNER_W"] + 2.0 * p["WALL"]
+    ring_outer_h = p["WATCH_INNER_H"] + 2.0 * p["WALL"]
+    ring_depth = p["FRONT_BEZEL_DEPTH"] + p["WATCH_INNER_D"]
+    pod_inner_depth = p["POD_AIR_GAP"] + p["CAM_INNER_D"]
+    pod_depth = pod_inner_depth + p["REAR_SKIN"]
+    total_depth = ring_depth + pod_depth
+    front_y = -total_depth / 2.0
+    ring_back_y = front_y + ring_depth
+    rear_inner_y = ring_back_y + pod_inner_depth
+    pod_back_y = rear_inner_y + p["REAR_SKIN"]
+    watch_inner_front_y = front_y + p["FRONT_BEZEL_DEPTH"]
+    watch_actual_back_y = watch_inner_front_y + p["WATCH_D"]
+    camera_actual_front_y = rear_inner_y - p["CAM_D"]
+    gps_actual_front_y = rear_inner_y - p["GPS_D"]
+    shoulder_angle = math.degrees(math.atan2(p["POD_SHOULDER"], p["POD_SHOULDER"]))
+    boss_end_y = rear_inner_y
+    shell_bbox_w = max(ring_outer_w, 2.0 * (p["SCREW_CENTER_X"] + p["SCREW_BOSS_D"] / 2.0))
+    shell_bbox_h = max(ring_outer_h, 2.0 * (p["SCREW_CENTER_Z"] + p["SCREW_BOSS_D"] / 2.0))
     return {
-        "pod_inner_w": pod_inner_w,
-        "pod_outer_w": pod_outer_w,
-        "watch_outer_w": watch_outer_w,
-        "pod_outer_h": pod_outer_h,
-        "total_h": total_h,
-        "total_d": total_d,
-        "shell_d": shell_d,
+        "ring_outer_w": ring_outer_w,
+        "ring_outer_h": ring_outer_h,
+        "ring_depth": ring_depth,
+        "pod_inner_depth": pod_inner_depth,
+        "pod_depth": pod_depth,
+        "total_depth": total_depth,
         "front_y": front_y,
-        "shell_back_y": shell_back_y,
-        "inner_front_y": inner_front_y,
-        "cam_back_y": cam_back_y,
-        "gps_front_y": gps_front_y,
-        "watch_z0": watch_z0,
-        "watch_z1": watch_z1,
-        "pod_inner_z0": pod_inner_z0,
-        "pod_inner_z1": pod_inner_z1,
-        "cam_x": cam_x,
-        "wire_x": wire_x,
-        "watch_center_z": (watch_z0 + watch_z1) / 2.0,
-        "pod_center_z": (pod_inner_z0 + pod_inner_z1) / 2.0,
+        "ring_back_y": ring_back_y,
+        "rear_inner_y": rear_inner_y,
+        "pod_back_y": pod_back_y,
+        "watch_inner_front_y": watch_inner_front_y,
+        "watch_center_y": watch_inner_front_y + p["WATCH_INNER_D"] / 2.0,
+        "watch_actual_back_y": watch_actual_back_y,
+        "camera_actual_front_y": camera_actual_front_y,
+        "gps_actual_front_y": gps_actual_front_y,
+        "camera_air_gap": camera_actual_front_y - watch_actual_back_y,
+        "gps_air_gap": gps_actual_front_y - watch_actual_back_y,
+        "shoulder_angle": shoulder_angle,
+        "boss_end_y": boss_end_y,
+        "shell_bbox_w": shell_bbox_w,
+        "shell_bbox_h": shell_bbox_h,
+        "shell_bbox_d": boss_end_y - front_y,
     }
 
 
@@ -195,31 +214,125 @@ def reset_scene():
     units.length_unit = "MILLIMETERS"
 
 
+def rect_bounds(cx, cz, width, height):
+    return (cx - width / 2.0, cx + width / 2.0, cz - height / 2.0, cz + height / 2.0)
+
+
+def rectangles_overlap(first, second):
+    return first[0] < second[1] and first[1] > second[0] and first[2] < second[3] and first[3] > second[2]
+
+
+def point_inside_rounded_rect(x, z, width, height, radius, center_x=0.0, center_z=0.0):
+    half_w = width / 2.0
+    half_h = height / 2.0
+    dx = abs(x - center_x)
+    dz = abs(z - center_z)
+    if dx > half_w or dz > half_h:
+        return False
+    corner_dx = max(dx - (half_w - radius), 0.0)
+    corner_dz = max(dz - (half_h - radius), 0.0)
+    return corner_dx * corner_dx + corner_dz * corner_dz <= radius * radius + 1.0e-9
+
+
+def rectangle_inside_rounded_rect_with_wall(inner, width, height, radius, wall, center_z):
+    inset_width = width - 2.0 * wall
+    inset_height = height - 2.0 * wall
+    inset_radius = radius - wall
+    corners = (
+        (inner[0], inner[2]),
+        (inner[0], inner[3]),
+        (inner[1], inner[2]),
+        (inner[1], inner[3]),
+    )
+    return all(
+        point_inside_rounded_rect(x, z, inset_width, inset_height, inset_radius, center_z=center_z)
+        for x, z in corners
+    )
+
+
 def validate_param_contract():
     p = PARAMS
-    clearance_pairs = (
+    xy_clearance_pairs = (
         ("WATCH_W", "WATCH_INNER_W"),
         ("WATCH_H", "WATCH_INNER_H"),
         ("CAM_W", "CAM_INNER_W"),
         ("CAM_H", "CAM_INNER_H"),
-        ("CAM_D", "CAM_INNER_D"),
         ("GPS_W", "GPS_INNER_W"),
         ("GPS_H", "GPS_INNER_H"),
-        ("GPS_D", "GPS_INNER_D"),
     )
-    for device_key, cavity_key in clearance_pairs:
-        expected = p[device_key] + 2.0 * p["TOL"]
+    for device_key, cavity_key in xy_clearance_pairs:
+        expected = p[device_key] + 2.0 * p["TOL_XY"]
         if not math.isclose(p[cavity_key], expected, abs_tol=1.0e-9):
-            raise ValueError(f"{cavity_key} must equal {device_key} + 2*TOL")
-    if p["LID_THICKNESS"] > 1.2:
-        raise ValueError("LID_THICKNESS exceeds the GPS antenna skin limit")
-    shoulder_run = (D["pod_outer_w"] - D["watch_outer_w"]) / 2.0
-    shoulder_rise = p["POD_WATCH_SEPARATOR"]
-    shoulder_angle = math.degrees(math.atan2(shoulder_rise, shoulder_run))
-    if shoulder_angle < 45.0 - 1.0e-6:
+            raise ValueError(f"{cavity_key} must equal {device_key} + 2*TOL_XY")
+
+    depth_clearance_pairs = (
+        ("WATCH_D", "WATCH_INNER_D", p["WATCH_DEPTH_CLEARANCE"]),
+        ("CAM_D", "CAM_INNER_D", p["TOL_DEPTH"]),
+        ("GPS_D", "GPS_INNER_D", p["TOL_DEPTH"]),
+    )
+    for device_key, cavity_key, clearance in depth_clearance_pairs:
+        expected = p[device_key] + clearance
+        if not math.isclose(p[cavity_key], expected, abs_tol=1.0e-9):
+            raise ValueError(f"{cavity_key} depth clearance is inconsistent")
+
+    if not math.isclose(p["WALL"], 2.0, abs_tol=1.0e-9):
+        raise ValueError("v2 nominal wall must remain 2.0 mm")
+    if not math.isclose(p["REAR_SKIN"], 1.2, abs_tol=1.0e-9):
+        raise ValueError("v2 GPS antenna-facing skin must remain 1.2 mm")
+    if p["SPEAKER_OPENING_D"] < 16.0:
+        raise ValueError("speaker opening must be at least 16 mm")
+    if D["camera_air_gap"] < p["POD_AIR_GAP"]:
+        raise ValueError("camera violates the 2 mm watch-rear air gap")
+    if D["camera_air_gap"] < p["WATCH_HEADER_PROTRUSION"]:
+        raise ValueError("camera does not clear the rear header protrusion")
+    if D["total_depth"] > 32.0 + 1.0e-9:
+        raise ValueError("assembled depth exceeds the 32 mm v2 target")
+    if D["shoulder_angle"] < 45.0 - 1.0e-6:
         raise ValueError("pod shoulder is shallower than 45 degrees")
+
+    cam = rect_bounds(p["CAM_CENTER_X"], p["CAM_CENTER_Z"], p["CAM_INNER_W"], p["CAM_INNER_H"])
+    gps = rect_bounds(p["GPS_CENTER_X"], p["GPS_CENTER_Z"], p["GPS_INNER_W"], p["GPS_INNER_H"])
+    wire = rect_bounds(p["WIRE_CENTER_X"], p["WIRE_CENTER_Z"], p["WIRE_BAY_W"], p["WIRE_BAY_H"])
+    pod_front_w = p["POD_OUTER_W"] - 2.0 * p["POD_SHOULDER"]
+    pod_front_h = p["POD_OUTER_H"] - 2.0 * p["POD_SHOULDER"]
+    pod_front_radius = p["POD_OUTER_FILLET"] - p["POD_SHOULDER"]
+    if not all(
+        rectangle_inside_rounded_rect_with_wall(
+            item,
+            pod_front_w,
+            pod_front_h,
+            pod_front_radius,
+            p["WALL"],
+            p["POD_CENTER_Z"],
+        )
+        for item in (cam, gps, wire)
+    ):
+        raise ValueError("a rear pod bay violates the 2 mm wall at the 45-degree front shoulder")
+    if rectangles_overlap(cam, gps) or rectangles_overlap(cam, wire) or rectangles_overlap(gps, wire):
+        raise ValueError("rear pod component bays overlap in the rear-view plane")
+    if gps[2] <= p["WATCH_INNER_H"] / 2.0:
+        raise ValueError("GPS bay must sit outside the upper watch/header edge")
+
+    for name, bay in (("CamS3", cam), ("GPS", gps), ("wire", wire)):
+        speaker_dx = max(bay[0] - p["SPEAKER_CENTER_X"], 0.0, p["SPEAKER_CENTER_X"] - bay[1])
+        speaker_dz = max(bay[2] - p["SPEAKER_CENTER_Z"], 0.0, p["SPEAKER_CENTER_Z"] - bay[3])
+        if math.hypot(speaker_dx, speaker_dz) <= p["SPEAKER_OPENING_D"] / 2.0:
+            raise ValueError(f"{name} bay intrudes into the speaker opening")
+
+    boss_radius = p["SCREW_BOSS_D"] / 2.0
+    for screw_x, screw_z in screw_positions():
+        for name, bay in (("CamS3", cam), ("GPS", gps), ("wire", wire)):
+            boss_dx = max(bay[0] - screw_x, 0.0, screw_x - bay[1])
+            boss_dz = max(bay[2] - screw_z, 0.0, screw_z - bay[3])
+            if math.hypot(boss_dx, boss_dz) <= boss_radius:
+                raise ValueError(f"M2 boss intrudes into the {name} bay")
+
     print("PARAM_CONTRACT: PASS")
-    print(f"POD_SHOULDER_ANGLE: {shoulder_angle:.3f} degrees from build plate")
+    print(f"ASSEMBLED_DEPTH: {D['total_depth']:.3f} mm (target <= 32.000 mm)")
+    print(f"CAMERA_WATCH_REAR_AIR_GAP: {D['camera_air_gap']:.3f} mm (minimum 2.000 mm)")
+    print(f"GPS_WATCH_REAR_AIR_GAP: {D['gps_air_gap']:.3f} mm")
+    print(f"SPEAKER_OPENING: {p['SPEAKER_OPENING_D']:.3f} mm (minimum 16.000 mm)")
+    print(f"POD_SHOULDER_ANGLE: {D['shoulder_angle']:.3f} degrees from build plate")
 
 
 def activate(obj):
@@ -285,34 +398,56 @@ def append_arc(points, cx, cz, radius, angle0, angle1, segments, include_first=F
         points.append((cx + radius * math.cos(angle), cz + radius * math.sin(angle)))
 
 
-def enclosure_profile():
-    """XZ outline with 2 mm top/bottom fillets and a <=45 degree pod shoulder."""
-    radius = PARAMS["FILLET"]
+def rounded_rect_profile(width, height, radius, center_x=0.0, center_z=0.0):
+    """Return a counter-clockwise XZ rounded-rectangle profile."""
+    half_w = width / 2.0
+    half_h = height / 2.0
+    radius = min(radius, half_w, half_h)
     segments = PARAMS["FILLET_SEGMENTS"]
-    pod_half = D["pod_outer_w"] / 2.0
-    watch_half = D["watch_outer_w"] / 2.0
-    shoulder_z0 = D["pod_inner_z1"]
-    shoulder_z1 = D["watch_z0"]
-    top = D["total_h"]
-
-    points = [(-pod_half + radius, 0.0), (pod_half - radius, 0.0)]
-    append_arc(points, pod_half - radius, radius, radius, -90.0, 0.0, segments)
-    points.extend([(pod_half, shoulder_z0), (watch_half, shoulder_z1), (watch_half, top - radius)])
-    append_arc(points, watch_half - radius, top - radius, radius, 0.0, 90.0, segments)
-    points.append((-watch_half + radius, top))
-    append_arc(points, -watch_half + radius, top - radius, radius, 90.0, 180.0, segments)
-    points.extend([(-watch_half, shoulder_z1), (-pod_half, shoulder_z0), (-pod_half, radius)])
-    append_arc(points, -pod_half + radius, radius, radius, 180.0, 270.0, segments)
+    points = [(center_x - half_w + radius, center_z - half_h)]
+    points.append((center_x + half_w - radius, center_z - half_h))
+    append_arc(points, center_x + half_w - radius, center_z - half_h + radius, radius, -90.0, 0.0, segments)
+    points.append((center_x + half_w, center_z + half_h - radius))
+    append_arc(points, center_x + half_w - radius, center_z + half_h - radius, radius, 0.0, 90.0, segments)
+    points.append((center_x - half_w + radius, center_z + half_h))
+    append_arc(points, center_x - half_w + radius, center_z + half_h - radius, radius, 90.0, 180.0, segments)
+    points.append((center_x - half_w, center_z - half_h + radius))
+    append_arc(points, center_x - half_w + radius, center_z - half_h + radius, radius, 180.0, 270.0, segments)
+    # The final arc endpoint equals the initial point. Polygon loops close
+    # implicitly, so remove that duplicate to avoid a zero-length mesh edge.
+    points.pop()
     return points
 
 
-def extrude_xz_profile(name, points, y0, y1):
-    count = len(points)
-    vertices = [(x, y0, z) for x, z in points] + [(x, y1, z) for x, z in points]
-    faces = [list(range(count)), list(range(2 * count - 1, count - 1, -1))]
-    for index in range(count):
-        nxt = (index + 1) % count
-        faces.append([index, count + index, count + nxt, nxt])
+def loft_mesh_data(profile_layers):
+    """Return vertices/faces for a capped loft of equal-length XZ profiles."""
+    count = len(profile_layers[0][1])
+    if any(len(points) != count for _, points in profile_layers):
+        raise ValueError("loft profiles must have equal vertex counts")
+    vertices = []
+    for y, points in profile_layers:
+        vertices.extend((x, y, z) for x, z in points)
+
+    layer_count = len(profile_layers)
+    # XZ profiles are counter-clockwise when viewed from -Y, so the front cap
+    # keeps profile order and the rear cap reverses it (matching the proven v1
+    # extrusion winding). Side quads follow the same outward orientation.
+    faces = [list(range(count))]
+    for layer in range(layer_count - 1):
+        base = layer * count
+        nxt_base = (layer + 1) * count
+        for index in range(count):
+            nxt = (index + 1) % count
+            faces.append([base + index, nxt_base + index, nxt_base + nxt, base + nxt])
+    last = (layer_count - 1) * count
+    faces.append([last + index for index in range(count - 1, -1, -1)])
+    return vertices, faces
+
+
+def loft_xz_profiles(name, profile_layers):
+    """Create a Blender solid from XZ profile layers along Y."""
+    vertices, faces = loft_mesh_data(profile_layers)
+
     mesh = bpy.data.meshes.new(name + "_mesh")
     mesh.from_pydata(vertices, [], faces)
     mesh.validate(verbose=True)
@@ -322,223 +457,281 @@ def extrude_xz_profile(name, points, y0, y1):
     return obj
 
 
-def radial_watch_cutout(shell, name, angle_deg, width_y, height_tangent, depth_offset):
+def extrude_xz_profile(name, points, y0, y1):
+    return loft_xz_profiles(name, ((y0, points), (y1, points)))
+
+
+def radial_cutout(target, name, angle_deg, radial_center, radial_length, depth_y, tangent_height, center_y):
     angle = math.radians(angle_deg)
-    radius = PARAMS["WATCH_INNER_W"] / 2.0 + PARAMS["PORT_RADIAL_EXTRA"]
     centre = (
-        radius * math.cos(angle),
-        depth_offset,
-        D["watch_center_z"] + radius * math.sin(angle),
+        radial_center * math.cos(angle),
+        center_y,
+        radial_center * math.sin(angle),
     )
-    cutter = box(
-        name,
-        PARAMS["WALL"] * 4.0,
-        width_y,
-        height_tangent,
-        centre,
-    )
+    cutter = box(name, radial_length, depth_y, tangent_height, centre)
     cutter.rotation_euler = (0.0, -angle, 0.0)
     apply_transform(cutter)
-    boolean(shell, cutter, "DIFFERENCE")
+    boolean(target, cutter, "DIFFERENCE")
 
 
-def add_screw_bosses(shell):
+def watch_side_cutout(ring, name, angle_deg, depth, tangent, depth_offset=0.0, radial_center=None, radial_length=None):
     p = PARAMS
-    watch_back_y = D["inner_front_y"] + p["WATCH_INNER_D"]
-    boss_front_y = watch_back_y - p["SCREW_BOSS_FRONT_OVERLAP"]
-    boss_depth = D["shell_back_y"] - boss_front_y
-    boss_y = (boss_front_y + D["shell_back_y"]) / 2.0
-    screw_x = p["WATCH_INNER_W"] / 2.0 - p["SCREW_X_INSET"]
-    screw_zs = (
-        D["watch_z0"] + p["SCREW_Z_INSET"],
-        D["watch_z1"] - p["SCREW_Z_INSET"],
+    center_y = D["watch_inner_front_y"] + p["WATCH_INNER_D"] / 2.0 + depth_offset
+    radial_cutout(
+        ring,
+        name,
+        angle_deg,
+        radial_center if radial_center is not None else p["WATCH_INNER_W"] / 2.0 + p["PORT_RADIAL_EXTRA"],
+        radial_length if radial_length is not None else p["WALL"] * 4.0,
+        depth,
+        tangent,
+        center_y,
     )
-    for x in (-screw_x, screw_x):
-        for z in screw_zs:
-            boss = cylinder_y("m2_boss", p["SCREW_BOSS_D"], boss_depth, (x, boss_y, z))
-            boolean(shell, boss, "UNION")
-            pilot_end = D["shell_back_y"] + p["BOOLEAN_EPS"]
-            pilot_start = pilot_end - p["SCREW_PILOT_DEPTH"]
-            pilot = cylinder_y(
-                "m2_pilot",
-                p["SCREW_PILOT_D"],
-                pilot_end - pilot_start,
-                (x, (pilot_start + pilot_end) / 2.0, z),
-            )
-            boolean(shell, pilot, "DIFFERENCE")
-
-
-def build_shell():
-    p = PARAMS
-    eps = p["BOOLEAN_EPS"]
-    shell = extrude_xz_profile("toicamera_shell", enclosure_profile(), D["front_y"], D["shell_back_y"])
-
-    # Rear-open StopWatch cradle, while retaining an exact 2 mm front skin.
-    watch_depth = D["shell_back_y"] + p["OPEN_CUTTER_OVERTRAVEL"] - D["inner_front_y"]
-    watch = rounded_box(
-        "watch_cradle",
-        p["WATCH_INNER_W"],
-        watch_depth,
-        p["WATCH_INNER_H"],
-        p["WATCH_CAVITY_FILLET"],
-        (0.0, D["inner_front_y"] + watch_depth / 2.0, D["watch_center_z"]),
-    )
-    boolean(shell, watch, "DIFFERENCE")
-
-    # Front CamS3 bay (left) and an independent 15 x 24 x 8 mm wiring bay (right).
-    cam_y = (D["inner_front_y"] + D["cam_back_y"]) / 2.0
-    cam = rounded_box(
-        "cams3_bay",
-        p["CAM_INNER_W"],
-        p["CAM_INNER_D"],
-        p["CAM_INNER_H"],
-        p["POD_CAVITY_FILLET"],
-        (D["cam_x"], cam_y, D["pod_center_z"]),
-    )
-    boolean(shell, cam, "DIFFERENCE")
-
-    wire_back = D["cam_back_y"]
-    wire_front = wire_back - p["WIRE_BAY_D"]
-    wire = rounded_box(
-        "grove_y_bay",
-        p["WIRE_BAY_W"],
-        p["WIRE_BAY_D"],
-        p["WIRE_BAY_H"],
-        p["POD_CAVITY_FILLET"],
-        (D["wire_x"], (wire_front + wire_back) / 2.0, D["pod_center_z"]),
-    )
-    boolean(shell, wire, "DIFFERENCE")
-
-    # GPS is flat behind the camera; its antenna points toward the 1.2 mm lid.
-    gps_depth = D["shell_back_y"] + p["OPEN_CUTTER_OVERTRAVEL"] - D["gps_front_y"]
-    gps = rounded_box(
-        "gps_bay",
-        p["GPS_INNER_W"],
-        gps_depth,
-        p["GPS_INNER_H"],
-        p["POD_CAVITY_FILLET"],
-        (0.0, D["gps_front_y"] + gps_depth / 2.0, D["pod_center_z"]),
-    )
-    boolean(shell, gps, "DIFFERENCE")
-
-    # Internal watch-to-pod duct (8 x 6) and a matching pass-through in the
-    # Cam/GPS separator.  Both terminate inside the protected wiring bay.
-    vertical_duct = box(
-        "watch_grove_duct",
-        p["DUCT_W"],
-        p["DUCT_D"],
-        p["POD_WATCH_SEPARATOR"] + 2.0 * eps,
-        (
-            D["wire_x"],
-            (wire_front + wire_back) / 2.0,
-            D["watch_z0"] - p["POD_WATCH_SEPARATOR"] / 2.0,
-        ),
-    )
-    boolean(shell, vertical_duct, "DIFFERENCE")
-    separator_duct = box(
-        "gps_grove_duct",
-        p["DUCT_W"],
-        p["CAM_GPS_SEPARATOR"] + 2.0 * eps,
-        p["DUCT_D"],
-        (D["wire_x"], (D["cam_back_y"] + D["gps_front_y"]) / 2.0, D["pod_center_z"]),
-    )
-    boolean(shell, separator_duct, "DIFFERENCE")
-
-    # Front display and camera apertures.
-    front_hole_depth = p["WALL"] + 2.0 * eps
-    display = cylinder_y(
-        "display_opening",
-        p["DISPLAY_OPENING_D"],
-        front_hole_depth,
-        (0.0, D["front_y"] + p["WALL"] / 2.0, D["watch_center_z"]),
-        vertices=128,
-    )
-    boolean(shell, display, "DIFFERENCE")
-    lens = cylinder_y(
-        "lens_opening",
-        p["LENS_OPENING_D"],
-        front_hole_depth,
-        (
-            D["cam_x"] + p["CAM_LENS_X_OFFSET"],
-            D["front_y"] + p["WALL"] / 2.0,
-            D["pod_center_z"] + p["CAM_LENS_Z_OFFSET"],
-        ),
-        vertices=64,
-    )
-    boolean(shell, lens, "DIFFERENCE")
-
-    # microSD access through the pod floor (position is intentionally adjustable).
-    microsd = box(
-        "microsd_access",
-        p["MICROSD_SLOT_W"],
-        p["MICROSD_SLOT_D"],
-        p["WALL"] + 2.0 * eps,
-        (
-            D["cam_x"] + p["MICROSD_X_OFFSET"],
-            cam_y + p["MICROSD_Y_OFFSET"],
-            p["WALL"] / 2.0,
-        ),
-    )
-    boolean(shell, microsd, "DIFFERENCE")
-
-    # Parameterised StopWatch side windows (unknown production-unit angles).
-    radial_watch_cutout(
-        shell,
-        "keya_keyb_window",
-        p["BUTTON_ANGLE_DEG"],
-        p["BUTTON_WINDOW_W"],
-        p["BUTTON_WINDOW_H"],
-        p["BUTTON_DEPTH_OFFSET"],
-    )
-    radial_watch_cutout(
-        shell,
-        "usb_c_window",
-        p["USB_ANGLE_DEG"],
-        p["USB_WINDOW_W"],
-        p["USB_WINDOW_H"],
-        p["USB_DEPTH_OFFSET"],
-    )
-    radial_watch_cutout(
-        shell,
-        "grove_lower_window",
-        p["GROVE_ANGLE_DEG"],
-        p["GROVE_WINDOW_W"],
-        p["GROVE_WINDOW_H"],
-        p["GROVE_DEPTH_OFFSET"],
-    )
-
-    add_screw_bosses(shell)
-    shell.name = "toicamera_case_shell"
-    return shell
 
 
 def screw_positions():
-    x = PARAMS["WATCH_INNER_W"] / 2.0 - PARAMS["SCREW_X_INSET"]
-    zs = (
-        D["watch_z0"] + PARAMS["SCREW_Z_INSET"],
-        D["watch_z1"] - PARAMS["SCREW_Z_INSET"],
-    )
-    return [(sx, z) for sx in (-x, x) for z in zs]
-
-
-def build_lid():
     p = PARAMS
-    lid = extrude_xz_profile(
-        "toicamera_case_lid",
-        enclosure_profile(),
-        D["shell_back_y"],
-        D["shell_back_y"] + p["LID_THICKNESS"],
+    return [
+        (sx, sz)
+        for sx in (-p["SCREW_CENTER_X"], p["SCREW_CENTER_X"])
+        for sz in (-p["SCREW_CENTER_Z"], p["SCREW_CENTER_Z"])
+    ]
+
+
+def add_ring_screw_bosses(ring):
+    p = PARAMS
+    boss_front_y = D["ring_back_y"] - p["SCREW_BOSS_FRONT_OVERLAP"]
+    boss_depth = D["boss_end_y"] - boss_front_y
+    boss_y = (boss_front_y + D["boss_end_y"]) / 2.0
+    for x, z in screw_positions():
+        boss = cylinder_y("m2_ring_boss", p["SCREW_BOSS_D"], boss_depth, (x, boss_y, z))
+        boolean(ring, boss, "UNION")
+        pilot_end = D["boss_end_y"] + p["BOOLEAN_EPS"]
+        pilot_start = pilot_end - p["SCREW_PILOT_DEPTH"]
+        pilot = cylinder_y(
+            "m2_ring_pilot",
+            p["SCREW_PILOT_D"],
+            pilot_end - pilot_start,
+            (x, (pilot_start + pilot_end) / 2.0, z),
+        )
+        boolean(ring, pilot, "DIFFERENCE")
+
+
+def build_ring():
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    profile = rounded_rect_profile(
+        D["ring_outer_w"],
+        D["ring_outer_h"],
+        p["RING_OUTER_FILLET"],
     )
-    hole_depth = p["LID_THICKNESS"] + 2.0 * p["BOOLEAN_EPS"]
+    ring = extrude_xz_profile("toicamera_watch_ring", profile, D["front_y"], D["ring_back_y"])
+
+    # Rear-open watch cradle, retaining a 2 mm front bezel around the Ø48 display.
+    watch_start_y = D["watch_inner_front_y"]
+    watch_end_y = D["ring_back_y"] + p["OPEN_CUTTER_OVERTRAVEL"]
+    watch = rounded_box(
+        "watch_cradle",
+        p["WATCH_INNER_W"],
+        watch_end_y - watch_start_y,
+        p["WATCH_INNER_H"],
+        p["WATCH_CAVITY_FILLET"],
+        (0.0, (watch_start_y + watch_end_y) / 2.0, 0.0),
+    )
+    boolean(ring, watch, "DIFFERENCE")
+
+    display = cylinder_y(
+        "display_opening",
+        p["DISPLAY_OPENING_D"],
+        p["FRONT_BEZEL_DEPTH"] + 2.0 * eps,
+        (0.0, D["front_y"] + p["FRONT_BEZEL_DEPTH"] / 2.0, 0.0),
+        vertices=128,
+    )
+    boolean(ring, display, "DIFFERENCE")
+
+    watch_side_cutout(
+        ring,
+        "keya_keyb_window_rear_left",
+        p["BUTTON_ANGLE_DEG"],
+        p["BUTTON_WINDOW_DEPTH"],
+        p["BUTTON_WINDOW_TANGENT"],
+        p["BUTTON_DEPTH_OFFSET"],
+    )
+    watch_side_cutout(
+        ring,
+        "usb_c_window_rear_right",
+        p["USB_ANGLE_DEG"],
+        p["USB_WINDOW_DEPTH"],
+        p["USB_WINDOW_TANGENT"],
+        p["USB_DEPTH_OFFSET"],
+    )
+    watch_side_cutout(
+        ring,
+        "power_button_window_rear_right",
+        p["POWER_ANGLE_DEG"],
+        p["POWER_WINDOW_DEPTH"],
+        p["POWER_WINDOW_TANGENT"],
+        p["POWER_DEPTH_OFFSET"],
+        radial_center=29.0,
+        radial_length=12.0,
+    )
+
+    # The 10 x 8 Grove window is at 4-5 o'clock and occupies the rear end of
+    # the ring so the plug turns directly into the pod instead of protruding.
+    grove_center_y = D["ring_back_y"] - p["GROVE_WINDOW_DEPTH"] / 2.0
+    radial_cutout(
+        ring,
+        "grove_10x8_recess_rear_lower_right",
+        p["GROVE_ANGLE_DEG"],
+        p["GROVE_RING_RADIAL_CENTER"],
+        p["GROVE_RING_RADIAL_LENGTH"],
+        p["GROVE_WINDOW_DEPTH"],
+        p["GROVE_WINDOW_TANGENT"],
+        grove_center_y,
+    )
+
+    add_ring_screw_bosses(ring)
+    ring.name = "toicamera_case_shell_watch_ring_v2"
+    return ring
+
+
+def build_pod():
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    shoulder = p["POD_SHOULDER"]
+    front_profile = rounded_rect_profile(
+        p["POD_OUTER_W"] - 2.0 * shoulder,
+        p["POD_OUTER_H"] - 2.0 * shoulder,
+        p["POD_OUTER_FILLET"] - shoulder,
+        center_z=p["POD_CENTER_Z"],
+    )
+    full_profile = rounded_rect_profile(
+        p["POD_OUTER_W"],
+        p["POD_OUTER_H"],
+        p["POD_OUTER_FILLET"],
+        center_z=p["POD_CENTER_Z"],
+    )
+    pod = loft_xz_profiles(
+        "toicamera_rear_pod",
+        (
+            (D["ring_back_y"], front_profile),
+            (D["ring_back_y"] + shoulder, full_profile),
+            (D["pod_back_y"], full_profile),
+        ),
+    )
+
+    # A full-watch plenum guarantees a 2 mm unobstructed air gap over the
+    # speaker, both header rows, and the 12/6 o'clock watch screws.
+    plenum_start = D["ring_back_y"] - p["OPEN_CUTTER_OVERTRAVEL"]
+    plenum_end = D["ring_back_y"] + p["POD_AIR_GAP"] + eps
+    plenum = rounded_box(
+        "watch_rear_air_plenum_2mm",
+        p["WATCH_INNER_W"],
+        plenum_end - plenum_start,
+        p["WATCH_INNER_H"],
+        p["WATCH_CAVITY_FILLET"],
+        (0.0, (plenum_start + plenum_end) / 2.0, 0.0),
+    )
+    boolean(pod, plenum, "DIFFERENCE")
+
+    # Camera and GPS pockets open toward the watch. Both boards register on the
+    # rear skin, leaving 2.3 mm and 5.3 mm respectively to the actual watch back.
+    cavity_start = D["ring_back_y"] - p["OPEN_CUTTER_OVERTRAVEL"]
+    cavity_end = D["rear_inner_y"]
+    camera = rounded_box(
+        "cams3_rear_bay",
+        p["CAM_INNER_W"],
+        cavity_end - cavity_start,
+        p["CAM_INNER_H"],
+        p["POD_CAVITY_FILLET"],
+        (p["CAM_CENTER_X"], (cavity_start + cavity_end) / 2.0, p["CAM_CENTER_Z"]),
+    )
+    boolean(pod, camera, "DIFFERENCE")
+    gps = rounded_box(
+        "gps_upper_bay",
+        p["GPS_INNER_W"],
+        cavity_end - cavity_start,
+        p["GPS_INNER_H"],
+        p["POD_CAVITY_FILLET"],
+        (p["GPS_CENTER_X"], (cavity_start + cavity_end) / 2.0, p["GPS_CENTER_Z"]),
+    )
+    boolean(pod, gps, "DIFFERENCE")
+
+    # 15 x 24 x 8 mm protected space for the Y splice and service loop.
+    wire_end = D["ring_back_y"] + p["WIRE_BAY_D"]
+    wire = rounded_box(
+        "grove_y_and_service_loop_bay",
+        p["WIRE_BAY_W"],
+        wire_end - cavity_start,
+        p["WIRE_BAY_H"],
+        p["POD_CAVITY_FILLET"],
+        (p["WIRE_CENTER_X"], (cavity_start + wire_end) / 2.0, p["WIRE_CENTER_Z"]),
+    )
+    boolean(pod, wire, "DIFFERENCE")
+
+    # Matching pod-front notch. It opens only into the protected rear plenum;
+    # the external cable run therefore ends at the ring edge.
+    radial_cutout(
+        pod,
+        "grove_pod_entry_notch",
+        p["GROVE_ANGLE_DEG"],
+        p["GROVE_POD_RADIAL_CENTER"],
+        p["GROVE_POD_RADIAL_LENGTH"],
+        p["GROVE_POD_NOTCH_DEPTH"] + 2.0 * eps,
+        p["GROVE_WINDOW_TANGENT"],
+        D["ring_back_y"] + p["GROVE_POD_NOTCH_DEPTH"] / 2.0,
+    )
+
+    # Speaker opening stays completely free through the pod. The lens and
+    # microSD openings only cross the 1.2 mm subject-side skin.
+    speaker = cylinder_y(
+        "speaker_clearance_opening",
+        p["SPEAKER_OPENING_D"],
+        D["pod_depth"] + 2.0 * eps,
+        (p["SPEAKER_CENTER_X"], (D["ring_back_y"] + D["pod_back_y"]) / 2.0, p["SPEAKER_CENTER_Z"]),
+        vertices=96,
+    )
+    boolean(pod, speaker, "DIFFERENCE")
+
+    rear_cut_depth = p["REAR_SKIN"] + 2.0 * eps
+    rear_cut_y = D["pod_back_y"] - p["REAR_SKIN"] / 2.0
+    lens = cylinder_y(
+        "rear_facing_lens_opening",
+        p["LENS_OPENING_D"],
+        rear_cut_depth,
+        (
+            p["CAM_CENTER_X"] + p["CAM_LENS_X_OFFSET"],
+            rear_cut_y,
+            p["CAM_CENTER_Z"] + p["CAM_LENS_Z_OFFSET"],
+        ),
+        vertices=64,
+    )
+    boolean(pod, lens, "DIFFERENCE")
+    microsd = box(
+        "rear_microsd_access_slot",
+        p["MICROSD_SLOT_W"],
+        rear_cut_depth,
+        p["MICROSD_SLOT_H"],
+        (
+            p["CAM_CENTER_X"] + p["MICROSD_X_OFFSET"],
+            rear_cut_y,
+            p["CAM_CENTER_Z"] + p["MICROSD_Z_OFFSET"],
+        ),
+    )
+    boolean(pod, microsd, "DIFFERENCE")
+
+    clearance_depth = D["pod_depth"] + 2.0 * eps
     for x, z in screw_positions():
         hole = cylinder_y(
-            "m2_lid_clearance",
+            "m2_pod_clearance",
             p["SCREW_CLEARANCE_D"],
-            hole_depth,
-            (x, D["shell_back_y"] + p["LID_THICKNESS"] / 2.0, z),
+            clearance_depth,
+            (x, (D["ring_back_y"] + D["pod_back_y"]) / 2.0, z),
         )
-        boolean(lid, hole, "DIFFERENCE")
-    return lid
+        boolean(pod, hole, "DIFFERENCE")
+
+    pod.name = "toicamera_case_lid_rear_pod_v2"
+    return pod
 
 
 def cleanup_mesh(obj):
@@ -556,7 +749,6 @@ def mesh_stats(obj):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     nonmanifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-
     remaining = set(bm.verts)
     components = 0
     while remaining:
@@ -640,28 +832,29 @@ def main():
     validate_param_contract()
     paths = output_paths(args.out, args.part)
     expected = {
-        "shell": (D["pod_outer_w"], D["shell_d"], D["total_h"]),
-        "lid": (D["pod_outer_w"], PARAMS["LID_THICKNESS"], D["total_h"]),
+        "shell": (D["shell_bbox_w"], D["shell_bbox_d"], D["shell_bbox_h"]),
+        "lid": (PARAMS["POD_OUTER_W"], D["pod_depth"], PARAMS["POD_OUTER_H"]),
     }
-    builders = {"shell": build_shell, "lid": build_lid}
+    builders = {"shell": build_ring, "lid": build_pod}
     overall_ok = True
 
     print("UNIT_CONTRACT: 1 Blender Unit = 1 mm")
-    print(f"GPS_ANTENNA_SKIN: {PARAMS['LID_THICKNESS']:.3f} mm (limit <= 1.200 mm)")
+    print("LAYOUT_V2: display=-Y / rear-facing lens=+Y / camera=rear-right / GPS=upper")
+    print(f"GPS_ANTENNA_SKIN: {PARAMS['REAR_SKIN']:.3f} mm (limit <= 1.200 mm)")
     print(
-        "LAYOUT: front wall {:.1f} + camera {:.1f} + separator {:.1f} + GPS {:.1f} + lid {:.1f} = {:.1f} mm".format(
-            PARAMS["WALL"],
+        "DEPTH_STACK: bezel {:.1f} + watch {:.1f} + air/camera {:.1f}+{:.1f} + rear skin {:.1f} = {:.1f} mm".format(
+            PARAMS["FRONT_BEZEL_DEPTH"],
+            PARAMS["WATCH_INNER_D"],
+            PARAMS["POD_AIR_GAP"],
             PARAMS["CAM_INNER_D"],
-            PARAMS["CAM_GPS_SEPARATOR"],
-            PARAMS["GPS_INNER_D"],
-            PARAMS["LID_THICKNESS"],
-            D["total_d"],
+            PARAMS["REAR_SKIN"],
+            D["total_depth"],
         )
     )
 
     for part, path in paths.items():
         obj = builders[part]()
-        label = part.upper()
+        label = "RING" if part == "shell" else "POD"
         object_ok = validate_object(label, obj, expected[part], args.bbox_tol)
         export_stl(obj, path)
         stl_ok = validate_exported_stl(label, path, expected[part], args.bbox_tol)

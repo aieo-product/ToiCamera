@@ -3,16 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ToiCamera 3D 組立シミュレーター</title>
+  <title>ToiCamera ケース v2 — コンデジ持ち組立シミュレーター</title>
   <style>
     :root {
       color-scheme: dark;
       --bg: #05070a;
-      --panel: rgba(8, 13, 19, 0.9);
-      --line: rgba(61, 222, 255, 0.24);
-      --cyan: #3ddeff;
+      --panel: rgba(8, 13, 20, 0.86);
+      --line: rgba(85, 220, 255, 0.26);
+      --cyan: #28d8ff;
       --yellow: #ffd84a;
-      --muted: #8da0ad;
+      --muted: #95a8b5;
+      --text: #edfaff;
     }
 
     * { box-sizing: border-box; }
@@ -23,183 +24,199 @@
       margin: 0;
       overflow: hidden;
       background: var(--bg);
+      color: var(--text);
       font-family: Inter, "Hiragino Sans", "Yu Gothic UI", sans-serif;
     }
 
     #viewport { position: fixed; inset: 0; }
+    canvas { display: block; }
 
-    #title-panel,
-    #control-panel,
-    #legend {
+    .panel {
       position: fixed;
-      z-index: 10;
+      z-index: 4;
       border: 1px solid var(--line);
+      border-radius: 14px;
       background: var(--panel);
-      box-shadow: 0 16px 50px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, 0.34);
       backdrop-filter: blur(14px);
     }
 
-    #title-panel {
-      top: 18px;
-      left: 18px;
-      max-width: min(440px, calc(100vw - 36px));
-      padding: 15px 18px 16px;
-      border-left: 3px solid var(--yellow);
+    #intro {
+      top: 20px;
+      left: 20px;
+      width: min(480px, calc(100vw - 40px));
+      padding: 18px 20px;
     }
 
-    #title-panel h1 {
-      margin: 0 0 5px;
-      color: #fff;
-      font-size: clamp(18px, 2.3vw, 28px);
-      letter-spacing: 0.04em;
-    }
-
-    #title-panel p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    .badge {
-      display: inline-block;
-      margin-bottom: 7px;
+    #intro .eyebrow {
+      margin: 0 0 7px;
       color: var(--yellow);
-      font: 700 10px/1 monospace;
-      letter-spacing: 0.15em;
+      font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.14em;
     }
+
+    #intro h1 {
+      margin: 0;
+      font-size: clamp(20px, 2.3vw, 32px);
+      line-height: 1.12;
+      letter-spacing: -0.02em;
+    }
+
+    #intro p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    #intro strong { color: var(--text); }
+
+    #orientation {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: #c8d8e1;
+      background: rgba(255, 255, 255, 0.04);
+      font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    #legend {
+      right: 20px;
+      top: 20px;
+      width: 245px;
+      padding: 15px 16px;
+    }
+
+    #legend h2 {
+      margin: 0 0 10px;
+      color: var(--cyan);
+      font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.1em;
+    }
+
+    .wire-row {
+      display: grid;
+      grid-template-columns: 10px 62px 1fr;
+      gap: 8px;
+      align-items: center;
+      margin: 7px 0;
+      color: #dceaf0;
+      font-size: 11px;
+    }
+
+    .swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      box-shadow: 0 0 10px currentColor;
+    }
+
+    .wire-name { font-weight: 700; }
+    .wire-destination { color: var(--muted); text-align: right; }
 
     #control-panel {
-      right: 18px;
-      bottom: 18px;
-      width: min(390px, calc(100vw - 36px));
-      padding: 14px 16px 16px;
+      right: 20px;
+      bottom: 20px;
+      width: min(360px, calc(100vw - 40px));
+      padding: 16px 18px 14px;
     }
 
     .control-head {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      margin-bottom: 10px;
-      color: #e8fbff;
+      align-items: baseline;
+      margin-bottom: 11px;
       font-size: 12px;
       font-weight: 700;
     }
 
-    #explode-value {
+    output {
       color: var(--yellow);
-      font: 700 12px/1 monospace;
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
 
     input[type="range"] {
       width: 100%;
-      accent-color: var(--yellow);
+      accent-color: var(--cyan);
       cursor: ew-resize;
     }
 
     .range-labels {
       display: flex;
       justify-content: space-between;
-      margin-top: 5px;
-      color: var(--muted);
-      font-size: 10px;
-    }
-
-    #legend {
-      left: 18px;
-      bottom: 18px;
-      width: 245px;
-      padding: 13px 15px;
-    }
-
-    #legend h2 {
-      margin: 0 0 9px;
-      color: var(--cyan);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-    }
-
-    .wire-row {
-      display: grid;
-      grid-template-columns: 12px 40px 1fr;
-      gap: 7px;
-      align-items: center;
-      margin: 6px 0;
-      color: #d7e0e5;
-      font-size: 11px;
-    }
-
-    .swatch {
-      width: 10px;
-      height: 3px;
-      border-radius: 4px;
-      box-shadow: 0 0 8px currentColor;
-    }
-
-    .wire-name { font-family: ui-monospace, SFMono-Regular, monospace; }
-    .wire-destination { color: var(--muted); }
-
-    .part-label {
-      padding: 4px 7px;
-      border: 1px solid rgba(61, 222, 255, 0.45);
-      border-radius: 3px;
-      background: rgba(3, 8, 12, 0.88);
-      color: #eafbff;
-      font-size: 10px;
-      font-weight: 700;
-      white-space: nowrap;
-      pointer-events: none;
-      transform: translateY(-8px);
-    }
-
-    .part-label::before {
-      content: "";
-      display: inline-block;
-      width: 5px;
-      height: 5px;
-      margin-right: 5px;
-      border-radius: 50%;
-      background: var(--yellow);
-      box-shadow: 0 0 8px var(--yellow);
+      margin-top: 6px;
+      color: #708390;
+      font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.07em;
     }
 
     #hint {
       position: fixed;
-      z-index: 9;
-      top: 19px;
-      right: 19px;
-      color: rgba(218, 242, 249, 0.58);
-      font-size: 10px;
-      letter-spacing: 0.04em;
+      z-index: 4;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      color: #7e929e;
+      font-size: 11px;
+      white-space: nowrap;
       pointer-events: none;
     }
 
-    @media (max-width: 720px) {
-      #legend { display: none; }
-      #hint { top: auto; right: auto; left: 18px; bottom: 128px; }
+    .part-label {
+      border: 1px solid rgba(112, 224, 255, 0.32);
+      border-radius: 6px;
+      padding: 4px 7px;
+      color: #e8faff;
+      background: rgba(4, 9, 14, 0.82);
+      box-shadow: 0 5px 18px rgba(0, 0, 0, 0.34);
+      font: 650 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .part-label.accent {
+      border-color: rgba(255, 216, 74, 0.52);
+      color: #fff2ad;
+    }
+
+    @media (max-width: 760px) {
+      #intro { width: calc(100vw - 40px); }
+      #intro p { display: none; }
+      #legend { top: auto; right: auto; left: 20px; bottom: 88px; width: 220px; }
+      #hint { display: none; }
     }
   </style>
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+        "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
       }
     }
   </script>
 </head>
 <body>
-  <main id="viewport" aria-label="ToiCamera 3D 組立ビュー"></main>
+  <main id="viewport" aria-label="ToiCamera ケース v2 3D 組立シミュレーター"></main>
 
-  <section id="title-panel">
-    <span class="badge">ISSUE #5 / ASSEMBLY VIEW</span>
-    <h1>ToiCamera 一体型ケース</h1>
-    <p>表示寸法は mm。前面に StopWatch と CamS3、背面フタ側に GPS アンテナを配置しています。</p>
+  <section id="intro" class="panel">
+    <p class="eyebrow">TOICAMERA CASE / ISSUE #5 / V2</p>
+    <h1>握って撮るコンデジ型</h1>
+    <p>ディスプレイを手前、レンズを被写体側へ。CamS3 と GPS、Y 分岐を<strong>ウォッチ背面ポッド</strong>へ集約し、左スピーカーは Ø16.5 mm 開口と全面 2 mm 以上のエアギャップで塞ぎません。</p>
+    <div id="orientation">
+      <span class="chip">手前 / DISPLAY −Z</span>
+      <span class="chip">被写体 / LENS +Z</span>
+      <span class="chip">組立厚 32.0 mm</span>
+    </div>
   </section>
 
-  <div id="hint">ドラッグ: 回転 ・ ホイール: ズーム ・ 右ドラッグ: 移動</div>
-
-  <section id="legend" aria-label="Grove 配線凡例">
+  <section id="legend" class="panel" aria-label="Grove 配線凡例">
     <h2>GROVE Y ハーネス</h2>
     <div class="wire-row"><span class="swatch" style="color:#ff4b4b;background:#ff4b4b"></span><span class="wire-name">赤 5V</span><span class="wire-destination">CamS3 + GPS</span></div>
     <div class="wire-row"><span class="swatch" style="color:#252d38;background:#252d38"></span><span class="wire-name">黒 GND</span><span class="wire-destination">CamS3 + GPS</span></div>
@@ -207,7 +224,9 @@
     <div class="wire-row"><span class="swatch" style="color:#f5f8ff;background:#f5f8ff"></span><span class="wire-name">白 G11</span><span class="wire-destination">GPS のみ</span></div>
   </section>
 
-  <section id="control-panel">
+  <div id="hint">ドラッグ: 回転 ・ ホイール: ズーム ・ 右ドラッグ: 移動</div>
+
+  <section id="control-panel" class="panel">
     <div class="control-head">
       <label for="explode">組立 ⇔ 分解</label>
       <output id="explode-value" for="explode">0%</output>
@@ -222,20 +241,46 @@
     import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
     import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 
+    // Simulator axes: X=rear-view left/right, Y=up/down, Z=front/rear.
+    // Positive Z is the rear, subject-facing side.
+    const DIM = Object.freeze({
+      frontZ: -16.0,
+      ringBackZ: 1.7,
+      rearInnerZ: 14.8,
+      rearZ: 16.0,
+      ringW: 56.4,
+      ringH: 56.4,
+      ringD: 17.7,
+      podW: 74.0,
+      podH: 96.0,
+      podD: 14.3,
+      podY: 9.5,
+      watchRearZ: 1.5,
+      cameraFrontZ: 3.8,
+      speakerX: -17.5,
+      speakerY: 0.0,
+      speakerD: 16.5,
+      camX: 12.0,
+      camY: -0.3,
+      gpsY: 38.5,
+      wireX: -16.0,
+      wireY: -22.0
+    });
+
     const viewport = document.querySelector("#viewport");
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x05070a);
-    scene.fog = new THREE.FogExp2(0x05070a, 0.0024);
+    scene.fog = new THREE.FogExp2(0x05070a, 0.0022);
 
-    const camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.1, 900);
-    camera.position.set(125, 102, 165);
+    const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 900);
+    camera.position.set(116, 96, 174);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.18;
     viewport.append(renderer.domElement);
 
     const labelRenderer = new CSS2DRenderer();
@@ -248,51 +293,49 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.065;
-    controls.minDistance = 65;
-    controls.maxDistance = 420;
-    controls.target.set(0, 41, 0);
+    controls.minDistance = 70;
+    controls.maxDistance = 460;
+    controls.target.set(0, 8, 2);
 
-    scene.add(new THREE.HemisphereLight(0x9eeeff, 0x090b12, 2.0));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 3.4);
-    keyLight.position.set(90, 130, 110);
+    scene.add(new THREE.HemisphereLight(0xa6efff, 0x090b12, 2.2));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 3.5);
+    keyLight.position.set(90, 130, 140);
     scene.add(keyLight);
-    const cyanLight = new THREE.PointLight(0x25d9ff, 1200, 260);
-    cyanLight.position.set(-95, 55, 50);
+    const cyanLight = new THREE.PointLight(0x25d9ff, 1250, 280);
+    cyanLight.position.set(-100, 50, 70);
     scene.add(cyanLight);
-    const yellowLight = new THREE.PointLight(0xffd84a, 900, 220);
-    yellowLight.position.set(80, 35, -75);
+    const yellowLight = new THREE.PointLight(0xffd84a, 900, 240);
+    yellowLight.position.set(85, -40, -75);
     scene.add(yellowLight);
 
-    const grid = new THREE.GridHelper(260, 26, 0x174453, 0x10232b);
-    grid.position.y = -4;
+    const grid = new THREE.GridHelper(280, 28, 0x174453, 0x10232b);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.z = -20;
     scene.add(grid);
 
     const materials = {
-      case: new THREE.MeshPhysicalMaterial({
-        color: 0x28d8ff,
-        transparent: true,
-        opacity: 0.13,
-        roughness: 0.25,
-        metalness: 0.05,
-        transmission: 0.18,
-        depthWrite: false,
-        side: THREE.DoubleSide
+      ring: new THREE.MeshPhysicalMaterial({
+        color: 0x28d8ff, transparent: true, opacity: 0.15, roughness: 0.25,
+        metalness: 0.05, transmission: 0.15, depthWrite: false, side: THREE.DoubleSide
       }),
-      lid: new THREE.MeshPhysicalMaterial({
-        color: 0xffd84a,
-        transparent: true,
-        opacity: 0.2,
-        roughness: 0.28,
-        depthWrite: false,
-        side: THREE.DoubleSide
+      pod: new THREE.MeshPhysicalMaterial({
+        color: 0xffd84a, transparent: true, opacity: 0.16, roughness: 0.3,
+        transmission: 0.08, depthWrite: false, side: THREE.DoubleSide
       }),
       watch: new THREE.MeshStandardMaterial({ color: 0x171b22, roughness: 0.45, metalness: 0.42 }),
-      display: new THREE.MeshPhysicalMaterial({ color: 0x061018, emissive: 0x0e8fab, emissiveIntensity: 0.65, roughness: 0.16 }),
+      display: new THREE.MeshPhysicalMaterial({ color: 0x061018, emissive: 0x0e8fab, emissiveIntensity: 0.7, roughness: 0.16 }),
       cam: new THREE.MeshStandardMaterial({ color: 0x242a32, roughness: 0.58 }),
       gps: new THREE.MeshStandardMaterial({ color: 0x164b42, roughness: 0.62 }),
       antenna: new THREE.MeshStandardMaterial({ color: 0xd6c49a, roughness: 0.78 }),
       lens: new THREE.MeshPhysicalMaterial({ color: 0x07111b, roughness: 0.08, metalness: 0.22, clearcoat: 1.0 }),
-      port: new THREE.MeshStandardMaterial({ color: 0xffd84a, emissive: 0x5c4100, emissiveIntensity: 0.7 })
+      port: new THREE.MeshStandardMaterial({ color: 0xffd84a, emissive: 0x5c4100, emissiveIntensity: 0.7 }),
+      header: new THREE.MeshStandardMaterial({ color: 0xc5ccd2, roughness: 0.35, metalness: 0.7 }),
+      screw: new THREE.MeshStandardMaterial({ color: 0x7c8790, roughness: 0.3, metalness: 0.8 }),
+      air: new THREE.MeshBasicMaterial({ color: 0x36e7ff, transparent: true, opacity: 0.065, depthWrite: false }),
+      speakerVoid: new THREE.MeshBasicMaterial({ color: 0x020407, transparent: true, opacity: 0.22, depthWrite: false }),
+      grille: new THREE.MeshStandardMaterial({ color: 0x05070a, roughness: 0.9 }),
+      keyA: new THREE.MeshStandardMaterial({ color: 0xffd84a, emissive: 0x604800, emissiveIntensity: 0.55 }),
+      keyB: new THREE.MeshStandardMaterial({ color: 0x248eff, emissive: 0x07356c, emissiveIntensity: 0.5 })
     };
 
     const addEdges = (mesh, color, opacity = 0.8) => {
@@ -301,9 +344,9 @@
       mesh.add(edges);
     };
 
-    const addLabel = (group, text, position) => {
+    const addLabel = (group, text, position, accent = false) => {
       const element = document.createElement("div");
-      element.className = "part-label";
+      element.className = `part-label${accent ? " accent" : ""}`;
       element.textContent = text;
       const label = new CSS2DObject(element);
       label.position.copy(position);
@@ -329,62 +372,207 @@
       return group;
     };
 
-    // Case body: 56.4 mm watch zone over a 61.4 mm wiring pod, 23.8 mm deep.
-    const shellGroup = register(new THREE.Group(), new THREE.Vector3(), new THREE.Vector3());
-    addRoundedPart(shellGroup, new THREE.Vector3(56.4, 56.9, 23.8), new THREE.Vector3(0, 54.85, -0.6), 2.0, materials.case, 0x3ddeff);
-    addRoundedPart(shellGroup, new THREE.Vector3(61.4, 28.9, 23.8), new THREE.Vector3(0, 14.45, -0.6), 2.0, materials.case, 0x3ddeff);
-    const displayRim = new THREE.Mesh(new THREE.TorusGeometry(24, 0.55, 10, 96), materials.case);
-    displayRim.position.set(0, 55.1, -12.55);
-    shellGroup.add(displayRim);
-    const lensRim = new THREE.Mesh(new THREE.TorusGeometry(5, 0.48, 10, 64), materials.case);
-    lensRim.position.set(-20.5, 14.2, -12.55);
-    shellGroup.add(lensRim);
-    addLabel(shellGroup, "本体シェル / PLA 2.0 mm", new THREE.Vector3(-30, 85, -2));
+    // Piece 1: front watch ring. The display is the photographer-facing finder.
+    const ringGroup = register(new THREE.Group(), new THREE.Vector3(), new THREE.Vector3());
+    addRoundedPart(
+      ringGroup,
+      new THREE.Vector3(DIM.ringW, DIM.ringH, DIM.ringD),
+      new THREE.Vector3(0, 0, (DIM.frontZ + DIM.ringBackZ) / 2),
+      2.0,
+      materials.ring,
+      0x3ddeff
+    );
+    const displayRimMaterial = materials.ring.clone();
+    displayRimMaterial.opacity = 0.26;
+    const displayRim = new THREE.Mesh(new THREE.TorusGeometry(24, 0.62, 10, 96), displayRimMaterial);
+    displayRim.position.z = DIM.frontZ - 0.05;
+    ringGroup.add(displayRim);
+    for (const bossX of [-29, 29]) {
+      for (const bossY of [-22, 22]) {
+        const boss = new THREE.Mesh(new THREE.CylinderGeometry(2.8, 2.8, 13.1, 40), materials.ring);
+        boss.rotation.x = Math.PI / 2;
+        boss.position.set(bossX, bossY, (DIM.ringBackZ + DIM.rearInnerZ) / 2);
+        ringGroup.add(boss);
+        addEdges(boss, 0x3ddeff, 0.56);
+      }
+    }
+    addLabel(ringGroup, "前面リング / 表示開口 Ø48", new THREE.Vector3(-29, 31, -9));
 
-    // Rear cover is 1.2 mm everywhere over the GPS antenna region.
-    const lidGroup = register(new THREE.Group(), new THREE.Vector3(), new THREE.Vector3(0, 0, 46));
-    addRoundedPart(lidGroup, new THREE.Vector3(56.4, 56.9, 1.2), new THREE.Vector3(0, 54.85, 11.9), 1.0, materials.lid, 0xffd84a);
-    addRoundedPart(lidGroup, new THREE.Vector3(61.4, 28.9, 1.2), new THREE.Vector3(0, 14.45, 11.9), 1.0, materials.lid, 0xffd84a);
-    addLabel(lidGroup, "背面フタ / アンテナ側 1.2 mm", new THREE.Vector3(0, 42, 14));
+    // Piece 2: rear pod and cover. A second inset outline cues the 45° shoulder.
+    const podGroup = register(new THREE.Group(), new THREE.Vector3(), new THREE.Vector3(0, 0, 54));
+    addRoundedPart(
+      podGroup,
+      new THREE.Vector3(DIM.podW, DIM.podH, DIM.podD),
+      new THREE.Vector3(0, DIM.podY, (DIM.ringBackZ + DIM.rearZ) / 2),
+      15.5,
+      materials.pod,
+      0xffd84a
+    );
+    const shoulderOutline = addRoundedPart(
+      podGroup,
+      new THREE.Vector3(70, 92, 0.45),
+      new THREE.Vector3(0, DIM.podY, DIM.ringBackZ + 0.3),
+      13.5,
+      materials.pod,
+      0xffe277
+    );
+    shoulderOutline.material = materials.pod;
+    addLabel(podGroup, "背面ポッド兼フタ / 45°肩", new THREE.Vector3(0, 44, 9), true);
 
-    // StopWatch: measured 52 x 52 x 15.5, represented as the round watch body + display disk.
-    const watchGroup = register(new THREE.Group(), new THREE.Vector3(0, 55.1, -2.75), new THREE.Vector3(0, 31, -38));
+    // The visible rear speaker aperture. The dark translucent tube marks empty
+    // air; the actual grille dots are attached to the watch behind it.
+    const speakerOpening = new THREE.Mesh(
+      new THREE.CylinderGeometry(DIM.speakerD / 2, DIM.speakerD / 2, DIM.podD + 0.8, 64),
+      materials.speakerVoid
+    );
+    speakerOpening.rotation.x = Math.PI / 2;
+    speakerOpening.position.set(DIM.speakerX, DIM.speakerY, (DIM.ringBackZ + DIM.rearZ) / 2);
+    podGroup.add(speakerOpening);
+    const speakerRim = new THREE.Mesh(new THREE.TorusGeometry(DIM.speakerD / 2, 0.5, 10, 72), materials.pod);
+    speakerRim.position.set(DIM.speakerX, DIM.speakerY, DIM.rearZ + 0.08);
+    podGroup.add(speakerRim);
+    addLabel(podGroup, "スピーカー貫通開口 Ø16.5", new THREE.Vector3(-39, 1, 18), true);
+
+    const lensRim = new THREE.Mesh(new THREE.TorusGeometry(5, 0.52, 10, 64), materials.pod);
+    lensRim.position.set(DIM.camX - 11, DIM.camY, DIM.rearZ + 0.1);
+    podGroup.add(lensRim);
+    const sdSlot = new THREE.Mesh(new THREE.BoxGeometry(12, 4, 0.5), materials.speakerVoid);
+    sdSlot.position.set(DIM.camX + 5, DIM.camY - 8, DIM.rearZ + 0.08);
+    podGroup.add(sdSlot);
+    for (const screwX of [-29, 29]) {
+      for (const screwY of [-22, 22]) {
+        const screwHead = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 0.7, 28), materials.screw);
+        screwHead.rotation.x = Math.PI / 2;
+        screwHead.position.set(screwX, screwY, DIM.rearZ + 0.28);
+        podGroup.add(screwHead);
+      }
+    }
+
+    // StopWatch: display at front, confirmed rear details at +Z.
+    const watchGroup = register(
+      new THREE.Group(),
+      new THREE.Vector3(0, 0, -6.25),
+      new THREE.Vector3(0, 0, -48)
+    );
     const watchBody = new THREE.Mesh(new THREE.CylinderGeometry(26, 26, 15.5, 96), materials.watch);
     watchBody.rotation.x = Math.PI / 2;
     watchGroup.add(watchBody);
     addEdges(watchBody, 0x768b98, 0.56);
     const screen = new THREE.Mesh(new THREE.CylinderGeometry(23.9, 23.9, 0.8, 96), materials.display);
     screen.rotation.x = Math.PI / 2;
-    screen.position.z = -8.05;
+    screen.position.z = -8.0;
     watchGroup.add(screen);
-    const watchPort = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 5), materials.port);
-    watchPort.position.set(19.5, -24.8, 3.0);
-    watchGroup.add(watchPort);
-    addLabel(watchGroup, "M5Stack StopWatch C152 / 52×52×15.5", new THREE.Vector3(0, 31, 1));
 
-    // CamS3 lies across the pod, lens toward the front skin.
-    const camGroup = register(new THREE.Group(), new THREE.Vector3(-8.5, 14.2, -4.8), new THREE.Vector3(-40, -19, -27));
-    const camBody = addRoundedPart(camGroup, new THREE.Vector3(40, 24, 11), new THREE.Vector3(), 1.4, materials.cam, 0x8193a0);
+    // Rear-view left speaker grille: a circular array of physical-looking dots.
+    for (let row = -3; row <= 3; row += 1) {
+      for (let column = -3; column <= 3; column += 1) {
+        const dx = column * 1.65;
+        const dy = row * 1.65;
+        if (dx * dx + dy * dy > 28) continue;
+        const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.53, 0.53, 0.34, 16), materials.grille);
+        hole.rotation.x = Math.PI / 2;
+        hole.position.set(DIM.speakerX + dx, DIM.speakerY + dy, 7.91);
+        watchGroup.add(hole);
+      }
+    }
+
+    // G3-G8 top row and lower header row, protruding 2 mm from the rear face.
+    for (const headerY of [-22.5, 22.5]) {
+      for (let index = 0; index < 6; index += 1) {
+        const pin = new THREE.Mesh(new THREE.BoxGeometry(1.25, 1.25, 2.0), materials.header);
+        pin.position.set(-12.5 + index * 5.0, headerY, 8.75);
+        watchGroup.add(pin);
+      }
+    }
+
+    for (const screwY of [-23.7, 23.7]) {
+      const screw = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 0.7, 28), materials.screw);
+      screw.rotation.x = Math.PI / 2;
+      screw.position.set(0, screwY, 8.15);
+      watchGroup.add(screw);
+    }
+
+    // Confirmed controls/ports in rear view.
+    const keyA = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 1.2, 28), materials.keyA);
+    keyA.rotation.z = Math.PI / 2;
+    keyA.position.set(-26.3, 8, 1.2);
+    watchGroup.add(keyA);
+    const keyB = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 1.2, 28), materials.keyB);
+    keyB.rotation.z = Math.PI / 2;
+    keyB.position.set(-26.3, -8, 1.2);
+    watchGroup.add(keyB);
+    const usbPort = new THREE.Mesh(new THREE.BoxGeometry(1.4, 10, 5), materials.port);
+    usbPort.position.set(26.2, 0, 0.5);
+    watchGroup.add(usbPort);
+    const powerButton = new THREE.Mesh(new THREE.BoxGeometry(1.4, 6, 4), materials.screw);
+    powerButton.position.set(24.7, 9.2, 0.5);
+    watchGroup.add(powerButton);
+    const watchGrove = new THREE.Mesh(new THREE.BoxGeometry(7.5, 7.5, 3.5), materials.port);
+    watchGrove.position.set(18.5, -18.5, 6.0);
+    watchGroup.add(watchGrove);
+    addLabel(watchGroup, "StopWatch / 背面実装", new THREE.Vector3(-3, -32, 1));
+    addLabel(watchGroup, "KEYA 黄 / KEYB 青", new THREE.Vector3(-36, 11, 2), true);
+    addLabel(watchGroup, "Grove 右下 4–5時", new THREE.Vector3(31, -24, 7), true);
+
+    // The 2.3 mm physical gap includes the required 2 mm plenum and clears the
+    // 2 mm header pins. It remains tied to the ring during exploded view.
+    const airGapGroup = register(new THREE.Group(), new THREE.Vector3(), new THREE.Vector3());
+    const airGap = addRoundedPart(
+      airGapGroup,
+      new THREE.Vector3(52.0, 52.0, DIM.cameraFrontZ - DIM.watchRearZ),
+      new THREE.Vector3(0, 0, (DIM.cameraFrontZ + DIM.watchRearZ) / 2),
+      1.0,
+      materials.air,
+      0x45eaff
+    );
+    airGap.children[0].material.opacity = 0.42;
+    addLabel(airGapGroup, "全面エアギャップ 2.3 mm", new THREE.Vector3(-3, 30, 2.7), true);
+
+    // CamS3: right of the speaker, vertical centre, lens toward +Z.
+    const camGroup = register(
+      new THREE.Group(),
+      new THREE.Vector3(DIM.camX, DIM.camY, 9.3),
+      new THREE.Vector3(52, -10, 31)
+    );
+    addRoundedPart(camGroup, new THREE.Vector3(40, 24, 11), new THREE.Vector3(), 1.4, materials.cam, 0x8193a0);
     const lens = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 5.8, 3.2, 64), materials.lens);
     lens.rotation.x = Math.PI / 2;
-    lens.position.set(-12, 0, -7.0);
+    lens.position.set(-11, 0, 6.65);
     camGroup.add(lens);
     const camPort = new THREE.Mesh(new THREE.BoxGeometry(3.2, 8, 5), materials.port);
-    camPort.position.set(20.3, -7.2, 2.6);
+    camPort.position.set(20.2, -7.0, -0.8);
     camGroup.add(camPort);
-    addLabel(camGroup, "Unit CamS3 5MP / 40×24×11", new THREE.Vector3(0, 17, 0));
+    const camSd = new THREE.Mesh(new THREE.BoxGeometry(12, 2.5, 1.1), materials.port);
+    camSd.position.set(5, -9.8, 4.8);
+    camGroup.add(camSd);
+    addLabel(camGroup, "CamS3 / 背面視右・レンズ後向き", new THREE.Vector3(0, -17, 4), true);
 
-    // GPS sits behind CamS3.  The ceramic patch faces the thin rear lid.
-    const gpsGroup = register(new THREE.Group(), new THREE.Vector3(0, 14.2, 7.1), new THREE.Vector3(37, -22, 35));
+    // GPS: upper horizontal bay, ceramic patch facing the 1.2 mm rear skin.
+    const gpsGroup = register(
+      new THREE.Group(),
+      new THREE.Vector3(0, DIM.gpsY, 10.8),
+      new THREE.Vector3(-47, 36, 34)
+    );
     addRoundedPart(gpsGroup, new THREE.Vector3(48, 24, 8), new THREE.Vector3(), 1.2, materials.gps, 0x42d6ba);
     const antenna = new THREE.Mesh(new THREE.BoxGeometry(39, 17, 0.75), materials.antenna);
     antenna.position.z = 4.35;
     gpsGroup.add(antenna);
     const gpsPort = new THREE.Mesh(new THREE.BoxGeometry(3.2, 8, 5), materials.port);
-    gpsPort.position.set(24.2, -7.2, -0.6);
+    gpsPort.position.set(24.2, -7.0, -0.6);
     gpsGroup.add(gpsPort);
-    addLabel(gpsGroup, "Unit GPS U032 / 48×24×8", new THREE.Vector3(0, 17, 1));
-    addLabel(gpsGroup, "セラミックアンテナ ↑ 背面", new THREE.Vector3(0, 0, 8));
+    addLabel(gpsGroup, "GPS / 上端ヘッダ外側", new THREE.Vector3(0, 17, 1));
+    addLabel(gpsGroup, "セラミックアンテナ → 背面 1.2 mm", new THREE.Vector3(0, 1, 8), true);
+
+    // Visible protected volume for the Y splice and cable service loop.
+    const wireBayGroup = register(
+      new THREE.Group(),
+      new THREE.Vector3(DIM.wireX, DIM.wireY, 7.8),
+      new THREE.Vector3(-42, -34, 25)
+    );
+    const wireBayMaterial = materials.air.clone();
+    wireBayMaterial.opacity = 0.11;
+    addRoundedPart(wireBayGroup, new THREE.Vector3(15, 24, 8), new THREE.Vector3(), 1.2, wireBayMaterial, 0x45eaff);
+    addLabel(wireBayGroup, "Y分岐＋余長 15×24×8", new THREE.Vector3(0, -15, 1), true);
 
     const wireSpecs = [
       { name: "5V", color: 0xff4b4b, offset: -1.35, toCam: true },
@@ -395,7 +583,7 @@
     const wireGroup = new THREE.Group();
     scene.add(wireGroup);
 
-    const worldPort = (group, local, factor) => group.userData.base.clone()
+    const worldPoint = (group, local, factor) => group.userData.base.clone()
       .addScaledVector(group.userData.explode, factor)
       .add(local);
 
@@ -408,7 +596,7 @@
 
     const addTube = (points, material) => {
       const curve = new THREE.CatmullRomCurve3(points, false, "centripetal", 0.45);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 44, 0.38, 8, false), material);
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 54, 0.38, 8, false), material);
       wireGroup.add(tube);
     };
 
@@ -419,25 +607,30 @@
         child.material.dispose();
       }
 
-      const junction = new THREE.Vector3(21.2, 17.5, -0.4);
       for (const spec of wireSpecs) {
-        const offset = new THREE.Vector3(spec.offset, 0, 0);
-        const start = worldPort(watchGroup, new THREE.Vector3(19.5, -24.8, 3.0), factor).add(offset);
-        const branch = junction.clone().add(offset);
-        const gpsEnd = worldPort(gpsGroup, new THREE.Vector3(24.2, -7.2, -0.6), factor).add(offset);
-        const commonMid = new THREE.Vector3(start.x, (start.y + branch.y) / 2, 1.5 + spec.offset * 0.2);
-        addTube([start, commonMid, branch], tubeMaterial(spec.color));
+        const offset = new THREE.Vector3(0, spec.offset, spec.offset * 0.08);
+        const start = worldPoint(watchGroup, new THREE.Vector3(18.5, -18.5, 6.0), factor).add(offset);
+        const entry = worldPoint(podGroup, new THREE.Vector3(24.5, -24.5, 2.8), factor).add(offset);
+        const junction = worldPoint(wireBayGroup, new THREE.Vector3(0, 0, 0), factor).add(offset);
+        const gpsEnd = worldPoint(gpsGroup, new THREE.Vector3(24.2, -7.0, -0.6), factor).add(offset);
+
         addTube([
-          branch,
-          new THREE.Vector3(24 + spec.offset, 14.2, 3.0),
+          start,
+          entry,
+          new THREE.Vector3((entry.x + junction.x) / 2, -25 + spec.offset, 4.0),
+          junction
+        ], tubeMaterial(spec.color));
+        addTube([
+          junction,
+          new THREE.Vector3(-4 + spec.offset, 6, 6.0),
           gpsEnd
         ], tubeMaterial(spec.color));
 
         if (spec.toCam) {
-          const camEnd = worldPort(camGroup, new THREE.Vector3(20.3, -7.2, 2.6), factor).add(offset);
+          const camEnd = worldPoint(camGroup, new THREE.Vector3(20.2, -7.0, -0.8), factor).add(offset);
           addTube([
-            branch,
-            new THREE.Vector3(17 + spec.offset, 10.5, -2.4),
+            junction,
+            new THREE.Vector3(0, -16 + spec.offset, 6.2),
             camEnd
           ], tubeMaterial(spec.color));
         }
@@ -461,7 +654,7 @@
     const animate = () => {
       requestAnimationFrame(animate);
       const time = clock.getElapsedTime();
-      displayRim.material.opacity = 0.13 + Math.sin(time * 1.4) * 0.035;
+      displayRimMaterial.opacity = 0.23 + Math.sin(time * 1.4) * 0.045;
       controls.update();
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
