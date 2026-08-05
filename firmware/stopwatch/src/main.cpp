@@ -75,6 +75,19 @@ static int32_t homeLastMinute = -1;
 static int homePage = 0;
 static int homeHistoryScrollY = 0;
 static int historyDetailIndex = -1;
+// Settings row currently held down (-1 = none) — highlighted while pressed,
+// the action fires on finger-up inside the same row.
+static int settingsPressedRow = -1;
+
+// Maps a touch Y to a settings row index (row 1 = volume slider, handled
+// separately). Bands mirror drawPageSettings().
+static int settingsRowForY(int y) {
+  if (y >= 66 && y <= 130) return 0;   // model
+  if (y >= 198 && y <= 274) return 2;  // capture quality
+  if (y >= 276 && y <= 352) return 3;  // AI detail
+  if (y >= 354 && y <= 430) return 4;  // WiFi
+  return -1;
+}
 static bool homeTouchActive = false;
 static bool homeVolumeDragging = false;
 static bool homeHistoryScrolled = false;
@@ -662,12 +675,27 @@ static void drawPageSettings() {
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
   homeCanvas.drawString("設定", M5.Display.width() / 2, 44);
 
+  // Pressed-row highlight: filled band behind the held row (finger-down
+  // feedback; the action itself fires on release).
+  static constexpr int kRowBands[5][2] = {
+      {66, 130}, {132, 196}, {198, 274}, {276, 352}, {354, 430}};
+  if (settingsPressedRow >= 0 && settingsPressedRow < 5 &&
+      settingsPressedRow != 1) {
+    homeCanvas.fillRect(36, kRowBands[settingsPressedRow][0], 394,
+                        kRowBands[settingsPressedRow][1] -
+                            kRowBands[settingsPressedRow][0],
+                        0x2945);
+  }
+  const auto rowBg = [&](int row) {
+    return settingsPressedRow == row ? 0x2945 : (int)TFT_BLACK;
+  };
+
   homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(0));
   homeCanvas.drawString("モデル", 90, 84);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(0));
   homeCanvas.drawString(selectedModelName(), 90, 110);
   homeCanvas.drawFastHLine(40, 130, 386, 0x2124);
 
@@ -680,30 +708,30 @@ static void drawPageSettings() {
   homeCanvas.drawFastHLine(40, 196, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(2));
   homeCanvas.drawString("画質", 90, 228);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(2));
   homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
                                             : "速度優先(QVGA)",
                         90, 254);
   homeCanvas.drawFastHLine(40, 274, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(3));
   homeCanvas.drawString("AI精度", 90, 306);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(3));
   homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
                                      : "低(速い・省トークン)",
                         90, 332);
   homeCanvas.drawFastHLine(40, 352, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(4));
   homeCanvas.drawString("WiFi", 90, 384);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(4));
   const String currentWifi =
       WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
   homeCanvas.drawString(fitHomeText(currentWifi, 300), 90, 410);
@@ -1789,6 +1817,7 @@ static void enterHome(int targetPage = 0) {
   Serial.println("[toi] finder: stream stopped (home)");
   state = AppState::Home;
   homePage = constrain(targetPage, 0, 2);
+  settingsPressedRow = -1;
   homeHistoryScrollY = 0;
   historyDetailIndex = -1;
   homeTouchActive = false;
@@ -2149,6 +2178,10 @@ static void homeTouchTick() {
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
                            t.y >= 132 && t.y <= 196;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
+      if (homePage == 2 && !homeVolumeDragging) {
+        settingsPressedRow = settingsRowForY(t.y);
+        if (settingsPressedRow >= 0) homeDirty = true;
+      }
       return;
     }
 
@@ -2158,6 +2191,12 @@ static void homeTouchTick() {
     if (homeVolumeDragging) {
       setSpeakerVolumeFromTouch(t.x);
       return;
+    }
+    if (settingsPressedRow >= 0 &&
+        (abs(t.x - homeTouchStartX) > 12 || abs(t.y - homeTouchStartY) > 12 ||
+         settingsRowForY(t.y) != settingsPressedRow)) {
+      settingsPressedRow = -1;  // drifted out — cancel the pending tap
+      homeDirty = true;
     }
 
     if (homePage == 1 && historyDetailIndex < 0) {
@@ -2216,26 +2255,30 @@ static void homeTouchTick() {
         }
       }
     } else if (homePage == 2) {
-      if (homeTouchLastY >= 66 && homeTouchLastY <= 130) {
+      const int releasedRow = settingsPressedRow;
+      settingsPressedRow = -1;
+      homeDirty = true;
+      if (releasedRow == 0) {
         selectedModel = (selectedModel + 1) % 2;
         if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
         Serial.printf("[toi] model: %s\n", selectedModelName());
-        homeDirty = true;
-      } else if (homeTouchLastY >= 198 && homeTouchLastY <= 274) {
+      } else if (releasedRow == 2) {
         captureQuality = captureQuality == 0 ? 1 : 0;
         if (toiPrefsReady) toiPrefs.putUChar("qual", captureQuality);
         Serial.printf("[toi] quality: %s\n",
                       captureQuality == 1 ? "VGA" : "QVGA");
-        homeDirty = true;
-      } else if (homeTouchLastY >= 276 && homeTouchLastY <= 352) {
+      } else if (releasedRow == 3) {
         aiDetailHigh = !aiDetailHigh;
         if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
-        homeDirty = true;
-      } else if (homeTouchLastY >= 354 && homeTouchLastY <= 430) {
+      } else if (releasedRow == 4) {
         enterWifiSetup();
       }
     }
+  }
+  if (settingsPressedRow >= 0) {
+    settingsPressedRow = -1;  // swipe/drag release — drop the highlight
+    homeDirty = true;
   }
   homeTouchActive = false;
   homeVolumeDragging = false;
