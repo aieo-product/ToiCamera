@@ -205,8 +205,8 @@ async function placeHint(
     const rlon = Number(lon).toFixed(3);
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${rlat}&lon=${rlon}&zoom=16&accept-language=ja`;
     const cache = caches.default;
-    // &fmt=v2 keys the JSON format apart from older plain-text cache entries
-    const cacheKey = new Request(url + "&fmt=v2");
+    // &fmt=v3 keys the cache format (v3: short = prefecture+locality)
+    const cacheKey = new Request(url + "&fmt=v3");
     const cached = await cache.match(cacheKey);
     if (cached) {
       const data = (await cached.json().catch(() => null)) as PlaceHint | null;
@@ -229,13 +229,13 @@ async function placeHint(
       data.name,
     ].filter(Boolean);
     const postcode = a.postcode ?? "";
-    const locality = a.city ?? a.town ?? a.village ?? a.state ?? "";
+    // Compact label like 東京都千代田区 (owner preference: no postcode).
+    const prefecture = a.state ?? a.province ?? a.region ?? "";
+    const locality = a.city ?? a.town ?? a.village ?? a.county ?? "";
     const hint: PlaceHint = {
       place: parts.join(" "),
       postcode,
-      short: [postcode ? `〒${postcode}` : "", locality]
-        .filter(Boolean)
-        .join(" "),
+      short: prefecture + locality || parts[0] || "",
     };
     ctx.waitUntil(
       cache.put(
