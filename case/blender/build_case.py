@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build the ToiCamera v3.2 screw-fastened backpack plate.
+"""Build the ToiCamera v3.3 screw-fastened Technic-rail backpack plate.
 
 The plate replaces the StopWatch's two rear screws with longer screws and is
 clamped directly to the existing plastic bosses.  It does not grip or enter the
 flush 2.54 mm bus sockets.  A commercial M5Stack CLIP-A/B connects the CamS3
-to the Technic-compatible holes in the plate.
+to the LEGO Technic-compatible rail raised from the plate.
 
 Headless usage::
 
@@ -56,13 +56,20 @@ PARAMS = {
     "PLATE_CENTER_X": 0.0,
     "PLATE_CENTER_Z": 0.0,
 
-    # LEGO Technic-compatible through holes.  The main mount is 2 x 2; the
-    # separate upper 1 x 2 row is reserved for a later GPS bracket.
+    # LEGO Technic rail.  The 4.8 mm nominal through-hole diameter receives a
+    # configurable FDM compensation; counterbores remain at their exact spec.
     "TECHNIC_HOLE_D": 4.8,
+    "TECHNIC_HOLE_PRINT_COMP": 0.15,
     "TECHNIC_PITCH": 8.0,
-    "TECHNIC_CENTER_X": 4.0,
-    "TECHNIC_MAIN_CENTER_Z": -4.0,
-    "GPS_HOLE_CENTER_Z": 9.3,
+    "TECHNIC_HOLE_CENTER_X": 0.0,
+    "TECHNIC_HOLE_ZS": (-12.0, -4.0, 4.0, 12.0),
+    "TECHNIC_RAIL_WIDTH": 9.6,
+    "TECHNIC_RAIL_THICKNESS": 7.8,
+    "TECHNIC_RAIL_LENGTH": 32.0,
+    "TECHNIC_RAIL_CENTER_Z": 0.0,
+    "TECHNIC_COUNTERBORE_D": 6.2,
+    "TECHNIC_COUNTERBORE_DEPTH": 0.8,
+    "TECHNIC_HOLE_CHAMFER": 0.3,
     "HOLE_MIN_WEB": 0.6,
 
     # Four flush factory magnets.  Only the plate-overlap crescents are cut;
@@ -77,7 +84,7 @@ PARAMS = {
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(
-        description="Build the ToiCamera v3.2 screw-fastened backpack plate"
+        description="Build the ToiCamera v3.3 Technic-rail backpack plate"
     )
     parser.add_argument("--out", required=True, help="output STL path")
     parser.add_argument(
@@ -101,6 +108,8 @@ def derived():
     tab_radius = p["SCREW_TAB_D"] / 2.0
     plate_inner_y = 0.0
     plate_outer_y = p["PLATE_THICKNESS"]
+    rail_inner_y = plate_inner_y
+    rail_outer_y = p["TECHNIC_RAIL_THICKNESS"]
     countersink_depth = (
         (p["SCREW_COUNTERSINK_D"] - p["SCREW_HOLE_D"])
         / 2.0
@@ -117,10 +126,16 @@ def derived():
         "plate_inner_y": plate_inner_y,
         "plate_outer_y": plate_outer_y,
         "plate_center_y": (plate_inner_y + plate_outer_y) / 2.0,
+        "rail_inner_y": rail_inner_y,
+        "rail_outer_y": rail_outer_y,
+        "rail_center_y": (rail_inner_y + rail_outer_y) / 2.0,
+        "technic_effective_hole_d": (
+            p["TECHNIC_HOLE_D"] + p["TECHNIC_HOLE_PRINT_COMP"]
+        ),
         "countersink_depth": countersink_depth,
         "backpack_bbox": (
             p["PLATE_WIDTH"],
-            p["PLATE_THICKNESS"],
+            rail_outer_y - plate_inner_y,
             p["PLATE_LENGTH"],
         ),
     }
@@ -137,22 +152,11 @@ def reset_scene():
     units.length_unit = "MILLIMETERS"
 
 
-def main_hole_positions():
+def technic_hole_positions():
     p = PARAMS
-    half_pitch = p["TECHNIC_PITCH"] / 2.0
     return [
-        (p["TECHNIC_CENTER_X"] + dx, p["TECHNIC_MAIN_CENTER_Z"] + dz)
-        for dz in (-half_pitch, half_pitch)
-        for dx in (-half_pitch, half_pitch)
-    ]
-
-
-def gps_hole_positions():
-    p = PARAMS
-    half_pitch = p["TECHNIC_PITCH"] / 2.0
-    return [
-        (p["TECHNIC_CENTER_X"] - half_pitch, p["GPS_HOLE_CENTER_Z"]),
-        (p["TECHNIC_CENTER_X"] + half_pitch, p["GPS_HOLE_CENTER_Z"]),
+        (p["TECHNIC_HOLE_CENTER_X"], z)
+        for z in p["TECHNIC_HOLE_ZS"]
     ]
 
 
@@ -188,11 +192,11 @@ def validate_param_contract():
     if not math.isclose(p["WATCH_THICKNESS"], 15.5, abs_tol=1.0e-9):
         raise ValueError("official StopWatch thickness must remain 15.5 mm")
     if not math.isclose(p["PLATE_WIDTH"], 22.0, abs_tol=1.0e-9):
-        raise ValueError("v3.2 plate width must remain 22.0 mm")
+        raise ValueError("v3.3 base plate width must remain 22.0 mm")
     if not math.isclose(p["PLATE_LENGTH"], 48.0, abs_tol=1.0e-9):
-        raise ValueError("v3.2 plate length must remain 48.0 mm")
+        raise ValueError("v3.3 base plate length must remain 48.0 mm")
     if not math.isclose(p["PLATE_THICKNESS"], 3.0, abs_tol=1.0e-9):
-        raise ValueError("v3.2 plate thickness must remain 3.0 mm")
+        raise ValueError("v3.3 base plate thickness must remain 3.0 mm")
     expected_length = p["PLATE_BODY_HEIGHT"] + p["SCREW_TAB_D"]
     if not math.isclose(p["PLATE_LENGTH"], expected_length, abs_tol=1.0e-9):
         raise ValueError("body height plus two tab radii must equal plate length")
@@ -230,37 +234,101 @@ def validate_param_contract():
     ) >= speaker_keepout:
         raise ValueError("speaker relief no longer intersects the plate waist")
 
-    hole_radius = p["TECHNIC_HOLE_D"] / 2.0
-    technic_positions = main_hole_positions() + gps_hole_positions()
+    if not math.isclose(p["TECHNIC_HOLE_D"], 4.8, abs_tol=1.0e-9):
+        raise ValueError("nominal Technic through-hole diameter must remain 4.8 mm")
+    if not math.isfinite(p["TECHNIC_HOLE_PRINT_COMP"]) or not (
+        -0.5 <= p["TECHNIC_HOLE_PRINT_COMP"] <= 0.5
+    ):
+        raise ValueError("Technic print compensation must be finite and within +/-0.5 mm")
+    if not math.isclose(p["TECHNIC_RAIL_WIDTH"], 9.6, abs_tol=1.0e-9):
+        raise ValueError("Technic rail width must remain 9.6 mm")
+    if not math.isclose(p["TECHNIC_RAIL_THICKNESS"], 7.8, abs_tol=1.0e-9):
+        raise ValueError("Technic rail hole-axis thickness must remain 7.8 mm")
+    if not math.isclose(p["TECHNIC_RAIL_LENGTH"], 32.0, abs_tol=1.0e-9):
+        raise ValueError("Technic rail length must remain 32.0 mm")
+    if p["TECHNIC_RAIL_THICKNESS"] <= p["PLATE_THICKNESS"]:
+        raise ValueError("Technic rail must rise above the 3 mm base plate")
+    if not math.isclose(p["TECHNIC_COUNTERBORE_D"], 6.2, abs_tol=1.0e-9):
+        raise ValueError("Technic counterbore diameter must remain 6.2 mm")
+    if not math.isclose(p["TECHNIC_COUNTERBORE_DEPTH"], 0.8, abs_tol=1.0e-9):
+        raise ValueError("Technic counterbore depth must remain 0.8 mm per face")
+    if not math.isclose(p["TECHNIC_HOLE_CHAMFER"], 0.3, abs_tol=1.0e-9):
+        raise ValueError("Technic inner-edge chamfer must remain 0.3 mm")
+    if (
+        D["technic_effective_hole_d"] + 2.0 * p["TECHNIC_HOLE_CHAMFER"]
+        >= p["TECHNIC_COUNTERBORE_D"]
+    ):
+        raise ValueError("compensated Technic hole and chamfer exceed the counterbore")
+    if (
+        2.0 * (p["TECHNIC_COUNTERBORE_DEPTH"] + p["TECHNIC_HOLE_CHAMFER"])
+        >= p["TECHNIC_RAIL_THICKNESS"]
+    ):
+        raise ValueError("Technic face details overlap through the rail thickness")
+
+    rail_half_width = p["TECHNIC_RAIL_WIDTH"] / 2.0
+    rail_half_length = p["TECHNIC_RAIL_LENGTH"] / 2.0
+    rail_left = p["TECHNIC_HOLE_CENTER_X"] - rail_half_width
+    rail_right = p["TECHNIC_HOLE_CENTER_X"] + rail_half_width
+    rail_bottom = p["TECHNIC_RAIL_CENTER_Z"] - rail_half_length
+    rail_top = p["TECHNIC_RAIL_CENTER_Z"] + rail_half_length
+    rail_bounds = (rail_left, rail_right, rail_bottom, rail_top)
+    if rail_bottom < plate_bottom or rail_top > plate_top:
+        raise ValueError("Technic rail exceeds the 3 mm plate body")
+
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    technic_positions = technic_hole_positions()
+    if len(technic_positions) != 4:
+        raise ValueError("Technic rail must contain exactly four holes")
     for x, z in technic_positions:
-        if not (plate_left + hole_radius + web <= x <= plate_right - hole_radius - web):
-            raise ValueError("a Technic hole violates the plate side web")
-        if not (plate_bottom + hole_radius + web <= z <= plate_top - hole_radius - web):
-            raise ValueError("a Technic hole violates the plate body end web")
-        if math.hypot(x, z) + hole_radius + web > D["watch_radius"]:
-            raise ValueError("a Technic hole violates the circular watch boundary")
+        if not (
+            rail_left + counterbore_radius + web
+            <= x
+            <= rail_right - counterbore_radius - web
+        ):
+            raise ValueError("a Technic counterbore violates the rail side web")
+        if not (
+            rail_bottom + counterbore_radius + web
+            <= z
+            <= rail_top - counterbore_radius - web
+        ):
+            raise ValueError("a Technic counterbore violates the rail end web")
+        if math.hypot(x, z) + counterbore_radius + web > D["watch_radius"]:
+            raise ValueError("a Technic counterbore violates the watch boundary")
 
     for index, first in enumerate(technic_positions):
         for second in technic_positions[index + 1:]:
             center_distance = math.hypot(first[0] - second[0], first[1] - second[1])
-            if center_distance - 2.0 * hole_radius < web - 1.0e-9:
-                raise ValueError("Technic holes leave less than the minimum web")
+            if center_distance - 2.0 * counterbore_radius < web - 1.0e-9:
+                raise ValueError("Technic counterbores leave less than the minimum web")
     countersink_radius = p["SCREW_COUNTERSINK_D"] / 2.0
     for screw_x, screw_z in D["screw_positions"]:
         for hole_x, hole_z in technic_positions:
             clear_web = (
                 math.hypot(screw_x - hole_x, screw_z - hole_z)
                 - countersink_radius
-                - hole_radius
+                - counterbore_radius
             )
             if clear_web < web - 1.0e-9:
-                raise ValueError("a screw countersink is too close to a Technic hole")
+                raise ValueError("a screw countersink is too close to a Technic counterbore")
+        if point_to_rectangle_distance(screw_x, screw_z, rail_bounds) < (
+            countersink_radius + web
+        ):
+            raise ValueError("Technic rail is too close to a screw countersink")
 
-    main = main_hole_positions()
-    if not math.isclose(main[1][0] - main[0][0], p["TECHNIC_PITCH"], abs_tol=1.0e-9):
-        raise ValueError("main Technic column pitch is not 8 mm")
-    if not math.isclose(main[2][1] - main[0][1], p["TECHNIC_PITCH"], abs_tol=1.0e-9):
-        raise ValueError("main Technic row pitch is not 8 mm")
+    if any(
+        not math.isclose(x, p["TECHNIC_HOLE_CENTER_X"], abs_tol=1.0e-9)
+        for x, _ in technic_positions
+    ):
+        raise ValueError("Technic holes must lie on one straight line")
+    pitch_deltas = [
+        technic_positions[index + 1][1] - technic_positions[index][1]
+        for index in range(len(technic_positions) - 1)
+    ]
+    if any(
+        not math.isclose(delta, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        for delta in pitch_deltas
+    ):
+        raise ValueError("Technic holes are not equally spaced at 8.0 mm")
 
     if not math.isclose(p["MAGNET_GRID"], 25.46, abs_tol=1.0e-9):
         raise ValueError("official magnet grid must remain 25.46 mm")
@@ -272,6 +340,8 @@ def validate_param_contract():
         overlaps_z = z + magnet_radius > plate_bottom and z - magnet_radius < plate_top
         if not (overlaps_x and overlaps_z):
             raise ValueError("an official magnet position no longer overlaps the plate")
+        if point_to_rectangle_distance(x, z, rail_bounds) < magnet_radius - 1.0e-9:
+            raise ValueError("Technic rail interferes with a magnet relief")
 
     print("PARAM_CONTRACT: PASS")
     print(
@@ -279,7 +349,7 @@ def validate_param_contract():
         f"thickness {p['WATCH_THICKNESS']:.3f} mm"
     )
     print(
-        f"PLATE_ENVELOPE: {p['PLATE_WIDTH']:.3f} x "
+        f"PLATE_BASE: {p['PLATE_WIDTH']:.3f} x "
         f"{p['PLATE_LENGTH']:.3f} x {p['PLATE_THICKNESS']:.3f} mm / "
         "inside watch circle"
     )
@@ -294,9 +364,38 @@ def validate_param_contract():
         f"SPEAKER_KEEP_OUT: CLEAR (relief dia {D['speaker_relief_d']:.3f} mm)"
     )
     print(
-        f"TECHNIC_HOLES: dia {p['TECHNIC_HOLE_D']:.3f} mm / "
-        f"pitch {p['TECHNIC_PITCH']:.3f} mm / 2x2 + GPS 1x2 / "
+        f"TECHNIC_RAIL: width {p['TECHNIC_RAIL_WIDTH']:.3f} x "
+        f"thickness {p['TECHNIC_RAIL_THICKNESS']:.3f} x "
+        f"length {p['TECHNIC_RAIL_LENGTH']:.3f} mm / "
+        f"rise {p['TECHNIC_RAIL_THICKNESS'] - p['PLATE_THICKNESS']:.3f} mm"
+    )
+    print(
+        f"TECHNIC_HOLES: 1x{len(technic_positions)} straight / nominal dia "
+        f"{p['TECHNIC_HOLE_D']:.3f} + print compensation "
+        f"{p['TECHNIC_HOLE_PRINT_COMP']:+.3f} mm / "
+        f"pitch {p['TECHNIC_PITCH']:.3f} mm"
+    )
+    print(
+        f"TECHNIC_EFFECTIVE_HOLE_D: {D['technic_effective_hole_d']:.3f} mm"
+    )
+    print(
+        "TECHNIC_HOLE_CENTERS_Z: "
+        + " ".join(f"{z:.3f}" for _, z in technic_positions)
+        + " mm"
+    )
+    print(
+        "TECHNIC_PITCH_CHECK: PASS ("
+        + ", ".join(f"{delta:.3f}" for delta in pitch_deltas)
+        + " mm)"
+    )
+    print(
+        f"TECHNIC_COUNTERBORES: dia {p['TECHNIC_COUNTERBORE_D']:.3f} x "
+        f"depth {p['TECHNIC_COUNTERBORE_DEPTH']:.3f} mm / both faces / "
         f"minimum web {web:.3f} mm"
+    )
+    print(
+        f"TECHNIC_HOLE_CHAMFER: {p['TECHNIC_HOLE_CHAMFER']:.3f} mm / "
+        "both inner bore edges"
     )
     print(
         f"MAGNET_RELIEF_SEATS: 4 positions on {p['MAGNET_GRID']:.3f} mm grid / "
@@ -376,6 +475,66 @@ def cut_through_holes(target, positions, diameter, prefix):
         boolean(target, cutter, "DIFFERENCE")
 
 
+def cut_technic_holes(target):
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    positions = technic_hole_positions()
+    through_depth = p["TECHNIC_RAIL_THICKNESS"] + 2.0 * eps
+
+    for index, (x, z) in enumerate(positions, start=1):
+        through = cylinder_y(
+            f"technic_through_{index}",
+            D["technic_effective_hole_d"],
+            through_depth,
+            (x, D["rail_center_y"], z),
+        )
+        boolean(target, through, "DIFFERENCE")
+
+        counterbore_depth = p["TECHNIC_COUNTERBORE_DEPTH"] + eps
+        inner_counterbore_y = (p["TECHNIC_COUNTERBORE_DEPTH"] - eps) / 2.0
+        outer_counterbore_y = (
+            p["TECHNIC_RAIL_THICKNESS"] - inner_counterbore_y
+        )
+        for face, center_y in (
+            ("inner", inner_counterbore_y),
+            ("outer", outer_counterbore_y),
+        ):
+            counterbore = cylinder_y(
+                f"technic_counterbore_{face}_{index}",
+                p["TECHNIC_COUNTERBORE_D"],
+                counterbore_depth,
+                (x, center_y, z),
+            )
+            boolean(target, counterbore, "DIFFERENCE")
+
+        hole_radius = D["technic_effective_hole_d"] / 2.0
+        chamfer = p["TECHNIC_HOLE_CHAMFER"]
+        chamfer_depth = chamfer + 2.0 * eps
+        inner_chamfer_y = p["TECHNIC_COUNTERBORE_DEPTH"] + chamfer / 2.0
+        inner_chamfer = frustum_y(
+            f"technic_chamfer_inner_{index}",
+            hole_radius + chamfer + eps,
+            hole_radius - eps,
+            chamfer_depth,
+            (x, inner_chamfer_y, z),
+        )
+        boolean(target, inner_chamfer, "DIFFERENCE")
+
+        outer_chamfer_y = (
+            p["TECHNIC_RAIL_THICKNESS"]
+            - p["TECHNIC_COUNTERBORE_DEPTH"]
+            - chamfer / 2.0
+        )
+        outer_chamfer = frustum_y(
+            f"technic_chamfer_outer_{index}",
+            hole_radius - eps,
+            hole_radius + chamfer + eps,
+            chamfer_depth,
+            (x, outer_chamfer_y, z),
+        )
+        boolean(target, outer_chamfer, "DIFFERENCE")
+
+
 def cut_screw_holes(target):
     p = PARAMS
     eps = p["BOOLEAN_EPS"]
@@ -451,15 +610,23 @@ def build_backpack():
     )
     boolean(plate, speaker_relief, "DIFFERENCE")
 
-    cut_magnet_reliefs(plate)
-    cut_through_holes(
-        plate,
-        main_hole_positions() + gps_hole_positions(),
-        p["TECHNIC_HOLE_D"],
-        "technic_hole",
+    rail = box(
+        "technic_rail",
+        p["TECHNIC_RAIL_WIDTH"],
+        p["TECHNIC_RAIL_THICKNESS"],
+        p["TECHNIC_RAIL_LENGTH"],
+        (
+            p["TECHNIC_HOLE_CENTER_X"],
+            D["rail_center_y"],
+            p["TECHNIC_RAIL_CENTER_Z"],
+        ),
     )
+    boolean(plate, rail, "UNION")
+
+    cut_magnet_reliefs(plate)
+    cut_technic_holes(plate)
     cut_screw_holes(plate)
-    plate.name = "toicamera_screw_fastened_backpack_plate_v3_2"
+    plate.name = "toicamera_screw_fastened_technic_rail_v3_3"
     return plate
 
 
@@ -558,9 +725,12 @@ def main():
     overall_ok = True
 
     print("UNIT_CONTRACT: 1 Blender Unit = 1 mm")
-    print("LAYOUT_V3_2: open watch / 2-screw backpack / commercial CLIP-A/B / rear-facing camera")
+    print("LAYOUT_V3_3: open watch / 2-screw backpack / raised Technic rail / rear-facing camera")
     print("PART_ALIAS: all -> backpack")
-    print("PRINT_ORIENTATION: inner watch-contact face on build plate; countersinks upward")
+    print(
+        "PRINT_ORIENTATION: watch-contact face on build plate; rail raised upward; "
+        "Technic hole axes vertical"
+    )
 
     for part, path in paths.items():
         obj = build_backpack()
