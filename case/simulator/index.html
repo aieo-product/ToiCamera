@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ToiCamera ケース v3 — オープン型バックパック</title>
+  <title>ToiCamera ケース v3.2 — ネジ共締めバックパック</title>
   <style>
     :root {
       color-scheme: dark;
@@ -105,18 +105,19 @@
   </script>
 </head>
 <body>
-  <main id="viewport" aria-label="ToiCamera ケース v3 3D 組立シミュレーター"></main>
+  <main id="viewport" aria-label="ToiCamera ケース v3.2 3D 組立シミュレーター"></main>
 
   <section id="intro" class="panel">
-    <p class="eyebrow">Issue #5 / open configuration</p>
-    <h1>ケース v3<br>オープン型バックパック</h1>
-    <p>印刷物は背面ヘッダを外側からつかむ<strong>小型プレート 1 枚</strong>だけ。画面、左右ボタン、スピーカー、USB-C、Grove はすべて露出し、CamS3 は市販 <strong>M5Stack CLIP-A/B</strong> で保持します。</p>
-    <span id="status">WATCH FULLY EXPOSED</span>
+    <p class="eyebrow">Issue #5 / screw-fastened final</p>
+    <h1>ケース v3.2<br>ネジ共締めバックパック</h1>
+    <p>印刷物は<strong>22 × 48 × 3 mm のプレート 1 枚</strong>だけ。背面の既存ネジ 2 本を長ネジへ交換して樹脂ボスへ共締めし、CamS3 は市販 <strong>M5Stack CLIP-A/B</strong> で保持します。</p>
+    <span id="status">TWO-SCREW MOUNT / BUS FLUSH</span>
   </section>
 
   <section id="legend" class="panel" aria-label="構成と配線の凡例">
     <h2>構成と Grove 配線</h2>
-    <div class="legend-row now"><span class="swatch"></span><span><strong>現行:</strong> ウォッチ右下ポート → CamS3 へ直結</span></div>
+    <div class="legend-row now"><span class="swatch"></span><span><strong>固定:</strong> M2 ロングネジ ×2（要購入）で 12時 / 6時を共締め</span></div>
+    <div class="legend-row"><span class="swatch" style="color:var(--yellow)"></span><span><strong>配線:</strong> ウォッチ右下ポート → CamS3 へ直結</span></div>
     <div class="legend-row"><span class="swatch" style="color:var(--cyan)"></span><span>バックパック: φ4.8 / 8 mm ピッチ（2×2）</span></div>
     <div class="legend-row later"><span class="swatch"></span><span><strong>後付けオプション:</strong> 上端 1×2 に GPS。追加時だけ Grove Y 分岐を使用</span></div>
   </section>
@@ -137,29 +138,35 @@
 
     // Simulator axes: X=rear-view left/right, Y=up/down, Z=outward/rear.
     const DIM = Object.freeze({
-      watchR: 26.0,
+      watchR: 25.975,
       watchD: 15.5,
       watchRearZ: 7.75,
       headerLength: 18.0,
       headerWidth: 2.5,
-      headerDepth: 8.5,
+      headerDepth: 0.35,
       headerRows: 30.0,
-      fitTol: 0.2,
-      plateW: 30.4,
-      plateH: 40.0,
+      plateW: 22.0,
+      plateH: 48.0,
+      plateBodyH: 40.0,
       plateD: 3.0,
-      plateX: 6.0,
-      plateFrontZ: 16.45,
-      plateRearZ: 19.45,
-      clampWall: 1.2,
-      clampEndWall: 0.9,
+      plateX: 0.0,
+      plateFrontZ: 7.85,
+      plateRearZ: 10.85,
+      screwTabR: 4.0,
+      screwHoleD: 2.4,
+      screwHeadD: 4.5,
+      screwLength: 8.0,
       holeD: 4.8,
       holePitch: 8.0,
-      holeX: 6.0,
+      holeX: 4.0,
       mainHoleY: -4.0,
       gpsHoleY: 9.3,
+      magnetD: 5.0,
+      magnetGrid: 25.46,
+      magnetReliefD: 5.5,
       speakerX: -17.5,
-      screwY: 23.7,
+      speakerKeepoutR: 8.3,
+      screwY: 20.0,
       groveX: 18.5,
       groveY: -18.5,
       camX: 13.0
@@ -219,6 +226,7 @@
       header: new THREE.MeshStandardMaterial({ color: 0x090b0d, roughness: 0.75 }),
       socket: new THREE.MeshStandardMaterial({ color: 0xb6c0c7, roughness: 0.38, metalness: 0.58 }),
       screw: new THREE.MeshStandardMaterial({ color: 0x78848d, roughness: 0.3, metalness: 0.82 }),
+      magnet: new THREE.MeshStandardMaterial({ color: 0xb9c7d0, roughness: 0.22, metalness: 0.88 }),
       port: new THREE.MeshStandardMaterial({ color: 0xe5aa23, emissive: 0x513400, emissiveIntensity: 0.45 }),
       grille: new THREE.MeshStandardMaterial({ color: 0x020304, roughness: 0.95 }),
       keyA: new THREE.MeshStandardMaterial({ color: 0xffd84a, emissive: 0x5c4400, emissiveIntensity: 0.5 }),
@@ -287,28 +295,42 @@
       }
     }
 
-    // Two black 7-socket housings and the untouched 12/6 o'clock screws.
-    for (const rowY of [-DIM.headerRows / 2, DIM.headerRows / 2]) {
+    // Face-flush rear buses: official 7P and 6P rows may sit under the plate.
+    for (const [rowY, pinCount] of [[-DIM.headerRows / 2, 7], [DIM.headerRows / 2, 6]]) {
+      const rowLength = (pinCount - 1) * 2.54 + 2.2;
       const housing = addRounded(
         watchGroup,
-        new THREE.Vector3(DIM.headerLength, DIM.headerWidth, DIM.headerDepth),
+        new THREE.Vector3(rowLength, DIM.headerWidth, DIM.headerDepth),
         new THREE.Vector3(0, rowY, DIM.watchRearZ + DIM.headerDepth / 2),
-        0.45,
+        0.12,
         materials.header,
         0x343b40
       );
-      for (let index = 0; index < 7; index += 1) {
+      for (let index = 0; index < pinCount; index += 1) {
         const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.25, 14), materials.socket);
         socket.rotation.x = Math.PI / 2;
-        socket.position.set(-7.62 + index * 2.54, rowY, DIM.watchRearZ + DIM.headerDepth + 0.13);
+        socket.position.set(-(pinCount - 1) * 1.27 + index * 2.54, rowY, DIM.watchRearZ + DIM.headerDepth + 0.04);
         watchGroup.add(socket);
       }
     }
+
+    // Four factory magnets are flush with the rear face on a 25.46 mm grid.
+    const magnetHalf = DIM.magnetGrid / 2;
+    for (const x of [-magnetHalf, magnetHalf]) {
+      for (const y of [-magnetHalf, magnetHalf]) {
+        const magnet = new THREE.Mesh(new THREE.CylinderGeometry(DIM.magnetD / 2, DIM.magnetD / 2, 0.18, 32), materials.magnet);
+        magnet.rotation.x = Math.PI / 2;
+        magnet.position.set(x, y, DIM.watchRearZ + 0.09);
+        watchGroup.add(magnet);
+      }
+    }
+
+    // Original screw bosses remain; the replaceable long screws are a separate assembly.
     for (const screwY of [-DIM.screwY, DIM.screwY]) {
-      const screw = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 0.62, 30), materials.screw);
-      screw.rotation.x = Math.PI / 2;
-      screw.position.set(0, screwY, DIM.watchRearZ + 0.25);
-      watchGroup.add(screw);
+      const bossHole = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.2, 30), materials.header);
+      bossHole.rotation.x = Math.PI / 2;
+      bossHole.position.set(0, screwY, DIM.watchRearZ + 0.1);
+      watchGroup.add(bossHole);
     }
 
     // All side controls and ports remain physically unobstructed.
@@ -330,32 +352,47 @@
     addLabel(watchGroup, "StopWatch / 完全露出", new THREE.Vector3(-29, -29, -5));
     addLabel(watchGroup, "スピーカー自由", new THREE.Vector3(-34, 1, 11), "accent");
     addLabel(watchGroup, "USB-C / ボタン自由", new THREE.Vector3(34, 8, 2), "accent");
-    addLabel(watchGroup, "12時 / 6時ねじ非遮蔽", new THREE.Vector3(-3, 30, 10));
+    addLabel(watchGroup, "2.54 バス 7P / 6P（面一）", new THREE.Vector3(3, -27, 10));
+    addLabel(watchGroup, "4× φ5 磁石（面一）", new THREE.Vector3(24, 18, 10));
 
-    // Circle-conforming plate shape with true through-holes in the rear plane.
+    // 22 x 48 mm plate: 40 mm body plus rounded screw tabs at 12/6 o'clock.
+    // The concave left-waist arc is the preserved rear-speaker keep-out.
     const plateShape = new THREE.Shape();
-    const radius = 25.7;
     const xMin = DIM.plateX - DIM.plateW / 2;
     const xMax = DIM.plateX + DIM.plateW / 2;
-    const yMax = DIM.plateH / 2;
-    const cornerX = Math.sqrt(radius * radius - yMax * yMax);
-    const sideY = Math.sqrt(radius * radius - xMax * xMax);
-    plateShape.moveTo(xMin, -yMax);
-    plateShape.lineTo(cornerX, -yMax);
-    const lowerAngle = Math.atan2(-yMax, cornerX);
-    const lowerSideAngle = Math.atan2(-sideY, xMax);
-    for (let i = 1; i <= 8; i += 1) {
-      const angle = lowerAngle + (lowerSideAngle - lowerAngle) * i / 8;
-      plateShape.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+    const bodyHalf = DIM.plateBodyH / 2;
+    plateShape.moveTo(xMin, -bodyHalf);
+    plateShape.lineTo(-DIM.screwTabR, -bodyHalf);
+    for (let i = 1; i <= 12; i += 1) {
+      const angle = Math.PI + Math.PI * i / 12;
+      plateShape.lineTo(
+        Math.cos(angle) * DIM.screwTabR,
+        -bodyHalf + Math.sin(angle) * DIM.screwTabR
+      );
     }
-    plateShape.lineTo(xMax, sideY);
-    const upperSideAngle = Math.atan2(sideY, xMax);
-    const upperAngle = Math.atan2(yMax, cornerX);
-    for (let i = 1; i <= 8; i += 1) {
-      const angle = upperSideAngle + (upperAngle - upperSideAngle) * i / 8;
-      plateShape.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+    plateShape.lineTo(xMax, -bodyHalf);
+    plateShape.lineTo(xMax, bodyHalf);
+    plateShape.lineTo(DIM.screwTabR, bodyHalf);
+    for (let i = 1; i <= 12; i += 1) {
+      const angle = Math.PI * i / 12;
+      plateShape.lineTo(
+        Math.cos(angle) * DIM.screwTabR,
+        bodyHalf + Math.sin(angle) * DIM.screwTabR
+      );
     }
-    plateShape.lineTo(xMin, yMax);
+    plateShape.lineTo(xMin, bodyHalf);
+    const speakerDx = xMin - DIM.speakerX;
+    const speakerDy = Math.sqrt(DIM.speakerKeepoutR ** 2 - speakerDx ** 2);
+    plateShape.lineTo(xMin, speakerDy);
+    const speakerAngle = Math.atan2(speakerDy, speakerDx);
+    for (let i = 1; i <= 12; i += 1) {
+      const angle = speakerAngle - 2 * speakerAngle * i / 12;
+      plateShape.lineTo(
+        DIM.speakerX + Math.cos(angle) * DIM.speakerKeepoutR,
+        Math.sin(angle) * DIM.speakerKeepoutR
+      );
+    }
+    plateShape.lineTo(xMin, -bodyHalf);
     plateShape.closePath();
 
     const mainHalf = DIM.holePitch / 2;
@@ -372,6 +409,11 @@
       hole.absarc(x, y, DIM.holeD / 2, 0, Math.PI * 2, true);
       plateShape.holes.push(hole);
     }
+    for (const screwY of [-DIM.screwY, DIM.screwY]) {
+      const hole = new THREE.Path();
+      hole.absarc(0, screwY, DIM.screwHoleD / 2, 0, Math.PI * 2, true);
+      plateShape.holes.push(hole);
+    }
 
     const plateGroup = register(new THREE.Vector3(0, 0, DIM.plateFrontZ), new THREE.Vector3(0, 0, 34));
     const plateGeometry = new THREE.ExtrudeGeometry(plateShape, { depth: DIM.plateD, bevelEnabled: false, curveSegments: 48 });
@@ -379,51 +421,54 @@
     plateGroup.add(plate);
     addEdges(plate, 0x61e6ff, 0.78);
 
-    const cavityWidth = DIM.headerWidth + DIM.fitTol;
-    const armOffset = cavityWidth / 2 + DIM.clampWall / 2;
-    const cavityLength = DIM.headerLength + DIM.fitTol;
-    const clampOuterLength = cavityLength + 2 * DIM.clampEndWall;
-    for (const rowY of [-DIM.headerRows / 2, DIM.headerRows / 2]) {
-      for (const sign of [-1, 1]) {
-        addRounded(
-          plateGroup,
-          new THREE.Vector3(clampOuterLength, DIM.clampWall, DIM.headerDepth + DIM.fitTol),
-          new THREE.Vector3(0, rowY + sign * armOffset, -(DIM.headerDepth + DIM.fitTol) / 2),
-          0.18,
-          materials.plate,
-          0x61e6ff
-        );
-      }
-      for (const sign of [-1, 1]) {
-        addRounded(
-          plateGroup,
-          new THREE.Vector3(DIM.clampEndWall, cavityWidth + 2 * DIM.clampWall, DIM.headerDepth + DIM.fitTol),
-          new THREE.Vector3(sign * (cavityLength / 2 + DIM.clampEndWall / 2), rowY, -(DIM.headerDepth + DIM.fitTol) / 2),
-          0.18,
-          materials.plate,
-          0x61e6ff
-        );
-      }
+    // Shallow countersink mouths on the outer face (the STL uses true 90-degree cones).
+    for (const screwY of [-DIM.screwY, DIM.screwY]) {
+      const countersink = new THREE.Mesh(
+        new THREE.RingGeometry(DIM.screwHoleD / 2, DIM.screwHeadD / 2, 32),
+        materials.screw
+      );
+      countersink.position.set(0, screwY, DIM.plateD + 0.012);
+      plateGroup.add(countersink);
     }
-    addLabel(plateGroup, "v3 バックパック / 30×40×3", new THREE.Vector3(25, 17, 3), "accent");
-    addLabel(plateGroup, "ヘッダ外周 U クランプ", new THREE.Vector3(-13, -16, -5), "accent");
-    addLabel(plateGroup, "Technic φ4.8 / 8 mm", new THREE.Vector3(17, -7, 4));
+    addLabel(plateGroup, "v3.2 バックパック / 22×48×3", new THREE.Vector3(22, 18, 3), "accent");
+    addLabel(plateGroup, "12時 / 6時を 2点共締め", new THREE.Vector3(-16, 26, 4), "accent");
+    addLabel(plateGroup, "Technic φ4.8 / 8 mm", new THREE.Vector3(16, -7, 4));
+
+    // Two longer M2 screws pass through the plate into the original plastic bosses.
+    const screwGroup = register(new THREE.Vector3(), new THREE.Vector3(0, 0, 52));
+    for (const screwY of [-DIM.screwY, DIM.screwY]) {
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.0, 1.0, DIM.screwLength, 30),
+        materials.screw
+      );
+      shaft.rotation.x = Math.PI / 2;
+      shaft.position.set(0, screwY, DIM.plateRearZ - 1.05 - DIM.screwLength / 2);
+      screwGroup.add(shaft);
+      const head = new THREE.Mesh(
+        new THREE.CylinderGeometry(DIM.screwHeadD / 2, DIM.screwHoleD / 2, 1.05, 30),
+        materials.screw
+      );
+      head.rotation.x = Math.PI / 2;
+      head.position.set(0, screwY, DIM.plateRearZ - 0.525);
+      screwGroup.add(head);
+    }
+    addLabel(screwGroup, "M2 ロングネジ ×2（要購入）", new THREE.Vector3(-15, 29, 14), "accent");
 
     // Commercial CLIP-A simplified as a Technic bridge plus two CamS3 jaws.
     const clipGroup = register(new THREE.Vector3(0, 0, 0), new THREE.Vector3(38, -8, 34));
-    addRounded(clipGroup, new THREE.Vector3(18, 17, 4), new THREE.Vector3(6, -4, 22.1), 1.1, materials.clip, 0xffea83);
+    addRounded(clipGroup, new THREE.Vector3(18, 17, 4), new THREE.Vector3(4, -4, 13.2), 1.1, materials.clip, 0xffea83);
     for (const [x, y] of holePositions.slice(0, 4)) {
       const pin = new THREE.Mesh(new THREE.CylinderGeometry(1.95, 1.95, 3.5, 30), materials.clip);
       pin.rotation.x = Math.PI / 2;
-      pin.position.set(x, y, 20.25);
+      pin.position.set(x, y, 11.25);
       clipGroup.add(pin);
     }
     for (const x of [DIM.camX - 20.4, DIM.camX + 20.4]) {
-      addRounded(clipGroup, new THREE.Vector3(3.1, 20, 10), new THREE.Vector3(x, -4, 27), 0.7, materials.clip, 0xffea83);
+      addRounded(clipGroup, new THREE.Vector3(3.1, 20, 10), new THREE.Vector3(x, -4, 18.1), 0.7, materials.clip, 0xffea83);
     }
-    addLabel(clipGroup, "市販 M5Stack CLIP-A（簡略）", new THREE.Vector3(6, 7, 28), "accent");
+    addLabel(clipGroup, "市販 M5Stack CLIP-A（簡略）", new THREE.Vector3(4, 7, 19), "accent");
 
-    const camGroup = register(new THREE.Vector3(DIM.camX, -4, 34.5), new THREE.Vector3(54, -18, 42));
+    const camGroup = register(new THREE.Vector3(DIM.camX, -4, 25.6), new THREE.Vector3(54, -18, 42));
     addRounded(camGroup, new THREE.Vector3(40, 24, 11), new THREE.Vector3(), 1.4, materials.cam, 0x8598a3);
     // Side grooves visibly receive the yellow clip jaws.
     for (const x of [-20.1, 20.1]) {

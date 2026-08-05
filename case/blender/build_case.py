@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Build the ToiCamera v3 open backpack plate and fit-check coupon.
+"""Build the ToiCamera v3.2 screw-fastened backpack plate.
 
-The printed part never surrounds the StopWatch.  Two rear-facing U channels
-slide over the outside of the upper and lower female-header housings; no FDM
-pins enter the 2.54 mm sockets.  A commercial M5Stack CLIP-A/B connects the
-CamS3 to the Technic-compatible holes in the plate.
+The plate replaces the StopWatch's two rear screws with longer screws and is
+clamped directly to the existing plastic bosses.  It does not grip or enter the
+flush 2.54 mm bus sockets.  A commercial M5Stack CLIP-A/B connects the CamS3
+to the Technic-compatible holes in the plate.
 
 Headless usage::
 
   /Applications/Blender.app/Contents/MacOS/Blender -b \
     --python case/blender/build_case.py -- \
-    --part backpack --out case/blender/out/toicamera_backpack.stl
+    --part all --out case/blender/out/toicamera.stl
 
 Unit contract: 1 Blender Unit = 1 mm.  Rear-view coordinates are X=left/right,
 Y=outward from the watch back, and Z=up/down.  The plate's outer face is +Y.
@@ -25,66 +25,66 @@ import bmesh
 import bpy
 
 
-# All measurements and fit-test adjustments are centralized here.  Values for
-# the photographed header housings are estimates until checked with calipers.
+# Official StopWatch values are from C152-StopWatch-model-size.pdf.  All
+# printable-part dimensions and clearance rules are centralized here.
 PARAMS = {
     "BBOX_TOL": 0.3,
     "BOOLEAN_EPS": 0.15,
-    "FILLET_SEGMENTS": 6,
 
     # StopWatch rear geometry (rear-view X/Z plane).
-    "WATCH_REAR_RADIUS": 25.7,
+    "WATCH_DIAMETER": 51.95,
+    "WATCH_THICKNESS": 15.5,
     "SPEAKER_CENTER_X": -17.5,
     "SPEAKER_CENTER_Z": 0.0,
     "SPEAKER_KEEP_OUT_D": 16.0,
     "SPEAKER_MARGIN": 0.3,
+
+    # Existing 12/6 o'clock self-tapping screws, used for the backpack.
     "SCREW_CENTER_X": 0.0,
-    "SCREW_CENTER_Z": 23.7,
-    "SCREW_HEAD_D": 4.4,
-    "SCREW_ACCESS_MARGIN": 1.0,
+    "SCREW_SPACING": 40.0,
+    "SCREW_HOLE_D": 2.4,
+    "SCREW_COUNTERSINK_D": 4.5,
+    "SCREW_COUNTERSINK_ANGLE": 90.0,
+    "SCREW_TAB_D": 8.0,
 
-    # ADJUST AFTER COUPON: photographed black female-header housings.
-    "HEADER_LENGTH": 18.0,
-    "HEADER_WIDTH": 2.5,
-    "HEADER_DEPTH": 8.5,
-    "HEADER_FIT_TOL": 0.2,
-    "HEADER_CENTER_X": 0.0,
-    "HEADER_ROW_SPACING": 30.0,
-    "CLAMP_WALL": 1.2,
-    "CLAMP_END_WALL": 0.9,
-
-    # One open plate, biased right so the rear-left speaker stays uncovered.
-    "PLATE_WIDTH": 30.4,
-    "PLATE_HEIGHT": 40.0,
+    # Narrow central plate.  The speaker relief makes the waist locally
+    # center-to-right biased while the screw tabs remain on the official axis.
+    "PLATE_WIDTH": 22.0,
+    "PLATE_LENGTH": 48.0,
+    "PLATE_BODY_HEIGHT": 40.0,
     "PLATE_THICKNESS": 3.0,
-    "PLATE_CENTER_X": 6.0,
+    "PLATE_CENTER_X": 0.0,
     "PLATE_CENTER_Z": 0.0,
 
     # LEGO Technic-compatible through holes.  The main mount is 2 x 2; the
     # separate upper 1 x 2 row is reserved for a later GPS bracket.
     "TECHNIC_HOLE_D": 4.8,
     "TECHNIC_PITCH": 8.0,
-    "TECHNIC_CENTER_X": 6.0,
+    "TECHNIC_CENTER_X": 4.0,
     "TECHNIC_MAIN_CENTER_Z": -4.0,
     "GPS_HOLE_CENTER_Z": 9.3,
     "HOLE_MIN_WEB": 0.6,
 
-    # Small first-print piece: one copy of the same U-channel fit geometry.
-    "COUPON_WIDTH": 20.0,
-    "COUPON_HEIGHT": 10.0,
-    "COUPON_FILLET": 1.0,
+    # Four flush factory magnets.  Only the plate-overlap crescents are cut;
+    # the official centers remain the source of truth for a future magnet mount.
+    "MAGNET_D": 5.0,
+    "MAGNET_GRID": 25.46,
+    "MAGNET_RELIEF_D": 5.5,
+    "MAGNET_RELIEF_DEPTH": 0.3,
 }
 
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    parser = argparse.ArgumentParser(description="Build the ToiCamera v3 open backpack plate")
+    parser = argparse.ArgumentParser(
+        description="Build the ToiCamera v3.2 screw-fastened backpack plate"
+    )
     parser.add_argument("--out", required=True, help="output STL path")
     parser.add_argument(
         "--part",
-        choices=("backpack", "coupon", "all"),
+        choices=("backpack", "all"),
         default="backpack",
-        help="part to export (default: backpack)",
+        help="part to export; all is an alias for backpack (default: backpack)",
     )
     parser.add_argument(
         "--bbox-tol",
@@ -97,40 +97,31 @@ def parse_args():
 
 def derived():
     p = PARAMS
-    header_cavity_length = p["HEADER_LENGTH"] + p["HEADER_FIT_TOL"]
-    header_cavity_width = p["HEADER_WIDTH"] + p["HEADER_FIT_TOL"]
-    header_cavity_depth = p["HEADER_DEPTH"] + p["HEADER_FIT_TOL"]
-    plate_front_y = header_cavity_depth
-    plate_back_y = plate_front_y + p["PLATE_THICKNESS"]
-    row_offset = p["HEADER_ROW_SPACING"] / 2.0
-    clamp_half_height = header_cavity_width / 2.0 + p["CLAMP_WALL"]
-    clamp_outer_length = header_cavity_length + 2.0 * p["CLAMP_END_WALL"]
+    screw_offset = p["SCREW_SPACING"] / 2.0
+    tab_radius = p["SCREW_TAB_D"] / 2.0
+    plate_inner_y = 0.0
+    plate_outer_y = p["PLATE_THICKNESS"]
+    countersink_depth = (
+        (p["SCREW_COUNTERSINK_D"] - p["SCREW_HOLE_D"])
+        / 2.0
+        / math.tan(math.radians(p["SCREW_COUNTERSINK_ANGLE"] / 2.0))
+    )
     return {
-        "header_cavity_length": header_cavity_length,
-        "header_cavity_width": header_cavity_width,
-        "header_cavity_depth": header_cavity_depth,
-        "plate_front_y": plate_front_y,
-        "plate_back_y": plate_back_y,
-        "plate_center_y": (plate_front_y + plate_back_y) / 2.0,
-        "header_rows": (-row_offset, row_offset),
-        "clamp_half_height": clamp_half_height,
-        "clamp_outer_length": clamp_outer_length,
-        "backpack_bbox": (
-            max(
-                p["PLATE_CENTER_X"] + p["PLATE_WIDTH"] / 2.0,
-                p["HEADER_CENTER_X"] + clamp_outer_length / 2.0,
-            )
-            - min(
-                p["PLATE_CENTER_X"] - p["PLATE_WIDTH"] / 2.0,
-                p["HEADER_CENTER_X"] - clamp_outer_length / 2.0,
-            ),
-            plate_back_y,
-            p["PLATE_HEIGHT"],
+        "watch_radius": p["WATCH_DIAMETER"] / 2.0,
+        "speaker_relief_d": p["SPEAKER_KEEP_OUT_D"] + 2.0 * p["SPEAKER_MARGIN"],
+        "screw_positions": (
+            (p["SCREW_CENTER_X"], -screw_offset),
+            (p["SCREW_CENTER_X"], screw_offset),
         ),
-        "coupon_bbox": (
-            p["COUPON_WIDTH"],
-            plate_back_y,
-            p["COUPON_HEIGHT"],
+        "tab_radius": tab_radius,
+        "plate_inner_y": plate_inner_y,
+        "plate_outer_y": plate_outer_y,
+        "plate_center_y": (plate_inner_y + plate_outer_y) / 2.0,
+        "countersink_depth": countersink_depth,
+        "backpack_bbox": (
+            p["PLATE_WIDTH"],
+            p["PLATE_THICKNESS"],
+            p["PLATE_LENGTH"],
         ),
     }
 
@@ -165,6 +156,15 @@ def gps_hole_positions():
     ]
 
 
+def magnet_positions():
+    half_grid = PARAMS["MAGNET_GRID"] / 2.0
+    return [
+        (x, z)
+        for z in (-half_grid, half_grid)
+        for x in (-half_grid, half_grid)
+    ]
+
+
 def point_to_rectangle_distance(x, z, bounds):
     min_x, max_x, min_z, max_z = bounds
     dx = max(min_x - x, 0.0, x - max_x)
@@ -174,75 +174,87 @@ def point_to_rectangle_distance(x, z, bounds):
 
 def validate_param_contract():
     p = PARAMS
-    tol = p["HEADER_FIT_TOL"]
-    if tol <= 0.0:
-        raise ValueError("HEADER_FIT_TOL must be positive")
-    for source, cavity in (
-        ("HEADER_LENGTH", "header_cavity_length"),
-        ("HEADER_WIDTH", "header_cavity_width"),
-        ("HEADER_DEPTH", "header_cavity_depth"),
-    ):
-        if not math.isclose(D[cavity], p[source] + tol, abs_tol=1.0e-9):
-            raise ValueError(f"{cavity} must equal {source} + HEADER_FIT_TOL")
+    web = p["HOLE_MIN_WEB"]
+    half_width = p["PLATE_WIDTH"] / 2.0
+    half_body = p["PLATE_BODY_HEIGHT"] / 2.0
+    plate_left = p["PLATE_CENTER_X"] - half_width
+    plate_right = p["PLATE_CENTER_X"] + half_width
+    plate_bottom = p["PLATE_CENTER_Z"] - half_body
+    plate_top = p["PLATE_CENTER_Z"] + half_body
+    body_bounds = (plate_left, plate_right, plate_bottom, plate_top)
 
+    if not math.isclose(p["WATCH_DIAMETER"], 51.95, abs_tol=1.0e-9):
+        raise ValueError("official StopWatch diameter must remain 51.95 mm")
+    if not math.isclose(p["WATCH_THICKNESS"], 15.5, abs_tol=1.0e-9):
+        raise ValueError("official StopWatch thickness must remain 15.5 mm")
+    if not math.isclose(p["PLATE_WIDTH"], 22.0, abs_tol=1.0e-9):
+        raise ValueError("v3.2 plate width must remain 22.0 mm")
+    if not math.isclose(p["PLATE_LENGTH"], 48.0, abs_tol=1.0e-9):
+        raise ValueError("v3.2 plate length must remain 48.0 mm")
     if not math.isclose(p["PLATE_THICKNESS"], 3.0, abs_tol=1.0e-9):
-        raise ValueError("v3 plate thickness must remain 3.0 mm")
-    if p["CLAMP_WALL"] < 1.0:
-        raise ValueError("CLAMP_WALL is too thin for a reusable FDM snap channel")
-    if p["CLAMP_END_WALL"] < 0.8:
-        raise ValueError("CLAMP_END_WALL is too thin for repeatable length fit")
-    if D["clamp_outer_length"] > p["COUPON_WIDTH"]:
-        raise ValueError("coupon is narrower than the header fit channel")
+        raise ValueError("v3.2 plate thickness must remain 3.0 mm")
+    expected_length = p["PLATE_BODY_HEIGHT"] + p["SCREW_TAB_D"]
+    if not math.isclose(p["PLATE_LENGTH"], expected_length, abs_tol=1.0e-9):
+        raise ValueError("body height plus two tab radii must equal plate length")
 
-    plate_left = p["PLATE_CENTER_X"] - p["PLATE_WIDTH"] / 2.0
-    plate_right = p["PLATE_CENTER_X"] + p["PLATE_WIDTH"] / 2.0
-    plate_bottom = p["PLATE_CENTER_Z"] - p["PLATE_HEIGHT"] / 2.0
-    plate_top = p["PLATE_CENTER_Z"] + p["PLATE_HEIGHT"] / 2.0
-    plate_bounds = (plate_left, plate_right, plate_bottom, plate_top)
+    screw_pitch = D["screw_positions"][1][1] - D["screw_positions"][0][1]
+    if not math.isclose(screw_pitch, 40.0, abs_tol=1.0e-9):
+        raise ValueError("screw centers must remain 40.0 mm apart")
+    if not math.isclose(p["SCREW_HOLE_D"], 2.4, abs_tol=1.0e-9):
+        raise ValueError("M2 clearance holes must remain 2.4 mm")
+    if not math.isclose(p["SCREW_COUNTERSINK_D"], 4.5, abs_tol=1.0e-9):
+        raise ValueError("countersink diameter must remain 4.5 mm")
+    if not math.isclose(p["SCREW_COUNTERSINK_ANGLE"], 90.0, abs_tol=1.0e-9):
+        raise ValueError("countersink included angle must remain 90 degrees")
+    screw_web = D["tab_radius"] - p["SCREW_COUNTERSINK_D"] / 2.0
+    if screw_web < web:
+        raise ValueError("screw countersinks leave less than the minimum tab web")
+
+    for x, z in (
+        (plate_left, plate_bottom),
+        (plate_left, plate_top),
+        (plate_right, plate_bottom),
+        (plate_right, plate_top),
+    ):
+        if math.hypot(x, z) > D["watch_radius"] + 1.0e-9:
+            raise ValueError("plate body corner exceeds the circular watch back")
+    for x, z in D["screw_positions"]:
+        if math.hypot(x, z) + D["tab_radius"] > D["watch_radius"] + 1.0e-9:
+            raise ValueError("a rounded screw tab exceeds the circular watch back")
+
     speaker_keepout = p["SPEAKER_KEEP_OUT_D"] / 2.0 + p["SPEAKER_MARGIN"]
+    if D["speaker_relief_d"] / 2.0 < speaker_keepout:
+        raise ValueError("speaker relief does not preserve the configured keep-out")
     if point_to_rectangle_distance(
-        p["SPEAKER_CENTER_X"], p["SPEAKER_CENTER_Z"], plate_bounds
-    ) < speaker_keepout - 1.0e-9:
-        raise ValueError("plate intrudes into the rear-left speaker keep-out")
-
-    clamp_half_x = D["clamp_outer_length"] / 2.0
-    for row_z in D["header_rows"]:
-        clamp_bounds = (
-            p["HEADER_CENTER_X"] - clamp_half_x,
-            p["HEADER_CENTER_X"] + clamp_half_x,
-            row_z - D["clamp_half_height"],
-            row_z + D["clamp_half_height"],
-        )
-        if point_to_rectangle_distance(
-            p["SPEAKER_CENTER_X"], p["SPEAKER_CENTER_Z"], clamp_bounds
-        ) < speaker_keepout - 1.0e-9:
-            raise ValueError("a header clamp intrudes into the speaker keep-out")
-
-    screw_keepout = p["SCREW_HEAD_D"] / 2.0 + p["SCREW_ACCESS_MARGIN"]
-    for screw_z in (-p["SCREW_CENTER_Z"], p["SCREW_CENTER_Z"]):
-        if point_to_rectangle_distance(
-            p["SCREW_CENTER_X"], screw_z, plate_bounds
-        ) < screw_keepout - 1.0e-9:
-            raise ValueError("plate blocks a 12/6 o'clock screw access zone")
-
-    speaker_right = (
-        p["SPEAKER_CENTER_X"] + speaker_keepout
-    )
+        p["SPEAKER_CENTER_X"], p["SPEAKER_CENTER_Z"], body_bounds
+    ) >= speaker_keepout:
+        raise ValueError("speaker relief no longer intersects the plate waist")
 
     hole_radius = p["TECHNIC_HOLE_D"] / 2.0
-    for x, z in main_hole_positions() + gps_hole_positions():
-        web = p["HOLE_MIN_WEB"]
+    technic_positions = main_hole_positions() + gps_hole_positions()
+    for x, z in technic_positions:
         if not (plate_left + hole_radius + web <= x <= plate_right - hole_radius - web):
             raise ValueError("a Technic hole violates the plate side web")
         if not (plate_bottom + hole_radius + web <= z <= plate_top - hole_radius - web):
-            raise ValueError("a Technic hole violates the plate top/bottom web")
-        if math.hypot(x, z) + hole_radius + web > p["WATCH_REAR_RADIUS"]:
-            raise ValueError("a Technic hole violates the circular watch-back boundary")
+            raise ValueError("a Technic hole violates the plate body end web")
+        if math.hypot(x, z) + hole_radius + web > D["watch_radius"]:
+            raise ValueError("a Technic hole violates the circular watch boundary")
 
-    upper_clamp_bottom = D["header_rows"][1] - D["clamp_half_height"]
-    gps_hole_top = p["GPS_HOLE_CENTER_Z"] + hole_radius
-    if upper_clamp_bottom - gps_hole_top < p["HOLE_MIN_WEB"]:
-        raise ValueError("GPS holes do not leave enough web below the upper clamp")
+    for index, first in enumerate(technic_positions):
+        for second in technic_positions[index + 1:]:
+            center_distance = math.hypot(first[0] - second[0], first[1] - second[1])
+            if center_distance - 2.0 * hole_radius < web - 1.0e-9:
+                raise ValueError("Technic holes leave less than the minimum web")
+    countersink_radius = p["SCREW_COUNTERSINK_D"] / 2.0
+    for screw_x, screw_z in D["screw_positions"]:
+        for hole_x, hole_z in technic_positions:
+            clear_web = (
+                math.hypot(screw_x - hole_x, screw_z - hole_z)
+                - countersink_radius
+                - hole_radius
+            )
+            if clear_web < web - 1.0e-9:
+                raise ValueError("a screw countersink is too close to a Technic hole")
 
     main = main_hole_positions()
     if not math.isclose(main[1][0] - main[0][0], p["TECHNIC_PITCH"], abs_tol=1.0e-9):
@@ -250,26 +262,45 @@ def validate_param_contract():
     if not math.isclose(main[2][1] - main[0][1], p["TECHNIC_PITCH"], abs_tol=1.0e-9):
         raise ValueError("main Technic row pitch is not 8 mm")
 
+    if not math.isclose(p["MAGNET_GRID"], 25.46, abs_tol=1.0e-9):
+        raise ValueError("official magnet grid must remain 25.46 mm")
+    if p["MAGNET_RELIEF_DEPTH"] >= p["PLATE_THICKNESS"]:
+        raise ValueError("magnet relief must remain a shallow inner-face recess")
+    magnet_radius = p["MAGNET_RELIEF_D"] / 2.0
+    for x, z in magnet_positions():
+        overlaps_x = x + magnet_radius > plate_left and x - magnet_radius < plate_right
+        overlaps_z = z + magnet_radius > plate_bottom and z - magnet_radius < plate_top
+        if not (overlaps_x and overlaps_z):
+            raise ValueError("an official magnet position no longer overlaps the plate")
+
     print("PARAM_CONTRACT: PASS")
     print(
-        "HEADER_CAVITY: "
-        f"{D['header_cavity_length']:.3f} x "
-        f"{D['header_cavity_width']:.3f} x "
-        f"{D['header_cavity_depth']:.3f} mm "
-        f"(housing + {tol:.3f} mm fit tolerance)"
-    )
-    print(f"HEADER_ROW_CENTER_DISTANCE: {p['HEADER_ROW_SPACING']:.3f} mm")
-    print(
-        "SCREW_ACCESS_12_6: CLEAR "
-        f"(plate +/-{plate_top:.3f} mm; screw centers +/-{p['SCREW_CENTER_Z']:.3f} mm)"
+        f"OFFICIAL_WATCH: dia {p['WATCH_DIAMETER']:.3f} x "
+        f"thickness {p['WATCH_THICKNESS']:.3f} mm"
     )
     print(
-        "SPEAKER_KEEP_OUT: CLEAR "
-        f"(plate left {plate_left:.3f} mm; protected boundary {speaker_right:.3f} mm)"
+        f"PLATE_ENVELOPE: {p['PLATE_WIDTH']:.3f} x "
+        f"{p['PLATE_LENGTH']:.3f} x {p['PLATE_THICKNESS']:.3f} mm / "
+        "inside watch circle"
+    )
+    print(
+        f"SCREW_MOUNT: 2 x dia {p['SCREW_HOLE_D']:.3f} through / "
+        f"pitch {p['SCREW_SPACING']:.3f} / countersink "
+        f"dia {p['SCREW_COUNTERSINK_D']:.3f} x "
+        f"{p['SCREW_COUNTERSINK_ANGLE']:.1f} deg / "
+        f"tab web {screw_web:.3f} mm"
+    )
+    print(
+        f"SPEAKER_KEEP_OUT: CLEAR (relief dia {D['speaker_relief_d']:.3f} mm)"
     )
     print(
         f"TECHNIC_HOLES: dia {p['TECHNIC_HOLE_D']:.3f} mm / "
-        f"pitch {p['TECHNIC_PITCH']:.3f} mm / 2x2 + GPS 1x2"
+        f"pitch {p['TECHNIC_PITCH']:.3f} mm / 2x2 + GPS 1x2 / "
+        f"minimum web {web:.3f} mm"
+    )
+    print(
+        f"MAGNET_RELIEF_SEATS: 4 positions on {p['MAGNET_GRID']:.3f} mm grid / "
+        f"dia {p['MAGNET_RELIEF_D']:.3f} x depth {p['MAGNET_RELIEF_DEPTH']:.3f} mm"
     )
 
 
@@ -293,18 +324,6 @@ def box(name, size_x, size_y, size_z, location):
     return obj
 
 
-def rounded_box(name, size_x, size_y, size_z, radius, location):
-    obj = box(name, size_x, size_y, size_z, location)
-    modifier = obj.modifiers.new("edge_radius", "BEVEL")
-    modifier.width = radius
-    modifier.segments = PARAMS["FILLET_SEGMENTS"]
-    modifier.profile = 0.5
-    modifier.limit_method = "NONE"
-    activate(obj)
-    bpy.ops.object.modifier_apply(modifier=modifier.name)
-    return obj
-
-
 def cylinder_y(name, diameter, depth, location, vertices=64):
     bpy.ops.mesh.primitive_cylinder_add(
         vertices=vertices,
@@ -312,6 +331,21 @@ def cylinder_y(name, diameter, depth, location, vertices=64):
         depth=depth,
         location=location,
         rotation=(math.radians(90.0), 0.0, 0.0),
+    )
+    obj = bpy.context.active_object
+    obj.name = name
+    apply_transform(obj)
+    return obj
+
+
+def frustum_y(name, radius_inner, radius_outer, depth, location, vertices=64):
+    bpy.ops.mesh.primitive_cone_add(
+        vertices=vertices,
+        radius1=radius_inner,
+        radius2=radius_outer,
+        depth=depth,
+        location=location,
+        rotation=(math.radians(-90.0), 0.0, 0.0),
     )
     obj = bpy.context.active_object
     obj.name = name
@@ -329,99 +363,104 @@ def boolean(target, tool, operation):
     bpy.data.objects.remove(tool, do_unlink=True)
 
 
-def add_u_channel(target, center_x, center_z):
-    """Union one rear-open U channel sized to the outside of a header."""
-    p = PARAMS
-    overlap = p["BOOLEAN_EPS"]
-    arm_depth = D["header_cavity_depth"] + overlap
-    arm_y = arm_depth / 2.0
-    arm_offset_z = D["header_cavity_width"] / 2.0 + p["CLAMP_WALL"] / 2.0
-    for sign in (-1.0, 1.0):
-        arm = box(
-            "header_clamp_arm",
-            D["clamp_outer_length"],
-            arm_depth,
-            p["CLAMP_WALL"],
-            (center_x, arm_y, center_z + sign * arm_offset_z),
-        )
-        boolean(target, arm, "UNION")
-
-    end_wall_height = D["header_cavity_width"] + 2.0 * p["CLAMP_WALL"]
-    end_wall_offset_x = D["header_cavity_length"] / 2.0 + p["CLAMP_END_WALL"] / 2.0
-    for sign in (-1.0, 1.0):
-        end_wall = box(
-            "header_clamp_end_wall",
-            p["CLAMP_END_WALL"],
-            arm_depth,
-            end_wall_height,
-            (center_x + sign * end_wall_offset_x, arm_y, center_z),
-        )
-        boolean(target, end_wall, "UNION")
-
-
-def cut_technic_holes(target, positions):
+def cut_through_holes(target, positions, diameter, prefix):
     p = PARAMS
     cut_depth = p["PLATE_THICKNESS"] + 2.0 * p["BOOLEAN_EPS"]
     for index, (x, z) in enumerate(positions, start=1):
         cutter = cylinder_y(
-            f"technic_hole_{index}",
-            p["TECHNIC_HOLE_D"],
+            f"{prefix}_{index}",
+            diameter,
             cut_depth,
             (x, D["plate_center_y"], z),
-            vertices=64,
+        )
+        boolean(target, cutter, "DIFFERENCE")
+
+
+def cut_screw_holes(target):
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    cut_through_holes(target, D["screw_positions"], p["SCREW_HOLE_D"], "screw_through")
+    true_depth = D["countersink_depth"]
+    tool_depth = true_depth + 2.0 * eps
+    inner_radius = p["SCREW_HOLE_D"] / 2.0 - eps
+    outer_radius = p["SCREW_COUNTERSINK_D"] / 2.0 + eps
+    center_y = D["plate_outer_y"] - true_depth / 2.0
+    for index, (x, z) in enumerate(D["screw_positions"], start=1):
+        cutter = frustum_y(
+            f"screw_countersink_{index}",
+            inner_radius,
+            outer_radius,
+            tool_depth,
+            (x, center_y, z),
+        )
+        boolean(target, cutter, "DIFFERENCE")
+
+
+def cut_magnet_reliefs(target):
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    cutter_depth = p["MAGNET_RELIEF_DEPTH"] + eps
+    cutter_center_y = (p["MAGNET_RELIEF_DEPTH"] - eps) / 2.0
+    for index, (x, z) in enumerate(magnet_positions(), start=1):
+        cutter = cylinder_y(
+            f"magnet_relief_{index}",
+            p["MAGNET_RELIEF_D"],
+            cutter_depth,
+            (x, cutter_center_y, z),
         )
         boolean(target, cutter, "DIFFERENCE")
 
 
 def build_backpack():
     p = PARAMS
-    # Intersect a circular rear envelope with the right-biased plate band.  The
-    # right edge follows the watch back instead of projecting past its outline.
-    plate = cylinder_y(
-        "watch_back_circular_envelope",
-        p["WATCH_REAR_RADIUS"] * 2.0,
-        p["PLATE_THICKNESS"],
-        (0.0, D["plate_center_y"], p["PLATE_CENTER_Z"]),
-        vertices=128,
-    )
-    band = box(
-        "backpack_plate_band",
+    eps = p["BOOLEAN_EPS"]
+    plate = box(
+        "backpack_plate_body",
         p["PLATE_WIDTH"],
-        p["PLATE_THICKNESS"] + 2.0 * p["BOOLEAN_EPS"],
-        p["PLATE_HEIGHT"],
+        p["PLATE_THICKNESS"],
+        p["PLATE_BODY_HEIGHT"],
         (p["PLATE_CENTER_X"], D["plate_center_y"], p["PLATE_CENTER_Z"]),
     )
-    boolean(plate, band, "INTERSECT")
 
-    for row_z in D["header_rows"]:
-        add_u_channel(
-            plate,
-            p["HEADER_CENTER_X"],
-            row_z,
+    for index, (x, z) in enumerate(D["screw_positions"], start=1):
+        tab = cylinder_y(
+            f"rounded_screw_tab_{index}",
+            p["SCREW_TAB_D"],
+            p["PLATE_THICKNESS"] + 2.0 * eps,
+            (x, D["plate_center_y"], z),
         )
+        boolean(plate, tab, "UNION")
 
-    cut_technic_holes(plate, main_hole_positions() + gps_hole_positions())
-    plate.name = "toicamera_open_backpack_plate_v3"
-    return plate
-
-
-def build_coupon():
-    p = PARAMS
-    coupon = rounded_box(
-        "fit_coupon_back_wall",
-        p["COUPON_WIDTH"],
+    # The union tools overlap the front/back faces by BOOLEAN_EPS for robust
+    # booleans.  Trim that overlap so the printable thickness stays exactly 3 mm.
+    thickness_trim = box(
+        "plate_thickness_trim",
+        p["WATCH_DIAMETER"] + 2.0,
         p["PLATE_THICKNESS"],
-        p["COUPON_HEIGHT"],
-        p["COUPON_FILLET"],
-        (p["HEADER_CENTER_X"], D["plate_center_y"], 0.0),
+        p["WATCH_DIAMETER"] + 2.0,
+        (0.0, D["plate_center_y"], 0.0),
     )
-    add_u_channel(
-        coupon,
-        p["HEADER_CENTER_X"],
-        0.0,
+    boolean(plate, thickness_trim, "INTERSECT")
+
+    speaker_relief = cylinder_y(
+        "speaker_keepout_relief",
+        D["speaker_relief_d"],
+        p["PLATE_THICKNESS"] + 2.0 * eps,
+        (p["SPEAKER_CENTER_X"], D["plate_center_y"], p["SPEAKER_CENTER_Z"]),
+        vertices=96,
     )
-    coupon.name = "toicamera_header_fit_coupon_v3"
-    return coupon
+    boolean(plate, speaker_relief, "DIFFERENCE")
+
+    cut_magnet_reliefs(plate)
+    cut_through_holes(
+        plate,
+        main_hole_positions() + gps_hole_positions(),
+        p["TECHNIC_HOLE_D"],
+        "technic_hole",
+    )
+    cut_screw_holes(plate)
+    plate.name = "toicamera_screw_fastened_backpack_plate_v3_2"
+    return plate
 
 
 def cleanup_mesh(obj):
@@ -506,14 +545,9 @@ def validate_exported_stl(label, path, expected, tolerance):
 
 def output_paths(raw_out, part):
     out = Path(raw_out).expanduser().resolve()
-    if part != "all":
-        return {part: out}
-    suffix = out.suffix or ".stl"
-    stem = out.stem if out.suffix else out.name
-    return {
-        "backpack": out.with_name(stem + "_backpack" + suffix),
-        "coupon": out.with_name(stem + "_coupon" + suffix),
-    }
+    if not out.suffix:
+        out = out.with_suffix(".stl")
+    return {"backpack": out}
 
 
 def main():
@@ -521,23 +555,19 @@ def main():
     reset_scene()
     validate_param_contract()
     paths = output_paths(args.out, args.part)
-    expected = {
-        "backpack": D["backpack_bbox"],
-        "coupon": D["coupon_bbox"],
-    }
-    builders = {"backpack": build_backpack, "coupon": build_coupon}
     overall_ok = True
 
     print("UNIT_CONTRACT: 1 Blender Unit = 1 mm")
-    print("LAYOUT_V3: open watch / rear header backpack / commercial CLIP-A/B / rear-facing camera")
-    print("PRINT_ORIENTATION: outer plate face on build plate; Technic hole axes vertical")
+    print("LAYOUT_V3_2: open watch / 2-screw backpack / commercial CLIP-A/B / rear-facing camera")
+    print("PART_ALIAS: all -> backpack")
+    print("PRINT_ORIENTATION: inner watch-contact face on build plate; countersinks upward")
 
     for part, path in paths.items():
-        obj = builders[part]()
+        obj = build_backpack()
         label = part.upper()
-        object_ok = validate_object(label, obj, expected[part], args.bbox_tol)
+        object_ok = validate_object(label, obj, D["backpack_bbox"], args.bbox_tol)
         export_stl(obj, path)
-        stl_ok = validate_exported_stl(label, path, expected[part], args.bbox_tol)
+        stl_ok = validate_exported_stl(label, path, D["backpack_bbox"], args.bbox_tol)
         overall_ok = overall_ok and object_ok and stl_ok
 
     print("CASE_BUILD_RESULT: " + ("PASS" if overall_ok else "FAIL"))
