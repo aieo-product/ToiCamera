@@ -29,7 +29,7 @@ import bpy
 # printable-part dimensions and clearance rules are centralized here.
 PARAMS = {
     "BBOX_TOL": 0.3,
-    "BOOLEAN_EPS": 0.15,
+    "BOOLEAN_EPS": 0.05,
 
     # StopWatch rear geometry (rear-view X/Z plane).
     "WATCH_DIAMETER": 51.95,
@@ -266,6 +266,8 @@ def validate_param_contract():
     plate_left, plate_right, plate_bottom, plate_top = D["plate_bounds"]
     rail_left, rail_right, rail_bottom, rail_top = D["rail_bounds"]
 
+    if not math.isfinite(p["BOOLEAN_EPS"]) or p["BOOLEAN_EPS"] < 0.05:
+        raise ValueError("boolean cutter overlap must be at least 0.05 mm")
     if not math.isclose(p["WATCH_DIAMETER"], 51.95, abs_tol=1.0e-9):
         raise ValueError("official StopWatch diameter must remain 51.95 mm")
     if not math.isclose(p["WATCH_THICKNESS"], 15.5, abs_tol=1.0e-9):
@@ -577,6 +579,58 @@ def frustum_y(name, radius_inner, radius_outer, depth, location, vertices=64):
     return obj
 
 
+def revolved_profile_y(name, profile, center_x, center_z, vertices=64):
+    """Create one closed Y-axis cutter from an ordered ``(y, radius)`` profile."""
+    if len(profile) < 2 or vertices < 3:
+        raise ValueError("a revolved profile needs at least two rings and three vertices")
+    if any(radius <= 0.0 for _, radius in profile):
+        raise ValueError("revolved profile radii must be positive")
+    if any(
+        next_y < current_y
+        for (current_y, _), (next_y, _) in zip(profile, profile[1:])
+    ):
+        raise ValueError("revolved profile Y coordinates must be ordered")
+
+    mesh = bpy.data.meshes.new(name + "_mesh")
+    coordinates = []
+    phase = math.pi / vertices
+    for y, radius in profile:
+        for segment in range(vertices):
+            angle = 2.0 * math.pi * segment / vertices + phase
+            coordinates.append(
+                (
+                    center_x + radius * math.cos(angle),
+                    y,
+                    center_z + radius * math.sin(angle),
+                )
+            )
+
+    faces = []
+    for ring in range(len(profile) - 1):
+        lower = ring * vertices
+        upper = (ring + 1) * vertices
+        for segment in range(vertices):
+            next_segment = (segment + 1) % vertices
+            faces.append(
+                (
+                    lower + segment,
+                    upper + segment,
+                    upper + next_segment,
+                    lower + next_segment,
+                )
+            )
+    faces.append(tuple(range(vertices)))
+    last_ring = (len(profile) - 1) * vertices
+    faces.append(tuple(last_ring + segment for segment in reversed(range(vertices))))
+
+    mesh.from_pydata(coordinates, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    cleanup_mesh(obj)
+    return obj
+
+
 def boolean(target, tool, operation):
     modifier = target.modifiers.new(operation.lower(), "BOOLEAN")
     modifier.operation = operation
@@ -585,6 +639,7 @@ def boolean(target, tool, operation):
     activate(target)
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     bpy.data.objects.remove(tool, do_unlink=True)
+    cleanup_mesh(target)
 
 
 def cut_through_holes(target, positions, diameter, prefix):
@@ -604,60 +659,36 @@ def cut_technic_holes(target):
     p = PARAMS
     eps = p["BOOLEAN_EPS"]
     positions = technic_hole_positions()
-    through_depth = p["TECHNIC_RAIL_THICKNESS"] + 2.0 * eps
+    hole_radius = D["technic_effective_hole_d"] / 2.0
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    counterbore_depth = p["TECHNIC_COUNTERBORE_DEPTH"]
+    chamfer = p["TECHNIC_HOLE_CHAMFER"]
+    chamfer_radius = hole_radius + chamfer
+    outer_counterbore_y = p["TECHNIC_RAIL_THICKNESS"] - counterbore_depth
+    outer_chamfer_y = outer_counterbore_y - chamfer
+
+    # A single closed cutter avoids coplanar seams between the former through,
+    # counterbore, and chamfer cutters.  Duplicate Y values intentionally form
+    # the flat counterbore shoulders in the revolved profile.
+    profile = (
+        (-eps, counterbore_radius),
+        (counterbore_depth, counterbore_radius),
+        (counterbore_depth, chamfer_radius),
+        (counterbore_depth + chamfer, hole_radius),
+        (outer_chamfer_y, hole_radius),
+        (outer_counterbore_y, chamfer_radius),
+        (outer_counterbore_y, counterbore_radius),
+        (p["TECHNIC_RAIL_THICKNESS"] + eps, counterbore_radius),
+    )
 
     for index, (x, z) in enumerate(positions, start=1):
-        through = cylinder_y(
-            f"technic_through_{index}",
-            D["technic_effective_hole_d"],
-            through_depth,
-            (x, D["rail_center_y"], z),
+        cutter = revolved_profile_y(
+            f"technic_hole_profile_{index}",
+            profile,
+            x,
+            z,
         )
-        boolean(target, through, "DIFFERENCE")
-
-        counterbore_depth = p["TECHNIC_COUNTERBORE_DEPTH"] + eps
-        inner_counterbore_y = (p["TECHNIC_COUNTERBORE_DEPTH"] - eps) / 2.0
-        outer_counterbore_y = (
-            p["TECHNIC_RAIL_THICKNESS"] - inner_counterbore_y
-        )
-        for face, center_y in (
-            ("inner", inner_counterbore_y),
-            ("outer", outer_counterbore_y),
-        ):
-            counterbore = cylinder_y(
-                f"technic_counterbore_{face}_{index}",
-                p["TECHNIC_COUNTERBORE_D"],
-                counterbore_depth,
-                (x, center_y, z),
-            )
-            boolean(target, counterbore, "DIFFERENCE")
-
-        hole_radius = D["technic_effective_hole_d"] / 2.0
-        chamfer = p["TECHNIC_HOLE_CHAMFER"]
-        chamfer_depth = chamfer + 2.0 * eps
-        inner_chamfer_y = p["TECHNIC_COUNTERBORE_DEPTH"] + chamfer / 2.0
-        inner_chamfer = frustum_y(
-            f"technic_chamfer_inner_{index}",
-            hole_radius + chamfer + eps,
-            hole_radius - eps,
-            chamfer_depth,
-            (x, inner_chamfer_y, z),
-        )
-        boolean(target, inner_chamfer, "DIFFERENCE")
-
-        outer_chamfer_y = (
-            p["TECHNIC_RAIL_THICKNESS"]
-            - p["TECHNIC_COUNTERBORE_DEPTH"]
-            - chamfer / 2.0
-        )
-        outer_chamfer = frustum_y(
-            f"technic_chamfer_outer_{index}",
-            hole_radius - eps,
-            hole_radius + chamfer + eps,
-            chamfer_depth,
-            (x, outer_chamfer_y, z),
-        )
-        boolean(target, outer_chamfer, "DIFFERENCE")
+        boolean(target, cutter, "DIFFERENCE")
 
 
 def cut_screw_holes(target):
@@ -739,10 +770,11 @@ def build_backpack():
     return plate
 
 
-def cleanup_mesh(obj):
+def cleanup_mesh(obj, merge_distance=1.0e-4):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1.0e-5)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
+    bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=merge_distance)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.to_mesh(obj.data)
     bm.free()
@@ -771,7 +803,7 @@ def mesh_stats(obj):
 
 
 def validate_object(label, obj, expected, tolerance):
-    cleanup_mesh(obj)
+    cleanup_mesh(obj, merge_distance=1.0e-3)
     dims = tuple(float(value) for value in obj.dimensions)
     nonmanifold, components = mesh_stats(obj)
     deltas = tuple(abs(actual - wanted) for actual, wanted in zip(dims, expected))
