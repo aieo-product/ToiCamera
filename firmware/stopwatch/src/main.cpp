@@ -557,20 +557,21 @@ static void drawPageDashboard() {
   // GPS status is always visible; with a fix the label is the postcode-level
   // reverse-geocode result (plain OSM lookup — no AI inference involved).
   homeCanvas.setTextSize(1);
-  if (hasFreshGpsFix()) {
-    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    String locationText = homeShort.length() ? homeShort : homePlace;
-    if (homeStation.length()) {
-      const String stationText = "最寄り:" + homeStation + " 徒歩" +
-                                 String(homeWalkMin) + "分";
-      const String combined =
-          locationText.length() ? locationText + " / " + stationText
-                                : stationText;
-      locationText = homeCanvas.textWidth(combined) > 380 && locationText.length()
-                         ? locationText
-                         : combined;
-    }
-    if (!locationText.length()) locationText = "GPS 測位OK";
+  const bool gpsLive = hasFreshGpsFix();
+  String locationText = homeShort.length() ? homeShort : homePlace;
+  if (homeStation.length()) {
+    const String stationText = "最寄り:" + homeStation + " 徒歩" +
+                               String(homeWalkMin) + "分";
+    const String combined =
+        locationText.length() ? locationText + " / " + stationText
+                              : stationText;
+    locationText = homeCanvas.textWidth(combined) > 380 && locationText.length()
+                       ? locationText
+                       : combined;
+  }
+  if (locationText.length()) {
+    // Last-known location survives fix loss (indoors) — just dimmed.
+    homeCanvas.setTextColor(gpsLive ? TFT_LIGHTGREY : TFT_DARKGREY, TFT_BLACK);
     homeCanvas.drawString(fitHomeText(locationText, 380),
                           M5.Display.width() / 2, 384);
   } else {
@@ -578,6 +579,8 @@ static void drawPageDashboard() {
     String gpsText;
     if (gpsBytes == 0) {
       gpsText = "GPS 未接続";
+    } else if (gpsLive) {
+      gpsText = "GPS 測位OK";
     } else {
       gpsText = "GPS 測位中...";
       if (gps.satellites.isValid()) {
@@ -1308,11 +1311,7 @@ static bool fetchHomePlace() {
   const String url = String(WORKER_URL) + "/place?lat=" +
                      String(gps.location.lat(), 6) + "&lon=" +
                      String(gps.location.lng(), 6);
-  homePlace = "";
-  homeShort = "";
-  homeStation = "";
-  homeDistanceM = 0;
-  homeWalkMin = 0;
+  // Last-known values stay on screen if this request fails.
   const uint32_t t0 = millis();
   int code = -1;
   bool ok = false;
@@ -2094,16 +2093,8 @@ static void homeTick() {
   const bool gpsFix = hasFreshGpsFix();
   if (gpsFix != homeHadGpsFix) {
     homeHadGpsFix = gpsFix;
-    homeDirty = true;
-    if (gpsFix) {
-      placeLookupPending = true;
-    } else {
-      homePlace = "";
-      homeShort = "";
-      homeStation = "";
-      homeDistanceM = 0;
-      homeWalkMin = 0;
-    }
+    homeDirty = true;  // restyle only — the last-known location stays visible
+    if (gpsFix) placeLookupPending = true;
   }
   bool requestSent = false;
   if (gpsFix && WiFi.status() == WL_CONNECTED &&
