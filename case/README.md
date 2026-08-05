@@ -1,6 +1,8 @@
-# ToiCamera ケース v3.4 — フル・テクニックグリッド
+# ToiCamera ケース v3.4 backpack / v3.5 grid3
 
 M5Stack StopWatch C152 の背面ネジ 2 本を長ネジへ交換し、汎用拡張ラックを樹脂ボスへ共締めする構成です。v3.3 の LEGO テクニック寸法を維持したまま、プレートを 64 mm へ延長し、取り付け可能な位置まで 2 列 × 8 行の候補を敷き詰めました。Unit CamS3、GPS、その他の Unit は CLIP-A/B またはピン式ブラケットで空き穴へ追加できます。
+
+v3.5 では、既存の `backpack` を一切変更せず、モジュールを多めに盛る用途向けの 3 列版を別パーツ `grid3` として追加しています。`grid3` はウォッチ外周内へ円形クリップされるため、v3.4 backpack と用途に応じて選択できます。
 
 正本は [`blender/build_case.py`](blender/build_case.py) です。寸法は `PARAMS` に集約し、1 Blender Unit = 1 mm で STL を生成します。公式寸法の根拠は M5Stack の [`C152-StopWatch-model-size.pdf`](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1242/C152-StopWatch-model-size.pdf) です。
 
@@ -14,6 +16,32 @@ M5Stack StopWatch C152 の背面ネジ 2 本を長ネジへ交換し、汎用拡
 - **既存部品の逃げ**: 背面視左のスピーカー keep-out と、25.46 mm 格子上の φ5.5 × 0.3 mm 磁石逃げ座を維持します。右側 2 個の磁石逃げ座と重なる候補穴は生成しません。
 
 座標は Blender の X=背面視左右、Y=ウォッチ背面から外向き、Z=上下です。ウォッチ接触面は Y=0、ネジタブ外面は Y=3.0、穴帯頂面は Y=7.8 です。
+
+## v3.5 grid3（別パーツ）
+
+- **別パーツ**: `--part grid3` で生成します。v3.4 の `backpack` の寸法・穴・形状は変更しません。
+- **3 列グリッド**: 列中心は X=`-4 / +4 / +12` mm、行候補は Z=`-28〜+28` mm の 8 mm ピッチです。単列梁幅 9.6 mm を列間へ延長した穴帯／基材の幅は 25.6 mm（X=-8.8〜+16.8）です。
+- **列選定理由**: スピーカー keep-out の右端は X=-9.2 mm、採用した穴帯左端は X=-8.8 mm で 0.4 mm の外形間隔を確保します。左シフト案 `-12/-4/+4` はスピーカー外形と干渉し、右シフト案は円周側で生成可能穴数が減るため、keep-out を満たす 8 mm ピッチ案で穴数が最大の `-4/+4/+12` を採用しています。
+- **円形クリップ**: 公式外径 φ51.95（半径 25.975 mm）に対し、全外形を半径 25.5 mm の円でクリップします。実マージンは半径方向 0.475 mm、Z 方向は -25.5〜+25.5 mm で、下端もウォッチ外周ぎりぎりまで延長されます。
+- **既存規格を維持**: 基材厚 3.0 mm、穴帯厚 7.8 mm、規格穴 φ4.8 + 径補正 0.15 mm、両面座ぐり φ6.2 × 0.8 mm、内側面取り 0.3 mm、ネジ間隔 40.0 mm、φ2.4 貫通と φ4.5・90°皿もみ、磁石逃げを共通仕様として使います。
+- **想定用途**: CamS3 に加えて GPS、センサー、ライトなどを複数固定する「モジュール盛り」向けです。実装前に総重量、片持ち荷重、ケーブル曲げ半径を確認してください。
+
+### grid3 穴グリッド座標マップ
+
+`●` が生成穴、`—` が自動干渉スキップです。
+
+| Z (mm) | X=-4 | X=+4 | X=+12 |
+|---:|:---:|:---:|:---:|
+| +28 | — 円周 | — 円周 | — 円周 |
+| +20 | — ネジ座 | — ネジ座 | — 円周 |
+| +12 | ● | ● | — 磁石逃げ |
+| +4 | ● | ● | ● |
+| -4 | ● | ● | ● |
+| -12 | ● | ● | — 磁石逃げ |
+| -20 | — ネジ座 | — ネジ座 | — 円周 |
+| -28 | — 円周 | — 円周 | — 円周 |
+
+生成結果は **10 穴 / 24 候補**です。スキップ内訳は円形外周リム 8、ネジ座 4、磁石逃げ座 2、スピーカー 0。スピーカーは候補穴だけでなくプレート外形の段階で keep-out を確保します。
 
 ## 穴グリッド座標マップ
 
@@ -44,7 +72,7 @@ GPS を追加するときだけ Grove Y 分岐を追加し、電源・信号ピ�
 
 ## STL の生成
 
-`--part` を省略した場合は `backpack` が既定です。`--part all` も同じ 1 部品を書き出します。
+`--part` を省略した場合は `backpack` が既定です。`--part all` は指定したパスへ従来どおり backpack を書き出し、同じディレクトリへファイル名末尾 `_grid3` の grid3 も書き出します。下の例では `toicamera.stl` と `toicamera_grid3.stl` の 2 ファイルを生成します。
 
 ```bash
 /Applications/Blender.app/Contents/MacOS/Blender -b \
@@ -62,6 +90,15 @@ GPS を追加するときだけ Grove Y 分岐を追加し、電源・信号ピ�
   --out case/blender/out/toicamera_backpack_v3_4.stl
 ```
 
+grid3 だけを書き出す場合:
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender -b \
+  --python case/blender/build_case.py -- \
+  --part grid3 \
+  --out case/blender/out/toicamera_grid3_v3_5.stl
+```
+
 ## 自己検証とログ
 
 スクリプトは候補ごとの採否を計算してから形状を構築し、次を自己検証します。
@@ -74,8 +111,11 @@ GPS を追加するときだけ Grove Y 分岐を追加し、電源・信号ピ�
 - 両面の φ6.2 × 深さ 0.8 mm 座ぐりと 0.3 mm 面取り
 - ネジ座、外周、スピーカー、磁石逃げとの非干渉
 - 生成オブジェクトと再インポートした STL の非多様体エッジが 0、接続コンポーネントが 1
+- grid3 が 25.6 × 7.8 × 51.0 mm（X × Y × Z）の bbox に収まり、全頂点の X/Z 半径が 25.5 mm 以下
+- grid3 の列候補を穴数とスピーカー外形間隔で比較し、X=-4/+4/+12 が最大 10 穴になること
+- grid3 の下端が Z=-25.5 mm の円弧へ届き、ウォッチ公式半径 25.975 mm に対して外へ出ないこと
 
-ログには `TECHNIC_HOLE_SKIP`、`TECHNIC_HOLES_GENERATED`、`TECHNIC_HOLES_SKIPPED`、`TECHNIC_SKIP_REASON_COUNTS`、`TECHNIC_GRID_CHECK` を出力します。最後に `CASE_BUILD_RESULT: PASS` が表示された STL だけを印刷してください。
+backpack のログには `TECHNIC_HOLE_SKIP`、`TECHNIC_HOLES_GENERATED`、`TECHNIC_HOLES_SKIPPED`、`TECHNIC_SKIP_REASON_COUNTS`、`TECHNIC_GRID_CHECK` を出力します。grid3 では `GRID3_COLUMN_OPTION`、`GRID3_COLUMN_SELECTION`、`GRID3_TECHNIC_HOLE_SKIP`、`GRID3_TECHNIC_HOLES_GENERATED`、`GRID3_TECHNIC_SKIP_REASON_COUNTS`、`GRID3_TECHNIC_GRID_CHECK`、`GRID3_WATCH_CLIP` を追加し、各部品の `BACKPACK_STL_SELF_CHECK: PASS` / `GRID3_STL_SELF_CHECK: PASS` を確認します。最後に `CASE_BUILD_RESULT: PASS` が表示された STL だけを印刷してください。
 
 ## 印刷向き
 
@@ -110,6 +150,9 @@ GPS を追加するときだけ Grove Y 分岐を追加し、電源・信号ピ�
 | `SCREW_KEEP_OUT_WEB` / `PLATE_OUTER_RIM` | ネジ座とのウェブ 0.8 mm / 規格穴基準の外周リム 1.6 mm |
 | `MAGNET_GRID` / `MAGNET_RELIEF_*` | 25.46 mm 格子 / φ5.5 × 0.3 mm 内面逃げ |
 | `SPEAKER_*` | 背面視左スピーカーの立入禁止領域 |
+| `GRID3_PARAMS["WATCH_CLIP_RADIUS"]` | grid3 外形を制限する半径 25.5 mm の円 |
+| `GRID3_PARAMS["TECHNIC_GRID_XS"]` | grid3 の 3 列 X=-4/+4/+12 mm |
+| `GRID3_PARAMS["TECHNIC_GRID_X_OPTIONS"]` | 穴数とスピーカー keep-out を比較する列候補 |
 
 ## 3D 組立シミュレーター
 

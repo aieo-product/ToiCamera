@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the ToiCamera v3.4 screw-fastened full Technic-grid plate.
+"""Build the ToiCamera v3.4 backpack and v3.5 three-column grid plate.
 
 The plate replaces the StopWatch's two rear screws with longer screws and is
 clamped directly to the existing plastic bosses.  It does not grip or enter the
@@ -85,17 +85,42 @@ PARAMS = {
 }
 
 
+# v3.5 is deliberately a separate part.  The v3.4 PARAMS and build_backpack()
+# path above remain the source of truth for the existing backpack geometry.
+GRID3_PARAMS = {
+    # The requested 25.5 mm clip radius is just inside the official 25.975 mm
+    # watch radius (0.475 mm exact radial clearance after rounding).
+    "WATCH_CLIP_RADIUS": 25.5,
+    "WATCH_CLIP_TOL": 0.01,
+    "WATCH_CLIP_VERTICES": 128,
+
+    # Three 8 mm-pitch columns retain the v3.3 9.6 mm single-beam envelope.
+    # The selected option is verified against the alternatives below by hole
+    # count and by the speaker keep-out before any mesh is constructed.
+    "PLATE_CENTER_X": 4.0,
+    "PLATE_CENTER_Z": 0.0,
+    "TECHNIC_GRID_XS": (-4.0, 4.0, 12.0),
+    "TECHNIC_GRID_X_OPTIONS": (
+        (-12.0, -4.0, 4.0),
+        (-4.0, 4.0, 12.0),
+        (4.0, 12.0, 20.0),
+        (12.0, 20.0, 28.0),
+    ),
+    "TECHNIC_GRID_ZS": (-28.0, -20.0, -12.0, -4.0, 4.0, 12.0, 20.0, 28.0),
+}
+
+
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(
-        description="Build the ToiCamera v3.4 full Technic-grid backpack plate"
+        description="Build the ToiCamera v3.4 backpack and v3.5 grid3 plate"
     )
     parser.add_argument("--out", required=True, help="output STL path")
     parser.add_argument(
         "--part",
-        choices=("backpack", "all"),
+        choices=("backpack", "grid3", "all"),
         default="backpack",
-        help="part to export; all is an alias for backpack (default: backpack)",
+        help="part to export; all writes backpack and grid3 (default: backpack)",
     )
     parser.add_argument(
         "--bbox-tol",
@@ -158,6 +183,41 @@ def derived():
 
 
 D = derived()
+
+
+def derived_grid3():
+    p = PARAMS
+    g = GRID3_PARAMS
+    band_width = p["TECHNIC_RAIL_WIDTH"] + 2.0 * p["TECHNIC_PITCH"]
+    clip_diameter = 2.0 * g["WATCH_CLIP_RADIUS"]
+    plate_left = g["PLATE_CENTER_X"] - band_width / 2.0
+    plate_right = g["PLATE_CENTER_X"] + band_width / 2.0
+    return {
+        "plate_width": band_width,
+        "plate_length": clip_diameter,
+        "plate_center_y": D["plate_center_y"],
+        "rail_center_y": D["rail_center_y"],
+        "plate_bounds": (
+            plate_left,
+            plate_right,
+            -g["WATCH_CLIP_RADIUS"],
+            g["WATCH_CLIP_RADIUS"],
+        ),
+        "rail_bounds": (
+            plate_left,
+            plate_right,
+            -g["WATCH_CLIP_RADIUS"],
+            g["WATCH_CLIP_RADIUS"],
+        ),
+        "grid3_bbox": (
+            band_width,
+            p["TECHNIC_RAIL_THICKNESS"],
+            clip_diameter,
+        ),
+    }
+
+
+GRID3_D = derived_grid3()
 
 
 def reset_scene():
@@ -258,6 +318,124 @@ def technic_hole_plan():
 def technic_hole_positions():
     accepted, _ = technic_hole_plan()
     return accepted
+
+
+def grid3_technic_hole_candidates(columns=None):
+    xs = GRID3_PARAMS["TECHNIC_GRID_XS"] if columns is None else columns
+    return [
+        (x, z)
+        for x in xs
+        for z in GRID3_PARAMS["TECHNIC_GRID_ZS"]
+    ]
+
+
+def grid3_technic_hole_skip_reasons(position, columns=None):
+    """Return every v3.5 keep-out rule that rejects a grid3 candidate."""
+    p = PARAMS
+    g = GRID3_PARAMS
+    xs = g["TECHNIC_GRID_XS"] if columns is None else columns
+    x, z = position
+    reasons = []
+    nominal_radius = p["TECHNIC_HOLE_D"] / 2.0
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    band_left = min(xs) - p["TECHNIC_RAIL_WIDTH"] / 2.0
+    band_right = max(xs) + p["TECHNIC_RAIL_WIDTH"] / 2.0
+
+    screw_clearance = (
+        p["SCREW_COUNTERSINK_D"] / 2.0
+        + counterbore_radius
+        + p["SCREW_KEEP_OUT_WEB"]
+    )
+    if any(
+        math.hypot(x - screw_x, z - screw_z) < screw_clearance - 1.0e-9
+        for screw_x, screw_z in D["screw_positions"]
+    ):
+        reasons.append("screw_keepout")
+
+    circle_clearance = nominal_radius + p["PLATE_OUTER_RIM"]
+    if math.hypot(x, z) + circle_clearance > (
+        g["WATCH_CLIP_RADIUS"] + 1.0e-9
+    ):
+        reasons.append("watch_clip_outer_rim")
+
+    side_clearance = counterbore_radius + p["HOLE_MIN_WEB"]
+    if not (
+        band_left + side_clearance - 1.0e-9
+        <= x
+        <= band_right - side_clearance + 1.0e-9
+    ):
+        reasons.append("grid_band_side_web")
+
+    speaker_clearance = (
+        p["SPEAKER_KEEP_OUT_D"] / 2.0
+        + p["SPEAKER_MARGIN"]
+        + counterbore_radius
+    )
+    if math.hypot(x - p["SPEAKER_CENTER_X"], z - p["SPEAKER_CENTER_Z"]) < (
+        speaker_clearance - 1.0e-9
+    ):
+        reasons.append("speaker_keepout")
+
+    magnet_clearance = p["MAGNET_RELIEF_D"] / 2.0 + counterbore_radius
+    if any(
+        math.hypot(x - magnet_x, z - magnet_z) < magnet_clearance - 1.0e-9
+        for magnet_x, magnet_z in magnet_positions()
+    ):
+        reasons.append("magnet_relief")
+
+    return tuple(reasons)
+
+
+def grid3_technic_hole_plan(columns=None):
+    accepted = []
+    skipped = []
+    for position in grid3_technic_hole_candidates(columns):
+        reasons = grid3_technic_hole_skip_reasons(position, columns)
+        if reasons:
+            skipped.append((position, reasons))
+        else:
+            accepted.append(position)
+    return accepted, skipped
+
+
+def grid3_technic_hole_positions():
+    accepted, _ = grid3_technic_hole_plan()
+    return accepted
+
+
+def grid3_column_option_plan():
+    """Score aligned three-column options that stay right of the speaker."""
+    p = PARAMS
+    g = GRID3_PARAMS
+    speaker_radius = p["SPEAKER_KEEP_OUT_D"] / 2.0 + p["SPEAKER_MARGIN"]
+    plans = []
+    for columns in g["TECHNIC_GRID_X_OPTIONS"]:
+        band_left = min(columns) - p["TECHNIC_RAIL_WIDTH"] / 2.0
+        band_right = max(columns) + p["TECHNIC_RAIL_WIDTH"] / 2.0
+        bounds = (
+            band_left,
+            band_right,
+            -g["WATCH_CLIP_RADIUS"],
+            g["WATCH_CLIP_RADIUS"],
+        )
+        speaker_gap = point_to_rectangle_distance(
+            p["SPEAKER_CENTER_X"], p["SPEAKER_CENTER_Z"], bounds
+        ) - speaker_radius
+        intersects_clip = (
+            band_left < g["WATCH_CLIP_RADIUS"]
+            and band_right > -g["WATCH_CLIP_RADIUS"]
+        )
+        accepted, skipped = grid3_technic_hole_plan(columns)
+        plans.append(
+            {
+                "columns": columns,
+                "accepted": accepted,
+                "skipped": skipped,
+                "speaker_gap": speaker_gap,
+                "feasible": speaker_gap >= -1.0e-9 and intersects_clip,
+            }
+        )
+    return plans
 
 
 def validate_param_contract():
@@ -530,6 +708,240 @@ def validate_param_contract():
     )
 
 
+def validate_grid3_param_contract():
+    p = PARAMS
+    g = GRID3_PARAMS
+    web = p["HOLE_MIN_WEB"]
+    clip_radius = g["WATCH_CLIP_RADIUS"]
+    official_radius = p["WATCH_DIAMETER"] / 2.0
+    plate_left, plate_right, plate_bottom, plate_top = GRID3_D["plate_bounds"]
+    rail_left, rail_right, _, _ = GRID3_D["rail_bounds"]
+
+    if not math.isclose(clip_radius, 25.5, abs_tol=1.0e-9):
+        raise ValueError("v3.5 grid3 watch clip radius must remain 25.5 mm")
+    if clip_radius >= official_radius:
+        raise ValueError("v3.5 grid3 must remain inside the official watch radius")
+    if not math.isclose(GRID3_D["plate_width"], 25.6, abs_tol=1.0e-9):
+        raise ValueError("v3.5 grid3 plate width must remain 25.6 mm")
+    if not (
+        math.isclose(plate_bottom, -clip_radius, abs_tol=1.0e-9)
+        and math.isclose(plate_top, clip_radius, abs_tol=1.0e-9)
+    ):
+        raise ValueError("v3.5 grid3 plate must reach both watch clip arcs")
+    if not math.isclose(g["PLATE_CENTER_X"], 4.0, abs_tol=1.0e-9):
+        raise ValueError("v3.5 grid3 plate must be centered on X=4 mm")
+    if not math.isclose(p["PLATE_THICKNESS"], 3.0, abs_tol=1.0e-9):
+        raise ValueError("v3.5 screw-tab base thickness must remain 3.0 mm")
+    if not math.isclose(p["TECHNIC_RAIL_THICKNESS"], 7.8, abs_tol=1.0e-9):
+        raise ValueError("v3.5 raised grid band thickness must remain 7.8 mm")
+
+    if not math.isclose(p["SCREW_SPACING"], 40.0, abs_tol=1.0e-9):
+        raise ValueError("v3.5 screw centers must remain 40.0 mm apart")
+    if not math.isclose(p["SCREW_HOLE_D"], 2.4, abs_tol=1.0e-9):
+        raise ValueError("v3.5 screw clearance holes must remain 2.4 mm")
+    if not math.isclose(p["SCREW_COUNTERSINK_D"], 4.5, abs_tol=1.0e-9):
+        raise ValueError("v3.5 countersink diameter must remain 4.5 mm")
+    if not math.isclose(p["SCREW_COUNTERSINK_ANGLE"], 90.0, abs_tol=1.0e-9):
+        raise ValueError("v3.5 countersink included angle must remain 90 degrees")
+    for screw_x, screw_z in D["screw_positions"]:
+        if math.hypot(screw_x, screw_z) + D["tab_radius"] > (
+            clip_radius + 1.0e-9
+        ):
+            raise ValueError("a v3.5 screw tab exceeds the circular watch clip")
+
+    if not math.isclose(p["TECHNIC_HOLE_D"], 4.8, abs_tol=1.0e-9):
+        raise ValueError("v3.5 nominal Technic hole diameter must remain 4.8 mm")
+    if not math.isclose(p["TECHNIC_HOLE_PRINT_COMP"], 0.15, abs_tol=1.0e-9):
+        raise ValueError("v3.5 Technic print compensation must remain +0.15 mm")
+    if not math.isclose(p["TECHNIC_PITCH"], 8.0, abs_tol=1.0e-9):
+        raise ValueError("v3.5 Technic pitch must remain 8.0 mm")
+    if not math.isclose(p["TECHNIC_COUNTERBORE_D"], 6.2, abs_tol=1.0e-9):
+        raise ValueError("v3.5 Technic counterbore diameter must remain 6.2 mm")
+    if not math.isclose(p["TECHNIC_COUNTERBORE_DEPTH"], 0.8, abs_tol=1.0e-9):
+        raise ValueError("v3.5 Technic counterbore depth must remain 0.8 mm")
+    if not math.isclose(p["TECHNIC_HOLE_CHAMFER"], 0.3, abs_tol=1.0e-9):
+        raise ValueError("v3.5 Technic hole chamfer must remain 0.3 mm")
+    if not math.isclose(p["BOOLEAN_EPS"], 0.05, abs_tol=1.0e-9):
+        raise ValueError("v3.5 must retain the 0.05 mm boolean penetration")
+
+    selected_columns = tuple(g["TECHNIC_GRID_XS"])
+    if selected_columns != (-4.0, 4.0, 12.0):
+        raise ValueError("v3.5 selected columns must remain X=-4,+4,+12 mm")
+    if any(
+        not math.isclose(second - first, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        for first, second in zip(selected_columns, selected_columns[1:])
+    ):
+        raise ValueError("v3.5 column axes are not spaced at 8.0 mm")
+    if any(
+        not math.isclose(second - first, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        for first, second in zip(
+            g["TECHNIC_GRID_ZS"], g["TECHNIC_GRID_ZS"][1:]
+        )
+    ):
+        raise ValueError("v3.5 row axes are not spaced at 8.0 mm")
+
+    option_plans = grid3_column_option_plan()
+    feasible_plans = [plan for plan in option_plans if plan["feasible"]]
+    if not feasible_plans:
+        raise ValueError("v3.5 has no three-column option clear of the speaker")
+    best_hole_count = max(len(plan["accepted"]) for plan in feasible_plans)
+    selected_plan = next(
+        (plan for plan in option_plans if tuple(plan["columns"]) == selected_columns),
+        None,
+    )
+    if selected_plan is None or not selected_plan["feasible"]:
+        raise ValueError("v3.5 selected columns violate the speaker keep-out")
+    if len(selected_plan["accepted"]) != best_hole_count:
+        raise ValueError("v3.5 selected columns do not maximize the generated hole count")
+
+    speaker_radius = p["SPEAKER_KEEP_OUT_D"] / 2.0 + p["SPEAKER_MARGIN"]
+    speaker_edge_x = p["SPEAKER_CENTER_X"] + speaker_radius
+    outline_speaker_gap = plate_left - speaker_edge_x
+    if outline_speaker_gap < -1.0e-9:
+        raise ValueError("v3.5 plate outline violates the speaker keep-out")
+
+    candidates = grid3_technic_hole_candidates()
+    technic_positions, skipped = grid3_technic_hole_plan()
+    if len(candidates) != 24:
+        raise ValueError("v3.5 grid3 must contain 3 x 8 candidates")
+    if len(technic_positions) != 10 or len(skipped) != 14:
+        raise ValueError("v3.5 keep-outs must yield 10 holes and 14 skipped candidates")
+
+    valid_reasons = {
+        "screw_keepout",
+        "watch_clip_outer_rim",
+        "grid_band_side_web",
+        "speaker_keepout",
+        "magnet_relief",
+    }
+    if any(not reasons or not set(reasons) <= valid_reasons for _, reasons in skipped):
+        raise ValueError("a skipped v3.5 Technic hole has an invalid reason")
+
+    nominal_circle_clearance = p["TECHNIC_HOLE_D"] / 2.0 + p["PLATE_OUTER_RIM"]
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    for x, z in technic_positions:
+        if math.hypot(x, z) + nominal_circle_clearance > clip_radius + 1.0e-9:
+            raise ValueError("a v3.5 Technic hole violates the circular outer rim")
+        if not (
+            rail_left + counterbore_radius + web
+            <= x
+            <= rail_right - counterbore_radius - web
+        ):
+            raise ValueError("a v3.5 counterbore violates the grid-band side web")
+        if grid3_technic_hole_skip_reasons((x, z)):
+            raise ValueError("a generated v3.5 Technic hole violates a keep-out")
+
+    for index, first in enumerate(technic_positions):
+        for second in technic_positions[index + 1:]:
+            center_distance = math.hypot(first[0] - second[0], first[1] - second[1])
+            if center_distance - 2.0 * counterbore_radius < web - 1.0e-9:
+                raise ValueError("v3.5 counterbores leave less than the minimum web")
+
+    countersink_radius = p["SCREW_COUNTERSINK_D"] / 2.0
+    for screw_x, screw_z in D["screw_positions"]:
+        for hole_x, hole_z in technic_positions:
+            clear_web = (
+                math.hypot(screw_x - hole_x, screw_z - hole_z)
+                - countersink_radius
+                - counterbore_radius
+            )
+            if clear_web < p["SCREW_KEEP_OUT_WEB"] - 1.0e-9:
+                raise ValueError("a v3.5 screw countersink is too close to a hole")
+
+    if not math.isclose(p["MAGNET_GRID"], 25.46, abs_tol=1.0e-9):
+        raise ValueError("v3.5 official magnet grid must remain 25.46 mm")
+    magnet_radius = p["MAGNET_RELIEF_D"] / 2.0
+    relief_overlaps = 0
+    for x, z in magnet_positions():
+        overlaps_x = x + magnet_radius > plate_left and x - magnet_radius < plate_right
+        overlaps_circle = math.hypot(x, z) - magnet_radius < clip_radius
+        if overlaps_x and overlaps_circle:
+            relief_overlaps += 1
+    if relief_overlaps != 2:
+        raise ValueError("v3.5 must retain the two overlapping magnet relief seats")
+
+    reason_counts = {reason: 0 for reason in sorted(valid_reasons)}
+    for (x, z), reasons in skipped:
+        print(
+            f"GRID3_TECHNIC_HOLE_SKIP: x={x:.3f} z={z:.3f} "
+            f"reasons={','.join(reasons)}"
+        )
+        for reason in reasons:
+            reason_counts[reason] += 1
+
+    for plan in option_plans:
+        columns_text = "/".join(f"{x:+.0f}" for x in plan["columns"])
+        print(
+            f"GRID3_COLUMN_OPTION: x={columns_text} "
+            f"holes={len(plan['accepted'])} "
+            f"speaker_gap={plan['speaker_gap']:.3f} mm "
+            f"feasible={'yes' if plan['feasible'] else 'no'}"
+        )
+
+    print("GRID3_PARAM_CONTRACT: PASS")
+    print(
+        f"GRID3_COLUMN_SELECTION: x=-4/+4/+12 holes={len(technic_positions)} "
+        f"reason=max_holes_among_speaker-clear_8mm_options / "
+        f"speaker_center=({p['SPEAKER_CENTER_X']:.3f},"
+        f"{p['SPEAKER_CENTER_Z']:.3f}) / "
+        f"speaker_keepout_d={2.0 * speaker_radius:.3f} / "
+        f"speaker_edge_x={speaker_edge_x:.3f} / band_left={plate_left:.3f} / "
+        f"outline_gap={outline_speaker_gap:.3f} mm"
+    )
+    print(
+        f"GRID3_WATCH_CLIP: radius {clip_radius:.3f} mm / "
+        f"official radius {official_radius:.3f} mm / "
+        f"radial margin {official_radius - clip_radius:.3f} mm / "
+        f"Z={plate_bottom:.3f}..{plate_top:.3f}"
+    )
+    print(
+        f"GRID3_PLATE_BASE: width {GRID3_D['plate_width']:.3f} x "
+        f"clipped length {GRID3_D['plate_length']:.3f} x "
+        f"thickness {p['PLATE_THICKNESS']:.3f} mm / "
+        f"X={plate_left:.3f}..{plate_right:.3f}"
+    )
+    print(
+        f"GRID3_SCREW_MOUNT: 2 x dia {p['SCREW_HOLE_D']:.3f} through / "
+        f"pitch {p['SCREW_SPACING']:.3f} / countersink "
+        f"dia {p['SCREW_COUNTERSINK_D']:.3f} x "
+        f"{p['SCREW_COUNTERSINK_ANGLE']:.1f} deg"
+    )
+    print(
+        f"GRID3_TECHNIC_GRID_CANDIDATES: 3x8={len(candidates)} / nominal dia "
+        f"{p['TECHNIC_HOLE_D']:.3f} + print compensation "
+        f"{p['TECHNIC_HOLE_PRINT_COMP']:+.3f} mm / pitch "
+        f"{p['TECHNIC_PITCH']:.3f} mm"
+    )
+    print(
+        f"GRID3_TECHNIC_GRID_CHECK: PASS (columns -4/+4/+12 / "
+        f"row origin {g['TECHNIC_GRID_ZS'][0]:.3f} / "
+        f"pitch {p['TECHNIC_PITCH']:.3f} mm)"
+    )
+    print(f"GRID3_TECHNIC_HOLES_GENERATED: {len(technic_positions)}")
+    print(f"GRID3_TECHNIC_HOLES_SKIPPED: {len(skipped)}")
+    print(
+        "GRID3_TECHNIC_SKIP_REASON_COUNTS: "
+        + " ".join(
+            f"{reason}={reason_counts[reason]}" for reason in sorted(reason_counts)
+        )
+    )
+    print(
+        "GRID3_TECHNIC_HOLE_CENTERS_XZ: "
+        + " ".join(f"({x:.3f},{z:.3f})" for x, z in technic_positions)
+    )
+    print(
+        f"GRID3_TECHNIC_DETAILS: effective dia {D['technic_effective_hole_d']:.3f} / "
+        f"counterbores dia {p['TECHNIC_COUNTERBORE_D']:.3f} x "
+        f"depth {p['TECHNIC_COUNTERBORE_DEPTH']:.3f} both faces / "
+        f"chamfer {p['TECHNIC_HOLE_CHAMFER']:.3f} mm"
+    )
+    print(
+        f"GRID3_MAGNET_RELIEF_SEATS: {relief_overlaps} overlaps / "
+        f"dia {p['MAGNET_RELIEF_D']:.3f} x depth "
+        f"{p['MAGNET_RELIEF_DEPTH']:.3f} mm"
+    )
+
+
 def activate(obj):
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
@@ -642,6 +1054,19 @@ def boolean(target, tool, operation):
     cleanup_mesh(target)
 
 
+def clip_to_grid3_watch_circle(target, depth, prefix):
+    """Intersect a grid3 body with the 25.5 mm watch-safe X/Z circle."""
+    eps = PARAMS["BOOLEAN_EPS"]
+    clip = cylinder_y(
+        f"{prefix}_watch_circle_clip",
+        2.0 * GRID3_PARAMS["WATCH_CLIP_RADIUS"],
+        depth + 2.0 * eps,
+        (0.0, depth / 2.0, 0.0),
+        vertices=GRID3_PARAMS["WATCH_CLIP_VERTICES"],
+    )
+    boolean(target, clip, "INTERSECT")
+
+
 def cut_through_holes(target, positions, diameter, prefix):
     p = PARAMS
     cut_depth = p["PLATE_THICKNESS"] + 2.0 * p["BOOLEAN_EPS"]
@@ -684,6 +1109,42 @@ def cut_technic_holes(target):
     for index, (x, z) in enumerate(positions, start=1):
         cutter = revolved_profile_y(
             f"technic_hole_profile_{index}",
+            profile,
+            x,
+            z,
+        )
+        boolean(target, cutter, "DIFFERENCE")
+
+
+def cut_grid3_technic_holes(target):
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    positions = grid3_technic_hole_positions()
+    hole_radius = D["technic_effective_hole_d"] / 2.0
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    counterbore_depth = p["TECHNIC_COUNTERBORE_DEPTH"]
+    chamfer = p["TECHNIC_HOLE_CHAMFER"]
+    chamfer_radius = hole_radius + chamfer
+    outer_counterbore_y = p["TECHNIC_RAIL_THICKNESS"] - counterbore_depth
+    outer_chamfer_y = outer_counterbore_y - chamfer
+
+    # Match the v3.4 epsilon-penetrating, single-profile cutter exactly: the
+    # flat shoulders are encoded by duplicate Y rings and every boolean is
+    # followed by the same remove-doubles/degenerate/normal cleanup.
+    profile = (
+        (-eps, counterbore_radius),
+        (counterbore_depth, counterbore_radius),
+        (counterbore_depth, chamfer_radius),
+        (counterbore_depth + chamfer, hole_radius),
+        (outer_chamfer_y, hole_radius),
+        (outer_counterbore_y, chamfer_radius),
+        (outer_counterbore_y, counterbore_radius),
+        (p["TECHNIC_RAIL_THICKNESS"] + eps, counterbore_radius),
+    )
+
+    for index, (x, z) in enumerate(positions, start=1):
+        cutter = revolved_profile_y(
+            f"grid3_technic_hole_profile_{index}",
             profile,
             x,
             z,
@@ -770,6 +1231,52 @@ def build_backpack():
     return plate
 
 
+def build_grid3():
+    p = PARAMS
+    g = GRID3_PARAMS
+    eps = p["BOOLEAN_EPS"]
+    source_length = GRID3_D["plate_length"] + 2.0 * eps
+
+    plate = box(
+        "grid3_plate_body",
+        GRID3_D["plate_width"],
+        p["PLATE_THICKNESS"],
+        source_length,
+        (g["PLATE_CENTER_X"], GRID3_D["plate_center_y"], g["PLATE_CENTER_Z"]),
+    )
+    clip_to_grid3_watch_circle(plate, p["PLATE_THICKNESS"], "grid3_plate")
+
+    rail = box(
+        "grid3_technic_grid_band",
+        GRID3_D["plate_width"],
+        p["TECHNIC_RAIL_THICKNESS"],
+        source_length,
+        (g["PLATE_CENTER_X"], GRID3_D["rail_center_y"], g["PLATE_CENTER_Z"]),
+    )
+    clip_to_grid3_watch_circle(
+        rail, p["TECHNIC_RAIL_THICKNESS"], "grid3_grid_band"
+    )
+
+    # Preserve the v3.4 screw-tab construction: each original screw remains in
+    # a 3 mm base-only island while the surrounding grid band rises to 7.8 mm.
+    for index, (x, z) in enumerate(D["screw_positions"], start=1):
+        tab_clearance = cylinder_y(
+            f"grid3_screw_tab_3mm_zone_{index}",
+            p["SCREW_TAB_D"],
+            p["TECHNIC_RAIL_THICKNESS"] + 2.0 * eps,
+            (x, GRID3_D["rail_center_y"], z),
+        )
+        boolean(rail, tab_clearance, "DIFFERENCE")
+
+    boolean(plate, rail, "UNION")
+
+    cut_magnet_reliefs(plate)
+    cut_grid3_technic_holes(plate)
+    cut_screw_holes(plate)
+    plate.name = "toicamera_three_column_technic_grid_v3_5"
+    return plate
+
+
 def cleanup_mesh(obj, merge_distance=1.0e-4):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
@@ -802,20 +1309,40 @@ def mesh_stats(obj):
     return nonmanifold, components
 
 
-def validate_object(label, obj, expected, tolerance):
+def max_xz_radius(obj):
+    return max(
+        math.hypot(
+            (obj.matrix_world @ vertex.co).x,
+            (obj.matrix_world @ vertex.co).z,
+        )
+        for vertex in obj.data.vertices
+    )
+
+
+def validate_object(label, obj, expected, tolerance, radial_limit=None):
     cleanup_mesh(obj, merge_distance=1.0e-3)
     dims = tuple(float(value) for value in obj.dimensions)
     nonmanifold, components = mesh_stats(obj)
     deltas = tuple(abs(actual - wanted) for actual, wanted in zip(dims, expected))
     bbox_ok = max(deltas) <= tolerance
     mesh_ok = nonmanifold == 0 and components == 1
+    radial_ok = True
     print(f"{label}_BBOX_BUILT: {dims[0]:.4f} {dims[1]:.4f} {dims[2]:.4f}")
     print(f"{label}_BBOX_EXPECT: {expected[0]:.4f} {expected[1]:.4f} {expected[2]:.4f}")
     print(f"{label}_BBOX_DELTA: {deltas[0]:.4f} {deltas[1]:.4f} {deltas[2]:.4f}")
     print(f"{label}_BBOX_VS_SPEC: {'OK' if bbox_ok else 'NG'} (tol +/-{tolerance:.3f} mm)")
+    if radial_limit is not None:
+        built_radius = max_xz_radius(obj)
+        radial_ok = built_radius <= radial_limit + GRID3_PARAMS["WATCH_CLIP_TOL"]
+        print(f"{label}_MAX_XZ_RADIUS_BUILT: {built_radius:.4f}")
+        print(
+            f"{label}_WATCH_CLIP_VS_SPEC: {'OK' if radial_ok else 'NG'} "
+            f"(limit {radial_limit:.3f} + "
+            f"{GRID3_PARAMS['WATCH_CLIP_TOL']:.3f} mm)"
+        )
     print(f"{label}_NONMANIFOLD_EDGES: {nonmanifold}")
     print(f"{label}_CONNECTED_COMPONENTS: {components}")
-    return bbox_ok and mesh_ok
+    return bbox_ok and mesh_ok and radial_ok
 
 
 def export_stl(obj, path):
@@ -834,7 +1361,7 @@ def export_stl(obj, path):
     print(f"STL_EXPORTED: {path}")
 
 
-def validate_exported_stl(label, path, expected, tolerance):
+def validate_exported_stl(label, path, expected, tolerance, radial_limit=None):
     before = set(bpy.data.objects)
     bpy.ops.wm.stl_import(filepath=str(path), forward_axis="Y", up_axis="Z")
     imported = next(obj for obj in bpy.data.objects if obj not in before)
@@ -842,7 +1369,24 @@ def validate_exported_stl(label, path, expected, tolerance):
     dims = tuple(float(value) for value in imported.dimensions)
     deltas = tuple(abs(actual - wanted) for actual, wanted in zip(dims, expected))
     nonmanifold, components = mesh_stats(imported)
-    ok = max(deltas) <= tolerance and nonmanifold == 0 and components == 1
+    radial_ok = True
+    if radial_limit is not None:
+        imported_radius = max_xz_radius(imported)
+        radial_ok = imported_radius <= (
+            radial_limit + GRID3_PARAMS["WATCH_CLIP_TOL"]
+        )
+        print(f"{label}_STL_MAX_XZ_RADIUS: {imported_radius:.4f}")
+        print(
+            f"{label}_STL_WATCH_CLIP_VS_SPEC: {'OK' if radial_ok else 'NG'} "
+            f"(limit {radial_limit:.3f} + "
+            f"{GRID3_PARAMS['WATCH_CLIP_TOL']:.3f} mm)"
+        )
+    ok = (
+        max(deltas) <= tolerance
+        and nonmanifold == 0
+        and components == 1
+        and radial_ok
+    )
     print(f"{label}_STL_BBOX: {dims[0]:.4f} {dims[1]:.4f} {dims[2]:.4f}")
     print(f"{label}_STL_NONMANIFOLD_EDGES: {nonmanifold}")
     print(f"{label}_STL_CONNECTED_COMPONENTS: {components}")
@@ -855,33 +1399,68 @@ def output_paths(raw_out, part):
     out = Path(raw_out).expanduser().resolve()
     if not out.suffix:
         out = out.with_suffix(".stl")
-    return {"backpack": out}
+    if part == "backpack":
+        return {"backpack": out}
+    if part == "grid3":
+        return {"grid3": out}
+    grid3_out = out.with_name(f"{out.stem}_grid3{out.suffix}")
+    return {"backpack": out, "grid3": grid3_out}
 
 
 def main():
     args = parse_args()
     reset_scene()
-    validate_param_contract()
     paths = output_paths(args.out, args.part)
+    if "backpack" in paths:
+        validate_param_contract()
+    if "grid3" in paths:
+        validate_grid3_param_contract()
     overall_ok = True
 
     print("UNIT_CONTRACT: 1 Blender Unit = 1 mm")
-    print(
-        "LAYOUT_V3_4: open watch / 2-screw backpack / full raised Technic grid / "
-        "rear-facing camera"
-    )
-    print("PART_ALIAS: all -> backpack")
+    if "backpack" in paths:
+        print(
+            "LAYOUT_V3_4: open watch / 2-screw backpack / full raised Technic grid / "
+            "rear-facing camera"
+        )
+    if "grid3" in paths:
+        print(
+            "LAYOUT_V3_5_GRID3: separate 3-column circular-clipped module plate / "
+            "backpack unchanged"
+        )
+    print("PART_SELECTION: " + "+".join(paths))
+    for part, path in paths.items():
+        print(f"PART_OUTPUT_PATH: {part}={path}")
     print(
         "PRINT_ORIENTATION: watch-contact face on build plate; grid band raised upward; "
         "Technic hole axes vertical"
     )
 
     for part, path in paths.items():
-        obj = build_backpack()
+        if part == "backpack":
+            obj = build_backpack()
+            expected = D["backpack_bbox"]
+            radial_limit = None
+        else:
+            obj = build_grid3()
+            expected = GRID3_D["grid3_bbox"]
+            radial_limit = GRID3_PARAMS["WATCH_CLIP_RADIUS"]
         label = part.upper()
-        object_ok = validate_object(label, obj, D["backpack_bbox"], args.bbox_tol)
+        object_ok = validate_object(
+            label,
+            obj,
+            expected,
+            args.bbox_tol,
+            radial_limit=radial_limit,
+        )
         export_stl(obj, path)
-        stl_ok = validate_exported_stl(label, path, D["backpack_bbox"], args.bbox_tol)
+        stl_ok = validate_exported_stl(
+            label,
+            path,
+            expected,
+            args.bbox_tol,
+            radial_limit=radial_limit,
+        )
         overall_ok = overall_ok and object_ok and stl_ok
 
     print("CASE_BUILD_RESULT: " + ("PASS" if overall_ok else "FAIL"))
