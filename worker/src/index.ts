@@ -186,6 +186,23 @@ async function analyzeWithOpenAI(
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
 // ~100m and results cached in Cloudflare's edge cache (Nominatim usage policy
 // requires caching; it also keeps the hint off the latency-critical path).
+// ISO3166-2 -> prefecture name. Nominatim often omits address.state for
+// Japan (Tokyo wards return only "ISO3166-2-lvl4": "JP-13").
+const JP_PREFECTURES: Record<string, string> = {
+  "JP-01": "北海道", "JP-02": "青森県", "JP-03": "岩手県", "JP-04": "宮城県",
+  "JP-05": "秋田県", "JP-06": "山形県", "JP-07": "福島県", "JP-08": "茨城県",
+  "JP-09": "栃木県", "JP-10": "群馬県", "JP-11": "埼玉県", "JP-12": "千葉県",
+  "JP-13": "東京都", "JP-14": "神奈川県", "JP-15": "新潟県", "JP-16": "富山県",
+  "JP-17": "石川県", "JP-18": "福井県", "JP-19": "山梨県", "JP-20": "長野県",
+  "JP-21": "岐阜県", "JP-22": "静岡県", "JP-23": "愛知県", "JP-24": "三重県",
+  "JP-25": "滋賀県", "JP-26": "京都府", "JP-27": "大阪府", "JP-28": "兵庫県",
+  "JP-29": "奈良県", "JP-30": "和歌山県", "JP-31": "鳥取県", "JP-32": "島根県",
+  "JP-33": "岡山県", "JP-34": "広島県", "JP-35": "山口県", "JP-36": "徳島県",
+  "JP-37": "香川県", "JP-38": "愛媛県", "JP-39": "高知県", "JP-40": "福岡県",
+  "JP-41": "佐賀県", "JP-42": "長崎県", "JP-43": "熊本県", "JP-44": "大分県",
+  "JP-45": "宮崎県", "JP-46": "鹿児島県", "JP-47": "沖縄県",
+};
+
 interface PlaceHint {
   place: string;
   postcode: string;
@@ -205,8 +222,8 @@ async function placeHint(
     const rlon = Number(lon).toFixed(3);
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${rlat}&lon=${rlon}&zoom=16&accept-language=ja`;
     const cache = caches.default;
-    // &fmt=v3 keys the cache format (v3: short = prefecture+locality)
-    const cacheKey = new Request(url + "&fmt=v3");
+    // &fmt=v4 keys the cache format (v4: prefecture via ISO3166-2 table)
+    const cacheKey = new Request(url + "&fmt=v4");
     const cached = await cache.match(cacheKey);
     if (cached) {
       const data = (await cached.json().catch(() => null)) as PlaceHint | null;
@@ -230,7 +247,9 @@ async function placeHint(
     ].filter(Boolean);
     const postcode = a.postcode ?? "";
     // Compact label like 東京都千代田区 (owner preference: no postcode).
-    const prefecture = a.state ?? a.province ?? a.region ?? "";
+    const prefecture =
+      a.state ?? a.province ?? a.region ??
+      JP_PREFECTURES[a["ISO3166-2-lvl4"] ?? ""] ?? "";
     const locality = a.city ?? a.town ?? a.village ?? a.county ?? "";
     const hint: PlaceHint = {
       place: parts.join(" "),
