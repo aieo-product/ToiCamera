@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ToiCamera ケース v3.2 — ネジ共締めバックパック</title>
+  <title>ToiCamera ケース v3.4 — フル・テクニックグリッド</title>
   <style>
     :root {
       color-scheme: dark;
@@ -105,21 +105,21 @@
   </script>
 </head>
 <body>
-  <main id="viewport" aria-label="ToiCamera ケース v3.2 3D 組立シミュレーター"></main>
+  <main id="viewport" aria-label="ToiCamera ケース v3.4 3D 組立シミュレーター"></main>
 
   <section id="intro" class="panel">
-    <p class="eyebrow">Issue #5 / screw-fastened final</p>
-    <h1>ケース v3.2<br>ネジ共締めバックパック</h1>
-    <p>印刷物は<strong>22 × 48 × 3 mm のプレート 1 枚</strong>だけ。背面の既存ネジ 2 本を長ネジへ交換して樹脂ボスへ共締めし、CamS3 は市販 <strong>M5Stack CLIP-A/B</strong> で保持します。</p>
-    <span id="status">TWO-SCREW MOUNT / BUS FLUSH</span>
+    <p class="eyebrow">Issue #5 / full expansion rack</p>
+    <h1>ケース v3.4<br>フル・テクニックグリッド</h1>
+    <p><strong>22 × 64 × 3 mm</strong> の基材へ、厚さ <strong>7.8 mm</strong> の 2 列穴帯を全長に隆起。背面ネジ 2 本は従来どおり 3 mm タブで共締めし、空き穴へ任意 Unit を追加できます。</p>
+    <span id="status">12 HOLES / 2×8 CANDIDATES / 8.0 mm</span>
   </section>
 
   <section id="legend" class="panel" aria-label="構成と配線の凡例">
     <h2>構成と Grove 配線</h2>
     <div class="legend-row now"><span class="swatch"></span><span><strong>固定:</strong> M2 ロングネジ ×2（要購入）で 12時 / 6時を共締め</span></div>
     <div class="legend-row"><span class="swatch" style="color:var(--yellow)"></span><span><strong>配線:</strong> ウォッチ右下ポート → CamS3 へ直結</span></div>
-    <div class="legend-row"><span class="swatch" style="color:var(--cyan)"></span><span>バックパック: φ4.95 / 8.0 mm ピッチ（1×4）</span></div>
-    <div class="legend-row later"><span class="swatch"></span><span><strong>後付けオプション:</strong> 4穴レールの空き位置に GPS。追加時だけ Grove Y 分岐を使用</span></div>
+    <div class="legend-row"><span class="swatch" style="color:var(--cyan)"></span><span>穴帯: φ4.95 / 8.0 mm ピッチ（候補 16 → 生成 12）</span></div>
+    <div class="legend-row later"><span class="swatch"></span><span><strong>後付けオプション:</strong> 下端 X=0/8・Z=-28 に GPS を 2 ピン固定。追加時だけ Grove Y 分岐を使用</span></div>
   </section>
 
   <div id="hint">ドラッグ: 回転 ・ ホイール: ズーム ・ 右ドラッグ: 移動</div>
@@ -146,21 +146,22 @@
       headerDepth: 0.35,
       headerRows: 30.0,
       plateW: 22.0,
-      plateH: 48.0,
-      plateBodyH: 40.0,
+      plateH: 64.0,
       plateD: 3.0,
-      plateX: 0.0,
+      plateX: 4.0,
       plateFrontZ: 7.85,
       plateRearZ: 10.85,
+      gridBandW: 17.6,
+      gridBandD: 4.8,
       screwTabR: 4.0,
       screwHoleD: 2.4,
       screwHeadD: 4.5,
       screwLength: 8.0,
-      holeD: 4.8,
+      holeD: 4.95,
+      counterboreD: 6.2,
       holePitch: 8.0,
-      holeX: 4.0,
-      mainHoleY: -4.0,
-      gpsHoleY: 9.3,
+      gridXs: Object.freeze([0.0, 8.0]),
+      gridYs: Object.freeze([-28.0, -20.0, -12.0, -4.0, 4.0, 12.0, 20.0, 28.0]),
       magnetD: 5.0,
       magnetGrid: 25.46,
       magnetReliefD: 5.5,
@@ -231,6 +232,7 @@
       grille: new THREE.MeshStandardMaterial({ color: 0x020304, roughness: 0.95 }),
       keyA: new THREE.MeshStandardMaterial({ color: 0xffd84a, emissive: 0x5c4400, emissiveIntensity: 0.5 }),
       keyB: new THREE.MeshStandardMaterial({ color: 0x258fff, emissive: 0x063768, emissiveIntensity: 0.52 }),
+      skipped: new THREE.MeshBasicMaterial({ color: 0xff657a, transparent: true, opacity: 0.72, side: THREE.DoubleSide }),
       gpsGhost: new THREE.MeshPhysicalMaterial({ color: 0x72f0bd, transparent: true, opacity: 0.13, wireframe: false, depthWrite: false, side: THREE.DoubleSide }),
       antennaGhost: new THREE.MeshBasicMaterial({ color: 0xb7f9db, transparent: true, opacity: 0.18, depthWrite: false })
     };
@@ -355,64 +357,36 @@
     addLabel(watchGroup, "2.54 バス 7P / 6P（面一）", new THREE.Vector3(3, -27, 10));
     addLabel(watchGroup, "4× φ5 磁石（面一）", new THREE.Vector3(24, 18, 10));
 
-    // 22 x 48 mm plate: 40 mm body plus rounded screw tabs at 12/6 o'clock.
-    // The concave left-waist arc is the preserved rear-speaker keep-out.
+    // v3.4: 22 x 64 x 3 mm base plus a 17.6 x 64 x 4.8 mm raised grid band.
+    const skippedReasons = new Map([
+      ["0,-20", "ネジ座"],
+      ["0,20", "ネジ座"],
+      ["8,-12", "磁石逃げ"],
+      ["8,12", "磁石逃げ"]
+    ]);
+    const candidatePositions = DIM.gridXs.flatMap((x) => DIM.gridYs.map((y) => [x, y]));
+    const holePositions = candidatePositions.filter(([x, y]) => !skippedReasons.has(`${x},${y}`));
+    const addCircularHole = (shape, x, y, radius) => {
+      const hole = new THREE.Path();
+      hole.absarc(x, y, radius, 0, Math.PI * 2, true);
+      shape.holes.push(hole);
+    };
+
     const plateShape = new THREE.Shape();
     const xMin = DIM.plateX - DIM.plateW / 2;
     const xMax = DIM.plateX + DIM.plateW / 2;
-    const bodyHalf = DIM.plateBodyH / 2;
-    plateShape.moveTo(xMin, -bodyHalf);
-    plateShape.lineTo(-DIM.screwTabR, -bodyHalf);
-    for (let i = 1; i <= 12; i += 1) {
-      const angle = Math.PI + Math.PI * i / 12;
-      plateShape.lineTo(
-        Math.cos(angle) * DIM.screwTabR,
-        -bodyHalf + Math.sin(angle) * DIM.screwTabR
-      );
-    }
-    plateShape.lineTo(xMax, -bodyHalf);
-    plateShape.lineTo(xMax, bodyHalf);
-    plateShape.lineTo(DIM.screwTabR, bodyHalf);
-    for (let i = 1; i <= 12; i += 1) {
-      const angle = Math.PI * i / 12;
-      plateShape.lineTo(
-        Math.cos(angle) * DIM.screwTabR,
-        bodyHalf + Math.sin(angle) * DIM.screwTabR
-      );
-    }
-    plateShape.lineTo(xMin, bodyHalf);
-    const speakerDx = xMin - DIM.speakerX;
-    const speakerDy = Math.sqrt(DIM.speakerKeepoutR ** 2 - speakerDx ** 2);
-    plateShape.lineTo(xMin, speakerDy);
-    const speakerAngle = Math.atan2(speakerDy, speakerDx);
-    for (let i = 1; i <= 12; i += 1) {
-      const angle = speakerAngle - 2 * speakerAngle * i / 12;
-      plateShape.lineTo(
-        DIM.speakerX + Math.cos(angle) * DIM.speakerKeepoutR,
-        Math.sin(angle) * DIM.speakerKeepoutR
-      );
-    }
-    plateShape.lineTo(xMin, -bodyHalf);
+    const plateHalf = DIM.plateH / 2;
+    plateShape.moveTo(xMin, -plateHalf);
+    plateShape.lineTo(xMax, -plateHalf);
+    plateShape.lineTo(xMax, plateHalf);
+    plateShape.lineTo(xMin, plateHalf);
     plateShape.closePath();
 
-    const mainHalf = DIM.holePitch / 2;
-    const holePositions = [
-      [DIM.holeX - mainHalf, DIM.mainHoleY - mainHalf],
-      [DIM.holeX + mainHalf, DIM.mainHoleY - mainHalf],
-      [DIM.holeX - mainHalf, DIM.mainHoleY + mainHalf],
-      [DIM.holeX + mainHalf, DIM.mainHoleY + mainHalf],
-      [DIM.holeX - mainHalf, DIM.gpsHoleY],
-      [DIM.holeX + mainHalf, DIM.gpsHoleY]
-    ];
     for (const [x, y] of holePositions) {
-      const hole = new THREE.Path();
-      hole.absarc(x, y, DIM.holeD / 2, 0, Math.PI * 2, true);
-      plateShape.holes.push(hole);
+      addCircularHole(plateShape, x, y, DIM.holeD / 2);
     }
     for (const screwY of [-DIM.screwY, DIM.screwY]) {
-      const hole = new THREE.Path();
-      hole.absarc(0, screwY, DIM.screwHoleD / 2, 0, Math.PI * 2, true);
-      plateShape.holes.push(hole);
+      addCircularHole(plateShape, 0, screwY, DIM.screwHoleD / 2);
     }
 
     const plateGroup = register(new THREE.Vector3(0, 0, DIM.plateFrontZ), new THREE.Vector3(0, 0, 34));
@@ -420,6 +394,25 @@
     const plate = new THREE.Mesh(plateGeometry, materials.plate);
     plateGroup.add(plate);
     addEdges(plate, 0x61e6ff, 0.78);
+
+    const bandHalfW = DIM.gridBandW / 2;
+    const railShape = new THREE.Shape();
+    railShape.moveTo(DIM.plateX - bandHalfW, -plateHalf);
+    railShape.lineTo(DIM.plateX + bandHalfW, -plateHalf);
+    railShape.lineTo(DIM.plateX + bandHalfW, plateHalf);
+    railShape.lineTo(DIM.plateX - bandHalfW, plateHalf);
+    railShape.closePath();
+    for (const [x, y] of holePositions) {
+      addCircularHole(railShape, x, y, DIM.holeD / 2);
+    }
+    for (const screwY of [-DIM.screwY, DIM.screwY]) {
+      addCircularHole(railShape, 0, screwY, DIM.screwTabR);
+    }
+    const railGeometry = new THREE.ExtrudeGeometry(railShape, { depth: DIM.gridBandD, bevelEnabled: false, curveSegments: 48 });
+    const rail = new THREE.Mesh(railGeometry, materials.plate);
+    rail.position.z = DIM.plateD;
+    plateGroup.add(rail);
+    addEdges(rail, 0x8bf0ff, 0.86);
 
     // Shallow countersink mouths on the outer face (the STL uses true 90-degree cones).
     for (const screwY of [-DIM.screwY, DIM.screwY]) {
@@ -430,9 +423,24 @@
       countersink.position.set(0, screwY, DIM.plateD + 0.012);
       plateGroup.add(countersink);
     }
-    addLabel(plateGroup, "v3.2 バックパック / 22×48×3", new THREE.Vector3(22, 18, 3), "accent");
+    for (const [x, y] of holePositions) {
+      const counterbore = new THREE.Mesh(
+        new THREE.RingGeometry(DIM.holeD / 2, DIM.counterboreD / 2, 36),
+        materials.socket
+      );
+      counterbore.position.set(x, y, DIM.plateD + DIM.gridBandD + 0.012);
+      plateGroup.add(counterbore);
+    }
+    for (const [key, reason] of skippedReasons) {
+      const [x, y] = key.split(",").map(Number);
+      const marker = new THREE.Mesh(new THREE.RingGeometry(2.45, 3.0, 32), materials.skipped);
+      marker.position.set(x, y, (reason === "ネジ座" ? DIM.plateD : DIM.plateD + DIM.gridBandD) + 0.02);
+      plateGroup.add(marker);
+    }
+    addLabel(plateGroup, "v3.4 グリッド / 22×64 / 穴帯 7.8", new THREE.Vector3(24, 23, 8), "accent");
     addLabel(plateGroup, "12時 / 6時を 2点共締め", new THREE.Vector3(-16, 26, 4), "accent");
-    addLabel(plateGroup, "Technic φ4.95 / 8.0 mm / 1×4", new THREE.Vector3(16, -7, 4));
+    addLabel(plateGroup, "Technic φ4.95 / 8.0 mm / 12穴", new THREE.Vector3(19, -14, 8));
+    addLabel(plateGroup, "赤リング: 自動スキップ 4", new THREE.Vector3(-12, -22, 8));
 
     // Two longer M2 screws pass through the plate into the original plastic bosses.
     const screwGroup = register(new THREE.Vector3(), new THREE.Vector3(0, 0, 52));
@@ -456,19 +464,20 @@
 
     // Commercial CLIP-A simplified as a Technic bridge plus two CamS3 jaws.
     const clipGroup = register(new THREE.Vector3(0, 0, 0), new THREE.Vector3(38, -8, 34));
-    addRounded(clipGroup, new THREE.Vector3(18, 17, 4), new THREE.Vector3(4, -4, 13.2), 1.1, materials.clip, 0xffea83);
-    for (const [x, y] of holePositions.slice(0, 4)) {
+    const camMountPositions = holePositions.filter(([, y]) => Math.abs(y) === 4);
+    addRounded(clipGroup, new THREE.Vector3(18, 17, 4), new THREE.Vector3(4, 0, 18.0), 1.1, materials.clip, 0xffea83);
+    for (const [x, y] of camMountPositions) {
       const pin = new THREE.Mesh(new THREE.CylinderGeometry(1.95, 1.95, 3.5, 30), materials.clip);
       pin.rotation.x = Math.PI / 2;
-      pin.position.set(x, y, 11.25);
+      pin.position.set(x, y, 16.05);
       clipGroup.add(pin);
     }
     for (const x of [DIM.camX - 20.4, DIM.camX + 20.4]) {
-      addRounded(clipGroup, new THREE.Vector3(3.1, 20, 10), new THREE.Vector3(x, -4, 18.1), 0.7, materials.clip, 0xffea83);
+      addRounded(clipGroup, new THREE.Vector3(3.1, 20, 10), new THREE.Vector3(x, 0, 22.9), 0.7, materials.clip, 0xffea83);
     }
-    addLabel(clipGroup, "市販 M5Stack CLIP-A（簡略）", new THREE.Vector3(4, 7, 19), "accent");
+    addLabel(clipGroup, "CamS3 = CLIP-A / 中央 2×2", new THREE.Vector3(4, 11, 24), "accent");
 
-    const camGroup = register(new THREE.Vector3(DIM.camX, -4, 25.6), new THREE.Vector3(54, -18, 42));
+    const camGroup = register(new THREE.Vector3(DIM.camX, 0, 30.4), new THREE.Vector3(54, -18, 42));
     addRounded(camGroup, new THREE.Vector3(40, 24, 11), new THREE.Vector3(), 1.4, materials.cam, 0x8598a3);
     // Side grooves visibly receive the yellow clip jaws.
     for (const x of [-20.1, 20.1]) {
@@ -485,8 +494,8 @@
     camGroup.add(camGrove);
     addLabel(camGroup, "CamS3 / 右寄せ・レンズ後ろ向き", new THREE.Vector3(-2, -17, 7), "accent");
 
-    // Ghost-only GPS retrofit, aligned conceptually to the upper 1x2 row.
-    const gpsGroup = register(new THREE.Vector3(6, 31, 27), new THREE.Vector3(-48, 38, 30));
+    // Ghost-only GPS retrofit: two standoffs land on X=0/8, Y=-28.
+    const gpsGroup = register(new THREE.Vector3(4, -42, 27), new THREE.Vector3(-48, -18, 30));
     const gps = addRounded(gpsGroup, new THREE.Vector3(48, 24, 8), new THREE.Vector3(), 1.2, materials.gpsGhost, 0x72f0bd);
     gps.children[0].material.opacity = 0.5;
     const antenna = new THREE.Mesh(new THREE.BoxGeometry(38, 17, 0.6), materials.antennaGhost);
@@ -495,11 +504,11 @@
     for (const x of [-4, 4]) {
       const standoff = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 1.7, 9, 24), materials.gpsGhost);
       standoff.rotation.x = Math.PI / 2;
-      standoff.position.set(x, -21.7, -3.5);
+      standoff.position.set(x, 14, -7);
       gpsGroup.add(standoff);
     }
-    addLabel(gpsGroup, "GPS / 後付けオプション", new THREE.Vector3(0, 16, 5), "ghost");
-    addLabel(gpsGroup, "追加時のみ Y 分岐", new THREE.Vector3(0, -16, 3), "ghost");
+    addLabel(gpsGroup, "GPS = 下端 2ピン / CLIP-B", new THREE.Vector3(0, -16, 5), "ghost");
+    addLabel(gpsGroup, "X=0/8・Z=-28 / 追加時のみ Y 分岐", new THREE.Vector3(0, 17, 3), "ghost");
 
     const cableGroup = new THREE.Group();
     scene.add(cableGroup);
@@ -532,7 +541,7 @@
         const gpsEnd = worldPoint(gpsGroup, new THREE.Vector3(24, -7 + offset, 0), factor);
         addTube([
           new THREE.Vector3(31, -14 + offset, 25),
-          new THREE.Vector3(33, 10 + offset, 30),
+          new THREE.Vector3(33, -34 + offset, 30),
           gpsEnd
         ], color, 0.16);
       });
