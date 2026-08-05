@@ -47,7 +47,6 @@ const DIGEST_SCHEMA = {
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // CamS3 は SVGA〜UXGA JPEG を送る想定 (~100-500KB)
 const ALLOWED_MODELS = new Set([
-  "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ]);

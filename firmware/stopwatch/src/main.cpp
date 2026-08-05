@@ -152,10 +152,10 @@ static uint32_t retainAt = 0;
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
 
+// sol dropped by owner's decision (heaviest tier — quota drains too fast).
 static const char *selectedModelName() {
-  static constexpr const char *kModels[] = {
-      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"};
-  return kModels[selectedModel < 3 ? selectedModel : 2];
+  static constexpr const char *kModels[] = {"gpt-5.6-terra", "gpt-5.6-luna"};
+  return kModels[selectedModel < 2 ? selectedModel : 1];
 }
 
 // On-screen banner + a long 3-note melody, so speaker A/B tests can be
@@ -2217,7 +2217,7 @@ static void homeTouchTick() {
       }
     } else if (homePage == 2) {
       if (homeTouchLastY >= 66 && homeTouchLastY <= 130) {
-        selectedModel = (selectedModel + 1) % 3;
+        selectedModel = (selectedModel + 1) % 2;
         if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
         Serial.printf("[toi] model: %s\n", selectedModelName());
         homeDirty = true;
@@ -2386,8 +2386,8 @@ void setup() {
     es8311DacBoost = toiPrefs.getUChar("dacboost", 1) != 0;
     captureQuality = toiPrefs.getUChar("qual", 0);
     if (captureQuality > 1) captureQuality = 0;
-    selectedModel = toiPrefs.getUChar("model", 2);
-    if (selectedModel > 2) selectedModel = 2;
+    selectedModel = toiPrefs.getUChar("model", 1);
+    if (selectedModel > 1) selectedModel = 1;  // old sol/luna indices clamp to luna
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");
