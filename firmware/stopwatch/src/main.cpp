@@ -2465,9 +2465,10 @@ void setup() {
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
-  // Unit GPS v1.1 (AT6668, 9600bps NMEA) on the Grove port. RX/TX assignment
-  // is auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
-  Serial1.begin(9600, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
+  // Unit GPS v1.1 (AT6668) streams NMEA at 115200 — verified by raw dump
+  // 2026-08-05 (9600 yielded framing garbage, sats never valid). RX/TX is
+  // auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
+  Serial1.begin(115200, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
   gpsSwapDeadline = millis() + 10000;
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);  // modem sleep adds 100-300ms bursts to every request
@@ -2526,6 +2527,37 @@ void loop() {
       Serial.printf("[toi] es8311: dacvol=0x%02X\n", dacVolume);
       volumeTestFeedback(es8311DacBoost ? "DAC +10dB" : "DAC 0dB");
     }
+    else if (cmd == 'g') {
+      // Raw GPS dump — 2s of Serial1 as hex+ascii, to diagnose baud/wiring.
+      Serial.println("[toi] gps raw dump (2s):");
+      const uint32_t until = millis() + 2000;
+      String ascii;
+      int n = 0;
+      while (millis() < until) {
+        while (Serial1.available()) {
+          const uint8_t b = Serial1.read();
+          ++n;
+          Serial.printf("%02X ", b);
+          ascii += (b >= 32 && b < 127) ? (char)b : '.';
+          if (n % 24 == 0) {
+            Serial.printf("  |%s|\n", ascii.c_str());
+            ascii = "";
+          }
+        }
+        delay(2);
+      }
+      if (ascii.length()) Serial.printf("  |%s|\n", ascii.c_str());
+      Serial.printf("[toi] gps raw dump end (%d bytes)\n", n);
+    } else if (cmd == 'G') {
+      // Cycle GPS baud 9600 -> 38400 -> 115200 (persists until reboot).
+      static const uint32_t kBauds[] = {115200, 9600, 38400};
+      static int baudIdx = 0;
+      baudIdx = (baudIdx + 1) % 3;
+      Serial1.end();
+      Serial1.begin(kBauds[baudIdx], SERIAL_8N1, gpsPinsSwapped ? 11 : 10,
+                    gpsPinsSwapped ? 10 : 11);
+      Serial.printf("[toi] gps: baud=%lu\n", (unsigned long)kBauds[baudIdx]);
+    }
     // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
     // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
     else if (cmd >= '0' && cmd <= '2') {
@@ -2546,7 +2578,7 @@ void loop() {
   if (!gpsBytes && !gpsPinsSwapped && millis() > gpsSwapDeadline) {
     gpsPinsSwapped = true;
     Serial1.end();
-    Serial1.begin(9600, SERIAL_8N1, 11 /*RX*/, 10 /*TX*/);
+    Serial1.begin(115200, SERIAL_8N1, 11 /*RX*/, 10 /*TX*/);
     Serial.println("[toi] gps: no data on RX=G10, swapped to RX=G11");
   }
   if (millis() - gpsLastLogAt > 10000) {
