@@ -1674,9 +1674,11 @@ static String urlenc(const String &in) {
 // send to the Worker (/ask) with the current explanation as context, then
 // show + speak the answer.
 static void voiceQuestionFlow() {
+  const uint32_t tHold = millis();
   stopAnimalese();
-  M5.Speaker.tone(900, 40);  // "listening" blip before the speaker is released
-  delay(60);
+  // Users start talking the moment they feel the hold engage — every ms
+  // before Mic.begin() is speech lost, so the codec swap happens FIRST and
+  // the ready cue is visual (red banner). No pre-beep, no delay.
   M5.Speaker.end();  // mic and speaker share the codec/I2S
   if (!M5.Mic.begin()) {
     M5.Speaker.begin();
@@ -1692,6 +1694,7 @@ static void voiceQuestionFlow() {
   int16_t *pcm = (int16_t *)ps_malloc(kMaxSamples * 2 + 44);
   size_t total = 0;
   drawBusy("録音中(離すと送信)", TFT_RED);
+  Serial.printf("[toi] ask: mic live %lums after hold\n", millis() - tHold);
   const uint32_t t0 = millis();
   while (total + kChunk <= kMaxSamples) {
     M5.update();
@@ -2463,6 +2466,9 @@ void setup() {
   M5.Speaker.setVolume(speakerVolume);
   M5.Speaker.begin();
   applyPaBoost();
+  // Hold-to-talk engages at 350ms (default 500) — the mic starts sooner
+  // relative to speech onset, so first words are less likely to be lost.
+  M5.BtnA.setHoldThresh(350);
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
