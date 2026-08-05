@@ -106,7 +106,20 @@ GRID3_PARAMS = {
         (4.0, 12.0, 20.0),
         (12.0, 20.0, 28.0),
     ),
+    # Offset zero retains the former absolute lattice.  The selected offset
+    # translates every row together, so the 8 mm LEGO-compatible pitch stays
+    # unchanged while the keep-outs determine the best absolute placement.
     "TECHNIC_GRID_ZS": (-28.0, -20.0, -12.0, -4.0, 4.0, 12.0, 20.0, 28.0),
+    "TECHNIC_GRID_ROW_OFFSET_OPTIONS": (
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+    ),
 }
 
 
@@ -320,12 +333,15 @@ def technic_hole_positions():
     return accepted
 
 
-def grid3_technic_hole_candidates(columns=None):
-    xs = GRID3_PARAMS["TECHNIC_GRID_XS"] if columns is None else columns
+def grid3_technic_hole_candidates(columns=None, rows=None):
+    g = GRID3_PARAMS
+    xs = g["TECHNIC_GRID_XS"] if columns is None else columns
+    if rows is None:
+        rows = grid3_selected_row_plan()["rows"]
     return [
         (x, z)
         for x in xs
-        for z in GRID3_PARAMS["TECHNIC_GRID_ZS"]
+        for z in rows
     ]
 
 
@@ -337,15 +353,18 @@ def grid3_technic_hole_skip_reasons(position, columns=None):
     x, z = position
     reasons = []
     nominal_radius = p["TECHNIC_HOLE_D"] / 2.0
+    hole_radius = D["technic_effective_hole_d"] / 2.0
     counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
     band_left = min(xs) - p["TECHNIC_RAIL_WIDTH"] / 2.0
     band_right = max(xs) + p["TECHNIC_RAIL_WIDTH"] / 2.0
 
-    screw_clearance = (
-        p["SCREW_COUNTERSINK_D"] / 2.0
-        + counterbore_radius
-        + p["SCREW_KEEP_OUT_WEB"]
-    )
+    # Along Y, the screw countersink meets the Technic through-hole while the
+    # screw through-hole meets the Technic counterbore.  The two larger radii
+    # do not overlap each other, so score the actual worst profile pair.
+    screw_clearance = max(
+        p["SCREW_COUNTERSINK_D"] / 2.0 + hole_radius,
+        p["SCREW_HOLE_D"] / 2.0 + counterbore_radius,
+    ) + p["SCREW_KEEP_OUT_WEB"]
     if any(
         math.hypot(x - screw_x, z - screw_z) < screw_clearance - 1.0e-9
         for screw_x, screw_z in D["screw_positions"]
@@ -386,16 +405,49 @@ def grid3_technic_hole_skip_reasons(position, columns=None):
     return tuple(reasons)
 
 
-def grid3_technic_hole_plan(columns=None):
+def grid3_technic_hole_plan(columns=None, rows=None):
     accepted = []
     skipped = []
-    for position in grid3_technic_hole_candidates(columns):
+    for position in grid3_technic_hole_candidates(columns, rows):
         reasons = grid3_technic_hole_skip_reasons(position, columns)
         if reasons:
             skipped.append((position, reasons))
         else:
             accepted.append(position)
     return accepted, skipped
+
+
+def grid3_row_offset_option_plan():
+    """Score 1 mm row shifts without changing the 8 mm lattice pitch."""
+    g = GRID3_PARAMS
+    plans = []
+    for offset in g["TECHNIC_GRID_ROW_OFFSET_OPTIONS"]:
+        rows = tuple(z + offset for z in g["TECHNIC_GRID_ZS"])
+        accepted, skipped = grid3_technic_hole_plan(rows=rows)
+        lowest_z = min((z for _, z in accepted), default=math.inf)
+        plans.append(
+            {
+                "offset": offset,
+                "rows": rows,
+                "accepted": accepted,
+                "skipped": skipped,
+                "lowest_z": lowest_z,
+            }
+        )
+    return plans
+
+
+def grid3_selected_row_plan():
+    """Choose most holes, then the lowest generated row, deterministically."""
+    plans = grid3_row_offset_option_plan()
+    return min(
+        plans,
+        key=lambda plan: (
+            -len(plan["accepted"]),
+            plan["lowest_z"],
+            plan["offset"],
+        ),
+    )
 
 
 def grid3_technic_hole_positions():
@@ -407,6 +459,7 @@ def grid3_column_option_plan():
     """Score aligned three-column options that stay right of the speaker."""
     p = PARAMS
     g = GRID3_PARAMS
+    selected_rows = grid3_selected_row_plan()["rows"]
     speaker_radius = p["SPEAKER_KEEP_OUT_D"] / 2.0 + p["SPEAKER_MARGIN"]
     plans = []
     for columns in g["TECHNIC_GRID_X_OPTIONS"]:
@@ -425,7 +478,7 @@ def grid3_column_option_plan():
             band_left < g["WATCH_CLIP_RADIUS"]
             and band_right > -g["WATCH_CLIP_RADIUS"]
         )
-        accepted, skipped = grid3_technic_hole_plan(columns)
+        accepted, skipped = grid3_technic_hole_plan(columns, selected_rows)
         plans.append(
             {
                 "columns": columns,
@@ -780,6 +833,35 @@ def validate_grid3_param_contract():
     ):
         raise ValueError("v3.5 row axes are not spaced at 8.0 mm")
 
+    row_offsets = tuple(g["TECHNIC_GRID_ROW_OFFSET_OPTIONS"])
+    if row_offsets != tuple(float(offset) for offset in range(8)):
+        raise ValueError("v3.5 row offsets must cover 0..7 mm in 1 mm steps")
+    row_option_plans = grid3_row_offset_option_plan()
+    selected_row_plan = grid3_selected_row_plan()
+    selected_rows = tuple(selected_row_plan["rows"])
+    if any(
+        not math.isclose(second - first, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        for first, second in zip(selected_rows, selected_rows[1:])
+    ):
+        raise ValueError("v3.5 selected row axes are not spaced at 8.0 mm")
+    best_row_hole_count = max(
+        len(plan["accepted"]) for plan in row_option_plans
+    )
+    best_lowest_z = min(
+        plan["lowest_z"]
+        for plan in row_option_plans
+        if len(plan["accepted"]) == best_row_hole_count
+    )
+    if (
+        len(selected_row_plan["accepted"]) != best_row_hole_count
+        or not math.isclose(
+            selected_row_plan["lowest_z"], best_lowest_z, abs_tol=1.0e-9
+        )
+    ):
+        raise ValueError(
+            "v3.5 row offset must maximize holes, then minimize the lowest z"
+        )
+
     option_plans = grid3_column_option_plan()
     feasible_plans = [plan for plan in option_plans if plan["feasible"]]
     if not feasible_plans:
@@ -804,8 +886,13 @@ def validate_grid3_param_contract():
     technic_positions, skipped = grid3_technic_hole_plan()
     if len(candidates) != 24:
         raise ValueError("v3.5 grid3 must contain 3 x 8 candidates")
-    if len(technic_positions) != 10 or len(skipped) != 14:
-        raise ValueError("v3.5 keep-outs must yield 10 holes and 14 skipped candidates")
+    if len(technic_positions) + len(skipped) != len(candidates):
+        raise ValueError("v3.5 grid3 candidate accounting is inconsistent")
+    if len(technic_positions) <= 10:
+        raise ValueError(
+            "v3.5 row offset search must improve on the former 10 holes "
+            f"(got {len(technic_positions)})"
+        )
 
     valid_reasons = {
         "screw_keepout",
@@ -818,6 +905,7 @@ def validate_grid3_param_contract():
         raise ValueError("a skipped v3.5 Technic hole has an invalid reason")
 
     nominal_circle_clearance = p["TECHNIC_HOLE_D"] / 2.0 + p["PLATE_OUTER_RIM"]
+    hole_radius = D["technic_effective_hole_d"] / 2.0
     counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
     for x, z in technic_positions:
         if math.hypot(x, z) + nominal_circle_clearance > clip_radius + 1.0e-9:
@@ -838,15 +926,18 @@ def validate_grid3_param_contract():
                 raise ValueError("v3.5 counterbores leave less than the minimum web")
 
     countersink_radius = p["SCREW_COUNTERSINK_D"] / 2.0
+    screw_hole_radius = p["SCREW_HOLE_D"] / 2.0
     for screw_x, screw_z in D["screw_positions"]:
         for hole_x, hole_z in technic_positions:
-            clear_web = (
-                math.hypot(screw_x - hole_x, screw_z - hole_z)
-                - countersink_radius
-                - counterbore_radius
+            center_distance = math.hypot(
+                screw_x - hole_x, screw_z - hole_z
+            )
+            clear_web = min(
+                center_distance - countersink_radius - hole_radius,
+                center_distance - screw_hole_radius - counterbore_radius,
             )
             if clear_web < p["SCREW_KEEP_OUT_WEB"] - 1.0e-9:
-                raise ValueError("a v3.5 screw countersink is too close to a hole")
+                raise ValueError("a v3.5 screw profile is too close to a hole")
 
     if not math.isclose(p["MAGNET_GRID"], 25.46, abs_tol=1.0e-9):
         raise ValueError("v3.5 official magnet grid must remain 25.46 mm")
@@ -877,6 +968,26 @@ def validate_grid3_param_contract():
             f"speaker_gap={plan['speaker_gap']:.3f} mm "
             f"feasible={'yes' if plan['feasible'] else 'no'}"
         )
+
+    for plan in row_option_plans:
+        print(
+            f"GRID3_ROW_OFFSET_OPTION: offset={plan['offset']:.0f} mm "
+            f"holes={len(plan['accepted'])} lowest_z={plan['lowest_z']:.3f}"
+        )
+
+    selected_candidate_rows = "/".join(f"{z:+.0f}" for z in selected_rows)
+    selected_generated_rows = "/".join(
+        f"{z:+.0f}"
+        for z in sorted({z for _, z in selected_row_plan["accepted"]})
+    )
+    print(
+        f"GRID3_ROW_OFFSET_SELECTED: offset={selected_row_plan['offset']:.0f} mm "
+        f"holes={len(selected_row_plan['accepted'])} "
+        f"lowest_z={selected_row_plan['lowest_z']:.3f} "
+        f"candidate_rows={selected_candidate_rows} "
+        f"generated_rows={selected_generated_rows} "
+        f"reason=max_holes_then_lowest_z"
+    )
 
     print("GRID3_PARAM_CONTRACT: PASS")
     print(
@@ -914,7 +1025,8 @@ def validate_grid3_param_contract():
     )
     print(
         f"GRID3_TECHNIC_GRID_CHECK: PASS (columns -4/+4/+12 / "
-        f"row origin {g['TECHNIC_GRID_ZS'][0]:.3f} / "
+        f"row origin {selected_rows[0]:.3f} / "
+        f"row offset {selected_row_plan['offset']:.3f} / "
         f"pitch {p['TECHNIC_PITCH']:.3f} mm)"
     )
     print(f"GRID3_TECHNIC_HOLES_GENERATED: {len(technic_positions)}")
