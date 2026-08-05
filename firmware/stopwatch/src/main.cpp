@@ -2057,11 +2057,12 @@ button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bol
 static void enterWifiSetup() {
   state = AppState::WifiSetup;
   streamStop();
+  homeDirty = false;  // stale flag must not repaint Home over this screen
+  drawWifiSetup();    // QR up first — the scan below blocks for seconds
   scanWifiOptions();
   registerWifiPortalRoutes();
   wifiPortal.begin();
   Serial.println("[toi] wifi portal: started on 192.168.4.1");
-  drawWifiSetup();
 }
 
 static void enterIdle() {
@@ -2604,7 +2605,9 @@ void loop() {
         break;
       }
       homeTouchTick();
-      homeTick();
+      // A tap may have transitioned into WifiSetup — homeTick() would
+      // repaint the settings page over the QR screen via a stale homeDirty.
+      if (state == AppState::Home) homeTick();
       break;
     }
 
