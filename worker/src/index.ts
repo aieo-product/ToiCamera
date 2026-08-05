@@ -186,20 +186,37 @@ async function analyzeWithOpenAI(
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
 // ~100m and results cached in Cloudflare's edge cache (Nominatim usage policy
 // requires caching; it also keeps the hint off the latency-critical path).
-async function placeHint(lat: string, lon: string, ctx: ExecutionContext): Promise<string> {
+interface PlaceHint {
+  place: string;
+  postcode: string;
+  /** Compact dashboard label, e.g. "〒154-0017 世田谷区" — no AI involved. */
+  short: string;
+}
+
+const NO_PLACE: PlaceHint = { place: "", postcode: "", short: "" };
+
+async function placeHint(
+  lat: string,
+  lon: string,
+  ctx: ExecutionContext,
+): Promise<PlaceHint> {
   try {
     const rlat = Number(lat).toFixed(3);
     const rlon = Number(lon).toFixed(3);
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${rlat}&lon=${rlon}&zoom=16&accept-language=ja`;
     const cache = caches.default;
-    const cacheKey = new Request(url);
+    // &fmt=v2 keys the JSON format apart from older plain-text cache entries
+    const cacheKey = new Request(url + "&fmt=v2");
     const cached = await cache.match(cacheKey);
-    if (cached) return await cached.text();
+    if (cached) {
+      const data = (await cached.json().catch(() => null)) as PlaceHint | null;
+      if (data && typeof data.place === "string") return data;
+    }
     const res = await fetch(url, {
       headers: { "user-agent": "ToiCamera/1.0 (contest gadget; take.otani@syn-gr.com)" },
       signal: AbortSignal.timeout(800),
     });
-    if (!res.ok) return "";
+    if (!res.ok) return NO_PLACE;
     const data = (await res.json()) as {
       name?: string;
       address?: Record<string, string>;
@@ -211,17 +228,30 @@ async function placeHint(lat: string, lon: string, ctx: ExecutionContext): Promi
       a.suburb ?? a.neighbourhood,
       data.name,
     ].filter(Boolean);
-    const place = parts.join(" ");
+    const postcode = a.postcode ?? "";
+    const locality = a.city ?? a.town ?? a.village ?? a.state ?? "";
+    const hint: PlaceHint = {
+      place: parts.join(" "),
+      postcode,
+      short: [postcode ? `〒${postcode}` : "", locality]
+        .filter(Boolean)
+        .join(" "),
+    };
     ctx.waitUntil(
       cache.put(
         cacheKey,
-        new Response(place, { headers: { "cache-control": "max-age=604800" } }),
+        new Response(JSON.stringify(hint), {
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "max-age=604800",
+          },
+        }),
       ),
     );
-    return place;
+    return hint;
   } catch (err) {
     console.warn("reverse geocode failed", err);
-    return "";
+    return NO_PLACE;
   }
 }
 
@@ -330,12 +360,14 @@ async function handlePlace(request: Request, ctx: ExecutionContext): Promise<Res
     return json({ error: "invalid coordinates" }, 400);
   }
 
-  const [place, station] = await Promise.all([
+  const [hint, station] = await Promise.all([
     placeHint(lat, lon, ctx),
     nearestStation(lat, lon, ctx),
   ]);
   return json({
-    place,
+    place: hint.place,
+    postcode: hint.postcode,
+    short: hint.short,
     station: station.station,
     distance_m: station.distance_m,
     walk_min: station.distance_m > 0 ? Math.ceil(station.distance_m / 80) : 0,
@@ -360,9 +392,9 @@ async function handleAnalyze(
   const lon = searchParams.get("lon");
   let userText = "この写真を解説してください。";
   if (lat && lon) {
-    const place = await placeHint(lat, lon, ctx);
-    if (place) {
-      userText = `撮影場所: ${place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
+    const hint = await placeHint(lat, lon, ctx);
+    if (hint.place) {
+      userText = `撮影場所: ${hint.place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
     }
   }
 

@@ -133,6 +133,7 @@ static uint32_t lastPlaceAt = 0;
 static bool digestLookupPending = true;
 static uint32_t lastDigestAt = 0;
 static String homePlace;
+static String homeShort;  // postcode-level label from /place (no AI)
 static String homeStation;
 static int homeDistanceM = 0;
 static int homeWalkMin = 0;
@@ -553,22 +554,37 @@ static void drawPageDashboard() {
     drawHomeDigest(inquiryDigest);
   }
 
+  // GPS status is always visible; with a fix the label is the postcode-level
+  // reverse-geocode result (plain OSM lookup — no AI inference involved).
+  homeCanvas.setTextSize(1);
   if (hasFreshGpsFix()) {
-    homeCanvas.setTextSize(1);
     homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    String locationText = homePlace;
+    String locationText = homeShort.length() ? homeShort : homePlace;
     if (homeStation.length()) {
       const String stationText = "最寄り:" + homeStation + " 徒歩" +
                                  String(homeWalkMin) + "分";
-      locationText = homePlace.length() ? homePlace + " / " + stationText
-                                        : stationText;
-      if (homePlace.length() && homeCanvas.textWidth(locationText) > 360) {
-        locationText = homePlace;
+      const String combined =
+          locationText.length() ? locationText + " / " + stationText
+                                : stationText;
+      locationText = homeCanvas.textWidth(combined) > 380 && locationText.length()
+                         ? locationText
+                         : combined;
+    }
+    if (!locationText.length()) locationText = "GPS 測位OK";
+    homeCanvas.drawString(fitHomeText(locationText, 380),
+                          M5.Display.width() / 2, 384);
+  } else {
+    homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    String gpsText;
+    if (gpsBytes == 0) {
+      gpsText = "GPS 未接続";
+    } else {
+      gpsText = "GPS 測位中...";
+      if (gps.satellites.isValid()) {
+        gpsText += " 衛星" + String((int)gps.satellites.value());
       }
     }
-    if (locationText.length()) {
-      homeCanvas.drawString(locationText, M5.Display.width() / 2, 384);
-    }
+    homeCanvas.drawString(gpsText, M5.Display.width() / 2, 384);
   }
 
   homeCanvas.setTextSize(1);
@@ -1293,6 +1309,7 @@ static bool fetchHomePlace() {
                      String(gps.location.lat(), 6) + "&lon=" +
                      String(gps.location.lng(), 6);
   homePlace = "";
+  homeShort = "";
   homeStation = "";
   homeDistanceM = 0;
   homeWalkMin = 0;
@@ -1307,6 +1324,7 @@ static bool fetchHomePlace() {
       if (deserializeJson(doc, placeHttp.getString()) ==
           DeserializationError::Ok) {
         homePlace = doc["place"].as<String>();
+        homeShort = doc["short"].as<String>();
         homeStation = doc["station"].as<String>();
         homeDistanceM = doc["distance_m"] | 0;
         homeWalkMin = doc["walk_min"] | 0;
@@ -2077,6 +2095,7 @@ static void homeTick() {
       placeLookupPending = true;
     } else {
       homePlace = "";
+      homeShort = "";
       homeStation = "";
       homeDistanceM = 0;
       homeWalkMin = 0;
