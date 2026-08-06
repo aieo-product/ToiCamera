@@ -16,6 +16,7 @@
 
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -43,6 +44,7 @@ enum class AppState {
   Boot,
   WifiConnecting,
   Home,
+  WifiSetup,
   Idle,
   Capturing,
   Analyzing,
@@ -72,8 +74,24 @@ static bool homeDirty = true;
 static int32_t homeLastMinute = -1;
 static int homePage = 0;
 static int homeHistoryScrollY = 0;
+static int historyDetailIndex = -1;
+// Settings row currently held down (-1 = none) — highlighted while pressed,
+// the action fires on finger-up inside the same row.
+static int settingsPressedRow = -1;
+
+// Maps a touch Y to a tappable settings row (row 1 is the volume slider and
+// handled separately). Bands mirror drawPageSettings().
+static int settingsRowForY(int y) {
+  if (y >= 60 && y < 108) return 0;    // model
+  if (y >= 156 && y < 204) return 2;   // capture quality
+  if (y >= 204 && y < 252) return 3;   // AI detail
+  if (y >= 252 && y < 300) return 4;   // WiFi
+  if (y >= 300 && y <= 348) return 5;  // language
+  return -1;
+}
 static bool homeTouchActive = false;
 static bool homeVolumeDragging = false;
+static bool homeHistoryScrolled = false;
 static int homeTouchStartX = 0;
 static int homeTouchStartY = 0;
 static int homeTouchLastX = 0;
@@ -82,15 +100,35 @@ static int homeHistoryScrollStartY = 0;
 
 static Preferences toiPrefs;
 static bool toiPrefsReady = false;
+static WebServer wifiPortal(80);
+static bool wifiPortalRoutesRegistered = false;
+static String wifiOptionsHtml;
+static String nvsWifiSsid;
+static String nvsWifiPass;
+// Device token can be provisioned via the portal; NVS overrides the build-time
+// secret. Never print its value.
+static String nvsDeviceToken;
+static const char *deviceToken() {
+  return nvsDeviceToken.length() ? nvsDeviceToken.c_str() : DEVICE_TOKEN;
+}
 static uint32_t inquiryTotal = 0;
 static uint32_t inquiryToday = 0;
 static int32_t inquiryDateKey = -1;
 static String inquiryHistory;
 static String inquiryDigest;
 static int32_t inquiryDigestCount = -1;
-static constexpr size_t kInquiryHistoryMaxBytes = 1500;
+static constexpr size_t kInquiryHistoryMaxBytes = 16000;
 static uint8_t speakerVolume = 255;
 static uint8_t savedSpeakerVolume = 255;
+static uint8_t paBoostPulses = 0;
+// ES8311 DAC digital gain +10dB (reg 0x32: 0xBF=0dB, 0.5dB/step). Confirmed
+// on-device 2026-08-04: clearly louder than 0dB and than any AW-PA pulse
+// mode, no audible distortion — so it ships enabled.
+static bool es8311DacBoost = true;
+static uint8_t captureQuality = 0;
+static uint8_t selectedModel = 2;
+static uint8_t selectedLang = 0;
+static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -103,6 +141,7 @@ static uint32_t lastPlaceAt = 0;
 static bool digestLookupPending = true;
 static uint32_t lastDigestAt = 0;
 static String homePlace;
+static String homeShort;  // postcode-level label from /place (no AI)
 static String homeStation;
 static int homeDistanceM = 0;
 static int homeWalkMin = 0;
@@ -135,6 +174,51 @@ static uint32_t retainAt = 0;
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
 
+// sol dropped by owner's decision (heaviest tier — quota drains too fast).
+static const char *selectedModelName() {
+  static constexpr const char *kModels[] = {"gpt-5.6-terra", "gpt-5.6-luna"};
+  return kModels[selectedModel < 2 ? selectedModel : 1];
+}
+
+static const char *selectedLangCode() {
+  static constexpr const char *kLangs[] = {"ja", "en", "zh"};
+  return kLangs[selectedLang < 3 ? selectedLang : 0];
+}
+
+static const lgfx::IFont *contentFont() {
+  return selectedLang == 2 ? &fonts::efontCN_16 : &fonts::efontJA_16;
+}
+
+// On-screen banner + a long 3-note melody, so speaker A/B tests can be
+// followed by eye and ear. Blocks the loop ~1s (debug-only path).
+static void volumeTestFeedback(const String &label) {
+  M5.Display.fillRoundRect(83, 183, 300, 100, 16, TFT_BLACK);
+  M5.Display.drawRoundRect(83, 183, 300, 100, 16, TFT_YELLOW);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(3);
+  M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  M5.Display.drawString(label, M5.Display.width() / 2, 233);
+  M5.Speaker.tone(660, 250);
+  delay(280);
+  M5.Speaker.tone(880, 250);
+  delay(280);
+  M5.Speaker.tone(1100, 350);
+  delay(400);
+  homeDirty = true;  // Home repaints over the banner on the next tick
+}
+
+static void applyPaBoost() {
+  for (uint8_t pulse = 0; pulse < paBoostPulses; ++pulse) {
+    m5::In_I2C.bitOff(0x4F, 0x06, 0b10, 400000);
+    m5::In_I2C.bitOn(0x4F, 0x06, 0b10, 400000);
+  }
+  m5::In_I2C.writeRegister8(0x18, 0x32,
+                            es8311DacBoost ? 0xD3 : 0xBF, 400000);
+  Serial.printf("[toi] pa: boost pulses=%u applied\n",
+                (unsigned)paBoostPulses);
+}
+
 // ---------------------------------------------------------------- UI helpers
 
 static void showStatus(const char *msg, uint32_t color = TFT_WHITE) {
@@ -143,7 +227,23 @@ static void showStatus(const char *msg, uint32_t color = TFT_WHITE) {
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(color, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.drawString(msg, M5.Display.width() / 2, M5.Display.height() / 2);
+  const String text = msg ? msg : "";
+  int lineCount = 1;
+  for (int newline = text.indexOf('\n'); newline >= 0;
+       newline = text.indexOf('\n', newline + 1)) {
+    ++lineCount;
+  }
+  constexpr int kLineSpacing = 44;
+  const int firstLineY =
+      M5.Display.height() / 2 - ((lineCount - 1) * kLineSpacing) / 2;
+  int lineStart = 0;
+  for (int line = 0; line < lineCount; ++line) {
+    const int lineEnd = text.indexOf('\n', lineStart);
+    M5.Display.drawString(
+        text.substring(lineStart, lineEnd >= 0 ? lineEnd : text.length()),
+        M5.Display.width() / 2, firstLineY + line * kLineSpacing);
+    lineStart = lineEnd >= 0 ? lineEnd + 1 : text.length();
+  }
 }
 
 static void showIdle() {
@@ -186,7 +286,25 @@ static int32_t localDateKey() {
          local.tm_mday;
 }
 
-static void recordInquiry(const String &inquiryCaption) {
+static String sanitizeHistoryField(const String &value) {
+  String sanitized = value;
+  sanitized.replace("\r", " ");
+  sanitized.replace("\n", " ");
+  sanitized.replace("|", " ");
+  return sanitized;
+}
+
+static void saveInquiryHistory(const String &previousHistory) {
+  if (!toiPrefsReady || inquiryHistory == previousHistory) return;
+  if (inquiryHistory.length()) {
+    toiPrefs.putBytes("histb", inquiryHistory.c_str(), inquiryHistory.length());
+  } else if (toiPrefs.getBytesLength("histb") > 0) {
+    toiPrefs.remove("histb");
+  }
+}
+
+static void recordInquiry(const String &inquiryCaption,
+                          const String &inquiryDetail) {
   const uint32_t previousTotal = inquiryTotal;
   const uint32_t previousToday = inquiryToday;
   const int32_t previousDateKey = inquiryDateKey;
@@ -216,11 +334,11 @@ static void recordInquiry(const String &inquiryCaption) {
       snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
                local.tm_min);
     }
-    String storedCaption = inquiryCaption;
-    storedCaption.replace("\r", " ");
-    storedCaption.replace("\n", " ");
+    const String storedCaption = sanitizeHistoryField(inquiryCaption);
+    const String storedDetail = sanitizeHistoryField(inquiryDetail);
     if (inquiryHistory.length()) inquiryHistory += "\n";
-    inquiryHistory += String(timeText) + "|" + storedCaption;
+    inquiryHistory +=
+        String(timeText) + "|" + storedCaption + "|" + storedDetail;
     while (inquiryHistory.length() > kInquiryHistoryMaxBytes) {
       const int lineEnd = inquiryHistory.indexOf('\n');
       if (lineEnd < 0) {
@@ -237,9 +355,7 @@ static void recordInquiry(const String &inquiryCaption) {
     if (inquiryDateKey != previousDateKey) {
       toiPrefs.putInt("dkey", inquiryDateKey);
     }
-    if (inquiryHistory != previousHistory) {
-      toiPrefs.putString("hist", inquiryHistory);
-    }
+    saveInquiryHistory(previousHistory);
     if (inquiryDigest != previousDigest) {
       toiPrefs.putString("digest", inquiryDigest);
     }
@@ -300,6 +416,34 @@ static int inquiryHistoryLineCount() {
   return count;
 }
 
+static bool getHistoryEntry(int newestIndex, String &timeText,
+                            String &captionText, String &detailValue) {
+  if (newestIndex < 0) return false;
+  int lineEnd = inquiryHistory.length();
+  int index = 0;
+  while (lineEnd > 0) {
+    const int separator = inquiryHistory.lastIndexOf('\n', lineEnd - 1);
+    if (index == newestIndex) {
+      const String line = inquiryHistory.substring(separator + 1, lineEnd);
+      const int timeEnd = line.indexOf('|');
+      const int captionEnd =
+          timeEnd >= 0 ? line.indexOf('|', timeEnd + 1) : -1;
+      timeText = timeEnd >= 0 ? line.substring(0, timeEnd) : String("--:--");
+      captionText =
+          timeEnd >= 0
+              ? line.substring(timeEnd + 1,
+                               captionEnd >= 0 ? captionEnd : line.length())
+              : line;
+      detailValue = captionEnd >= 0 ? line.substring(captionEnd + 1) : "";
+      return true;
+    }
+    ++index;
+    if (separator < 0) break;
+    lineEnd = separator;
+  }
+  return false;
+}
+
 static int maxHomeHistoryScrollY() {
   return max(0, inquiryHistoryLineCount() * 56 - 280);
 }
@@ -319,6 +463,36 @@ static String fitHomeText(const String &text, int maxWidth) {
     i += charLen;
   }
   return fitted + ellipsis;
+}
+
+static void appendHomeWrapped(const String &utf8, int32_t x, int32_t &y,
+                              int lineHeight, int maxWidth) {
+  String line;
+  size_t i = 0;
+  while (i < utf8.length()) {
+    const uint8_t b = utf8[i];
+    const size_t charLen =
+        (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
+    const String ch = utf8.substring(i, i + charLen);
+    i += charLen;
+    if (ch == "\n") {
+      homeCanvas.drawString(line, x, y);
+      y += lineHeight;
+      line = "";
+      continue;
+    }
+    if (homeCanvas.textWidth(line + ch) > maxWidth &&
+        !(ch == "、" || ch == "。" || ch == "」" || ch == ")")) {
+      homeCanvas.drawString(line, x, y);
+      y += lineHeight;
+      line = "";
+    }
+    line += ch;
+  }
+  if (line.length()) {
+    homeCanvas.drawString(line, x, y);
+    y += lineHeight;
+  }
 }
 
 static void drawPageDashboard() {
@@ -392,27 +566,47 @@ static void drawPageDashboard() {
   drawStatTile(354, "累計", String(inquiryTotal), TFT_WHITE);
 
   if (inquiryDigest.length()) {
+    homeCanvas.setFont(contentFont());
     homeCanvas.setTextSize(1);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
     drawHomeDigest(inquiryDigest);
   }
 
-  if (hasFreshGpsFix()) {
-    homeCanvas.setTextSize(1);
-    homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    String locationText = homePlace;
-    if (homeStation.length()) {
-      const String stationText = "最寄り:" + homeStation + " 徒歩" +
-                                 String(homeWalkMin) + "分";
-      locationText = homePlace.length() ? homePlace + " / " + stationText
-                                        : stationText;
-      if (homePlace.length() && homeCanvas.textWidth(locationText) > 360) {
-        locationText = homePlace;
+  // GPS status is always visible; with a fix the label is the postcode-level
+  // reverse-geocode result (plain OSM lookup — no AI inference involved).
+  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setTextSize(1);
+  const bool gpsLive = hasFreshGpsFix();
+  String locationText = homeShort.length() ? homeShort : homePlace;
+  if (homeStation.length()) {
+    const String stationText = "最寄り:" + homeStation + " 徒歩" +
+                               String(homeWalkMin) + "分";
+    const String combined =
+        locationText.length() ? locationText + " / " + stationText
+                              : stationText;
+    locationText = homeCanvas.textWidth(combined) > 380 && locationText.length()
+                       ? locationText
+                       : combined;
+  }
+  if (locationText.length()) {
+    // Last-known location survives fix loss (indoors) — just dimmed.
+    homeCanvas.setTextColor(gpsLive ? TFT_LIGHTGREY : TFT_DARKGREY, TFT_BLACK);
+    homeCanvas.drawString(fitHomeText(locationText, 380),
+                          M5.Display.width() / 2, 384);
+  } else {
+    homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    String gpsText;
+    if (gpsBytes == 0) {
+      gpsText = "GPS 未接続";
+    } else if (gpsLive) {
+      gpsText = "GPS 測位OK";
+    } else {
+      gpsText = "GPS 測位中...";
+      if (gps.satellites.isValid()) {
+        gpsText += " 衛星" + String((int)gps.satellites.value());
       }
     }
-    if (locationText.length()) {
-      homeCanvas.drawString(locationText, M5.Display.width() / 2, 384);
-    }
+    homeCanvas.drawString(gpsText, M5.Display.width() / 2, 384);
   }
 
   homeCanvas.setTextSize(1);
@@ -421,7 +615,45 @@ static void drawPageDashboard() {
                         M5.Display.width() / 2, 420);
 }
 
+static void drawPageHistoryDetail() {
+  String timeText;
+  String captionText;
+  String detailValue;
+  if (!getHistoryEntry(historyDetailIndex, timeText, captionText,
+                       detailValue)) {
+    historyDetailIndex = -1;
+    return;
+  }
+
+  homeCanvas.setClipRect(73, 35, kTextWidth, 370);
+  homeCanvas.setTextDatum(top_left);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
+  homeCanvas.drawString(timeText, 73, 44);
+
+  int32_t y = 74;
+  homeCanvas.setFont(contentFont());
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+  appendHomeWrapped(captionText, 73, y, 36, kTextWidth);
+  y += 12;
+  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
+  appendHomeWrapped(detailValue, 73, y, 38, kTextWidth);
+  homeCanvas.clearClipRect();
+
+  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setTextDatum(middle_center);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  homeCanvas.drawString("タップで戻る", M5.Display.width() / 2, 420);
+}
+
 static void drawPageHistory() {
+  if (historyDetailIndex >= 0) {
+    drawPageHistoryDetail();
+    if (historyDetailIndex >= 0) return;
+  }
+
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(1);
@@ -447,14 +679,21 @@ static void drawPageHistory() {
     if (rowY < 380 && rowY + 56 > 100) {
       const String line = inquiryHistory.substring(lineStart, lineEnd);
       const int timeEnd = line.indexOf('|');
+      const int captionEnd =
+          timeEnd >= 0 ? line.indexOf('|', timeEnd + 1) : -1;
       const String timeText =
           timeEnd >= 0 ? line.substring(0, timeEnd) : String("--:--");
       const String captionText =
-          timeEnd >= 0 ? line.substring(timeEnd + 1) : line;
+          timeEnd >= 0
+              ? line.substring(timeEnd + 1,
+                               captionEnd >= 0 ? captionEnd : line.length())
+              : line;
+      homeCanvas.setFont(&fonts::efontJA_16);
       homeCanvas.setTextSize(1);
       homeCanvas.setTextDatum(middle_right);
       homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
       homeCanvas.drawString(timeText, 90, rowY + 27);
+      homeCanvas.setFont(contentFont());
       homeCanvas.setTextSize(2);
       homeCanvas.setTextDatum(middle_left);
       homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -468,36 +707,97 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
+// Six compact rows: model / volume / quality / AI detail / WiFi / language.
+// Each tappable row uses its center +/- 24px; the slider captures y=108-156.
 static void drawPageSettings() {
+  homeCanvas.setFont(&fonts::efontJA_16);
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("設定", M5.Display.width() / 2, 48);
+  homeCanvas.drawString("設定", M5.Display.width() / 2, 40);
+
+  // Pressed-row highlight: filled band behind the held row (finger-down
+  // feedback; the action itself fires on release).
+  static constexpr int kRowBands[6][2] = {
+      {60, 108}, {108, 156}, {156, 204},
+      {204, 252}, {252, 300}, {300, 348}};
+  if (settingsPressedRow >= 0 && settingsPressedRow < 6 &&
+      settingsPressedRow != 1) {
+    homeCanvas.fillRect(36, kRowBands[settingsPressedRow][0], 394,
+                        kRowBands[settingsPressedRow][1] -
+                            kRowBands[settingsPressedRow][0],
+                        0x2945);
+  }
+  const auto rowBg = [&](int row) {
+    return settingsPressedRow == row ? 0x2945 : (int)TFT_BLACK;
+  };
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(0));
+  homeCanvas.drawString("モデル", 60, 84);
+  homeCanvas.setTextDatum(middle_right);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(0));
+  homeCanvas.drawString(selectedModelName(), 406, 84);
+  homeCanvas.drawFastHLine(40, 108, 386, 0x2124);
 
   homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("モデル", 90, 108);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-  homeCanvas.drawString("gpt-5.6-luna", 90, 140);
-  homeCanvas.drawFastHLine(40, 170, 386, 0x2124);
-
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("音量", 90, 220);
-  homeCanvas.fillRoundRect(150, 217, 230, 6, 3, TFT_DARKGREY);
+  homeCanvas.drawString("音量", 60, 132);
+  homeCanvas.fillRoundRect(150, 129, 230, 6, 3, TFT_DARKGREY);
   const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
-  homeCanvas.fillCircle(volumeX, 220, 14, TFT_CYAN);
-  homeCanvas.drawFastHLine(40, 270, 386, 0x2124);
+  homeCanvas.fillCircle(volumeX, 132, 14, TFT_CYAN);
+  homeCanvas.drawFastHLine(40, 156, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("画質", 90, 316);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(2));
+  homeCanvas.drawString("画質", 60, 180);
+  homeCanvas.setTextDatum(middle_right);
   homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  homeCanvas.drawString("速度優先(QVGA)", 90, 350);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(2));
+  homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
+                                            : "速度優先(QVGA)",
+                        406, 180);
+  homeCanvas.drawFastHLine(40, 204, 386, 0x2124);
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(3));
+  homeCanvas.drawString("AI精度", 60, 228);
+  homeCanvas.setTextDatum(middle_right);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(3));
+  homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
+                                     : "低(速い・省トークン)",
+                        406, 228);
+  homeCanvas.drawFastHLine(40, 252, 386, 0x2124);
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(4));
+  homeCanvas.drawString("WiFi", 60, 276);
+  homeCanvas.setTextDatum(middle_right);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(4));
+  const String currentWifi =
+      WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
+  homeCanvas.drawString(fitHomeText(currentWifi, 250), 406, 276);
+  homeCanvas.drawFastHLine(40, 300, 386, 0x2124);
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(5));
+  homeCanvas.drawString("言語", 60, 324);
+  homeCanvas.setTextDatum(middle_right);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(5));
+  static constexpr const char *kLangLabels[] = {"日本語", "English", "中文"};
+  homeCanvas.drawString(kLangLabels[selectedLang < 3 ? selectedLang : 0], 406,
+                        324);
+  homeCanvas.drawFastHLine(40, 348, 386, 0x2124);
 }
 
 static void drawHomePageDots() {
@@ -532,7 +832,7 @@ static void drawHome() {
       drawPageDashboard();
       break;
   }
-  drawHomePageDots();
+  if (historyDetailIndex < 0) drawHomePageDots();
   homeCanvas.pushSprite(0, 0);
   homeDirty = false;
 }
@@ -630,11 +930,28 @@ static void speakAnimalese(const String &text) {
 static void drawPhoto() {
   if (!jpegBuf) return;
   M5.Display.fillScreen(TFT_BLACK);
-  // Same framing the finder showed (QVGA scaled to panel width).
-  const float sc = M5.Display.width() / 320.0f;
+  const int sourceWidth = captureQuality == 1 ? 640 : 320;
+  const int sourceHeight = captureQuality == 1 ? 480 : 240;
+  const float sc = M5.Display.width() / static_cast<float>(sourceWidth);
+  if (captureQuality == 1) {
+    // drawJpg's fractional downscale renders a cropped view for VGA frames;
+    // decode 1:1 into a PSRAM sprite, then zoom-blit to fill the panel width.
+    M5Canvas photo(&M5.Display);
+    photo.setPsram(true);
+    photo.setColorDepth(16);
+    if (photo.createSprite(sourceWidth, sourceHeight)) {
+      photo.drawJpg(jpegBuf, jpegLen, 0, 0);
+      photo.pushRotateZoom(M5.Display.width() / 2.0f,
+                           M5.Display.height() / 2.0f, 0.0f, sc, sc);
+      photo.deleteSprite();
+      return;
+    }
+    // sprite allocation failed — fall back to the direct path below
+  }
   M5.Display.drawJpg(jpegBuf, jpegLen, 0,
-                     (int)((M5.Display.height() - 240 * sc) / 2),
-                     M5.Display.width(), (int)(240 * sc), 0, 0, sc, sc);
+                     (int)((M5.Display.height() - sourceHeight * sc) / 2),
+                     M5.Display.width(), (int)(sourceHeight * sc), 0, 0, sc,
+                     sc);
 }
 
 // Word-wrap UTF-8 text into the canvas, minimal kinsoku (no line-leading 、。」).
@@ -671,7 +988,7 @@ static void buildResultCanvas() {
   textCanvas.setColorDepth(8);
   textCanvas.createSprite(kTextWidth, 1400);
   textCanvas.fillSprite(TFT_BLACK);
-  textCanvas.setFont(&fonts::efontJA_16);
+  textCanvas.setFont(contentFont());
 
   int32_t y = 0;
   textCanvas.setTextSize(2);
@@ -750,7 +1067,9 @@ static void pollNtpSync() {
 
 static bool connectWifi() {
   struct { const char *ssid, *pass; } slots[] = {
-      {WIFI_SSID1, WIFI_PASS1}, {WIFI_SSID2, WIFI_PASS2}};
+      {nvsWifiSsid.c_str(), nvsWifiPass.c_str()},
+      {WIFI_SSID1, WIFI_PASS1},
+      {WIFI_SSID2, WIFI_PASS2}};
   for (auto &s : slots) {
     if (!strlen(s.ssid)) continue;
     WiFi.begin(s.ssid, s.pass);
@@ -973,12 +1292,12 @@ static void configureCamera() {
   }
 }
 
-static bool captureFromCam() {
+static bool captureFromCam(bool useRetained) {
   free(jpegBuf);
   jpegBuf = nullptr;
   jpegLen = 0;
 
-  if (retainBuf && retainLen && millis() - retainAt < 2000) {
+  if (useRetained && retainBuf && retainLen && millis() - retainAt < 2000) {
     // The shot IS the last finder frame — instant, and exactly WYSIWYG.
     if (jpegLen < retainLen || !jpegBuf) {
       free(jpegBuf);
@@ -1036,21 +1355,19 @@ static bool fetchHomePlace() {
   const String url = String(WORKER_URL) + "/place?lat=" +
                      String(gps.location.lat(), 6) + "&lon=" +
                      String(gps.location.lng(), 6);
-  homePlace = "";
-  homeStation = "";
-  homeDistanceM = 0;
-  homeWalkMin = 0;
+  // Last-known values stay on screen if this request fails.
   const uint32_t t0 = millis();
   int code = -1;
   bool ok = false;
   if (placeHttp.begin(placeClient, url)) {
-    placeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    placeHttp.addHeader("X-Device-Token", deviceToken());
     code = placeHttp.GET();
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
       if (deserializeJson(doc, placeHttp.getString()) ==
           DeserializationError::Ok) {
         homePlace = doc["place"].as<String>();
+        homeShort = doc["short"].as<String>();
         homeStation = doc["station"].as<String>();
         homeDistanceM = doc["distance_m"] | 0;
         homeWalkMin = doc["walk_min"] | 0;
@@ -1090,10 +1407,14 @@ static bool fetchDigest() {
     const int end = next >= 0 ? next : inquiryHistory.length();
     const String line = inquiryHistory.substring(start, end);
     const int captionStart = line.indexOf('|');
+    const int captionEnd =
+        captionStart >= 0 ? line.indexOf('|', captionStart + 1) : -1;
     if (itemsToSkip > 0) {
       --itemsToSkip;
     } else if (captionStart >= 0) {
-      items.add(line.substring(captionStart + 1));
+      items.add(line.substring(
+          captionStart + 1,
+          captionEnd >= 0 ? captionEnd : static_cast<int>(line.length())));
     }
     if (next < 0) break;
     start = next + 1;
@@ -1106,7 +1427,9 @@ static bool fetchDigest() {
   bool ok = false;
   if (digestHttp.begin(digestClient, String(WORKER_URL) + "/digest")) {
     digestHttp.addHeader("Content-Type", "application/json");
-    digestHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    digestHttp.addHeader("X-Device-Token", deviceToken());
+    digestHttp.addHeader("X-Model", selectedModelName());
+    digestHttp.addHeader("X-Lang", selectedLangCode());
     code = digestHttp.POST(body);
     if (code == HTTP_CODE_OK) {
       JsonDocument responseDoc;
@@ -1156,7 +1479,10 @@ static bool analyzePhoto() {
   for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
     if (!analyzeHttp.begin(analyzeClient, url)) continue;
     analyzeHttp.addHeader("Content-Type", "image/jpeg");
-    analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    analyzeHttp.addHeader("X-Device-Token", deviceToken());
+    analyzeHttp.addHeader("X-Model", selectedModelName());
+    analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
+    analyzeHttp.addHeader("X-Lang", selectedLangCode());
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1166,6 +1492,19 @@ static bool analyzePhoto() {
         detailText = doc["detail"].as<String>();
         ok = caption.length() > 0;
       }
+    } else if (code == 429) {
+      // Free-token quota exhausted — worker sends the JST reset time.
+      JsonDocument doc;
+      String resetAt;
+      if (deserializeJson(doc, analyzeHttp.getString()) ==
+          DeserializationError::Ok) {
+        resetAt = doc["reset_jst"].as<String>();
+      }
+      lastError = resetAt.length()
+                      ? "AI無料枠が上限\n(" + resetAt + "頃リセット)"
+                      : "AI無料枠が上限です";
+      analyzeHttp.end();
+      break;  // retrying is pointless until the quota resets
     } else {
       lastError = "analyze HTTP " + String(code);
       analyzeHttp.end();  // drop the (possibly stale) connection, retry fresh
@@ -1380,12 +1719,15 @@ static String urlenc(const String &in) {
 // send to the Worker (/ask) with the current explanation as context, then
 // show + speak the answer.
 static void voiceQuestionFlow() {
+  const uint32_t tHold = millis();
   stopAnimalese();
-  M5.Speaker.tone(900, 40);  // "listening" blip before the speaker is released
-  delay(60);
+  // Users start talking the moment they feel the hold engage — every ms
+  // before Mic.begin() is speech lost, so the codec swap happens FIRST and
+  // the ready cue is visual (red banner). No pre-beep, no delay.
   M5.Speaker.end();  // mic and speaker share the codec/I2S
   if (!M5.Mic.begin()) {
     M5.Speaker.begin();
+    applyPaBoost();
     M5.Speaker.setVolume(speakerVolume);
     Serial.println("[toi] ask: mic begin FAILED");
     return;
@@ -1397,6 +1739,7 @@ static void voiceQuestionFlow() {
   int16_t *pcm = (int16_t *)ps_malloc(kMaxSamples * 2 + 44);
   size_t total = 0;
   drawBusy("録音中(離すと送信)", TFT_RED);
+  Serial.printf("[toi] ask: mic live %lums after hold\n", millis() - tHold);
   const uint32_t t0 = millis();
   while (total + kChunk <= kMaxSamples) {
     M5.update();
@@ -1408,6 +1751,7 @@ static void voiceQuestionFlow() {
   }
   M5.Mic.end();
   M5.Speaker.begin();
+  applyPaBoost();
   M5.Speaker.setVolume(speakerVolume);
   Serial.printf("[toi] ask: recorded %u samples (%.1fs)\n", (unsigned)total,
                 total / (float)kRate);
@@ -1448,7 +1792,9 @@ static void voiceQuestionFlow() {
                        "&detail=" + urlenc(detailText);
     if (analyzeHttp.begin(analyzeClient, url)) {
       analyzeHttp.addHeader("Content-Type", "audio/wav");
-      analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+      analyzeHttp.addHeader("X-Device-Token", deviceToken());
+      analyzeHttp.addHeader("X-Model", selectedModelName());
+      analyzeHttp.addHeader("X-Lang", selectedLangCode());
       const int code = analyzeHttp.POST(wav, 44 + dataLen);
       if (code == HTTP_CODE_OK) {
         JsonDocument doc;
@@ -1459,7 +1805,7 @@ static void voiceQuestionFlow() {
           Serial.printf("[toi] ask: %lums Q=%s A=%s\n", millis() - ta,
                         q.c_str(), a.c_str());
           if (a.length()) {
-            recordInquiry(q);
+            recordInquiry("Q: " + q, a);
             caption = "Q: " + q;
             detailText = a;
             buildResultCanvas();
@@ -1471,6 +1817,10 @@ static void voiceQuestionFlow() {
         }
       } else {
         Serial.printf("[toi] ask: HTTP %d\n", code);
+        if (code == 429) {
+          drawBusy("AI無料枠が上限です", TFT_RED);
+          delay(1800);
+        }
         analyzeHttp.end();
       }
     }
@@ -1528,15 +1878,18 @@ static void stepCounterTick() {
   }
 }
 
-static void enterHome() {
+static void enterHome(int targetPage = 0) {
   stopAnimalese();
   streamStop();
   Serial.println("[toi] finder: stream stopped (home)");
   state = AppState::Home;
-  homePage = 0;
+  homePage = constrain(targetPage, 0, 2);
+  settingsPressedRow = -1;
   homeHistoryScrollY = 0;
+  historyDetailIndex = -1;
   homeTouchActive = false;
   homeVolumeDragging = false;
+  homeHistoryScrolled = false;
   homeLastMinute = -1;
   placeLookupPending = true;
   lastPlaceAt = 0;
@@ -1545,6 +1898,240 @@ static void enterHome() {
   homeHadGpsFix = hasFreshGpsFix();
   homeDirty = true;
   drawHome();
+}
+
+static String escapeHtml(const String &value) {
+  String escaped;
+  escaped.reserve(value.length());
+  for (size_t i = 0; i < value.length(); ++i) {
+    switch (value[i]) {
+      case '&':
+        escaped += "&amp;";
+        break;
+      case '<':
+        escaped += "&lt;";
+        break;
+      case '>':
+        escaped += "&gt;";
+        break;
+      case '"':
+        escaped += "&quot;";
+        break;
+      case '\'':
+        escaped += "&#39;";
+        break;
+      default:
+        escaped += value[i];
+        break;
+    }
+  }
+  return escaped;
+}
+
+static void scanWifiOptions() {
+  constexpr int kMaxOptions = 10;
+  String ssids[kMaxOptions];
+  int32_t rssis[kMaxOptions] = {};
+  int optionCount = 0;
+  const int networkCount = WiFi.scanNetworks();
+
+  for (int network = 0; network < networkCount; ++network) {
+    const String ssid = WiFi.SSID(network);
+    if (!ssid.length()) continue;
+    const int32_t rssi = WiFi.RSSI(network);
+
+    int existing = -1;
+    for (int option = 0; option < optionCount; ++option) {
+      if (ssids[option] == ssid) {
+        existing = option;
+        break;
+      }
+    }
+    if (existing >= 0) {
+      if (rssi <= rssis[existing]) continue;
+      rssis[existing] = rssi;
+      while (existing > 0 && rssis[existing] > rssis[existing - 1]) {
+        const String previousSsid = ssids[existing - 1];
+        const int32_t previousRssi = rssis[existing - 1];
+        ssids[existing - 1] = ssids[existing];
+        rssis[existing - 1] = rssis[existing];
+        ssids[existing] = previousSsid;
+        rssis[existing] = previousRssi;
+        --existing;
+      }
+      continue;
+    }
+
+    int insertAt = 0;
+    while (insertAt < optionCount && rssis[insertAt] >= rssi) ++insertAt;
+    if (insertAt >= kMaxOptions) continue;
+    const int last = min(optionCount, kMaxOptions - 1);
+    for (int option = last; option > insertAt; --option) {
+      ssids[option] = ssids[option - 1];
+      rssis[option] = rssis[option - 1];
+    }
+    ssids[insertAt] = ssid;
+    rssis[insertAt] = rssi;
+    if (optionCount < kMaxOptions) ++optionCount;
+  }
+
+  wifiOptionsHtml = "";
+  for (int option = 0; option < optionCount; ++option) {
+    const String escapedSsid = escapeHtml(ssids[option]);
+    wifiOptionsHtml += "<option value=\"" + escapedSsid + "\">" +
+                       escapedSsid + " (" + String(rssis[option]) +
+                       " dBm)</option>";
+  }
+  if (networkCount >= 0) WiFi.scanDelete();
+  Serial.printf("[toi] wifi portal: scan=%d unique=%d\n", networkCount,
+                optionCount);
+}
+
+static void drawWifiSetup() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString("WiFi・トークン設定", M5.Display.width() / 2, 40);
+
+  static constexpr const char *kWifiQr =
+      "WIFI:T:WPA;S:ToiCamera;P:toi-cam-2026;;";
+  constexpr int kQrWidth = 170;
+  M5.Display.qrcode(kWifiQr, (M5.Display.width() - kQrWidth) / 2, 70,
+                    kQrWidth);
+
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString("1. スマホのWiFiで ToiCamera に接続",
+                        M5.Display.width() / 2, 260);
+  M5.Display.drawString("2. ブラウザで 192.168.4.1 を開く",
+                        M5.Display.width() / 2, 288);
+  const String currentWifi = WiFi.status() == WL_CONNECTED
+                                 ? WiFi.SSID()
+                                 : String("未接続");
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.drawString("現在: " + currentWifi, M5.Display.width() / 2, 330);
+  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  M5.Display.drawString("青:戻る", M5.Display.width() / 2, 420);
+}
+
+static bool saveWifiCredentials(const String &ssid, const String &pass) {
+  if (!toiPrefsReady) return false;
+  bool saved = true;
+  if (ssid != nvsWifiSsid) {
+    // putString returns bytes written — compare with the value length so an
+    // empty password (open network) still counts as success.
+    if (toiPrefs.putString("wifi_ssid", ssid) == ssid.length()) {
+      nvsWifiSsid = ssid;
+    } else {
+      saved = false;
+    }
+  }
+  if (pass != nvsWifiPass) {
+    if (toiPrefs.putString("wifi_pass", pass) == pass.length()) {
+      nvsWifiPass = pass;
+    } else {
+      saved = false;
+    }
+  }
+  return saved;
+}
+
+static void registerWifiPortalRoutes() {
+  if (wifiPortalRoutesRegistered) return;
+
+  wifiPortal.on("/", HTTP_GET, []() {
+    String html = R"HTML(<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ToiCamera 設定</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+main{max-width:34rem;margin:auto;padding:2rem 1.25rem}
+h1{color:#41d9ff;font-size:1.6rem}label{display:block;margin-top:1.2rem}
+select,input,button{box-sizing:border-box;width:100%;margin-top:.45rem;padding:.8rem;
+border:1px solid #555;border-radius:.5rem;background:#222;color:#fff;font-size:1rem}
+button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bold}
+</style></head><body><main><h1>ToiCamera 設定</h1>
+<p style="color:#9aa">WiFi とデバイストークンを設定できます。変更したい項目だけ入力してください。</p>
+<form method="post" action="/save">
+<label for="ssid">周辺のWiFi</label><select id="ssid" name="ssid">
+<option value="">選択してください</option>)HTML";
+    html += wifiOptionsHtml;
+    html += R"HTML(</select>
+<label for="other_ssid">その他の SSID</label>
+<input id="other_ssid" name="other_ssid" maxlength="32" autocomplete="off">
+<label for="pass">パスワード</label>
+<input id="pass" name="pass" type="password" maxlength="63" autocomplete="new-password">
+<label for="token">デバイストークン(未入力なら変更しない)</label>
+<input id="token" name="token" type="password" maxlength="128" autocomplete="off">
+<button type="submit">保存</button></form></main></body></html>)HTML";
+    wifiPortal.sendHeader("Cache-Control", "no-store");
+    wifiPortal.send(200, "text/html; charset=utf-8", html);
+  });
+
+  wifiPortal.on("/save", HTTP_POST, []() {
+    String ssid = wifiPortal.arg("ssid");
+    const String otherSsid = wifiPortal.arg("other_ssid");
+    if (otherSsid.length()) ssid = otherSsid;
+    const String pass = wifiPortal.arg("pass");
+    const String token = wifiPortal.arg("token");
+    if (!ssid.length() && !token.length()) {
+      wifiPortal.send(400, "text/html; charset=utf-8",
+                      "<!doctype html><meta charset=\"utf-8\">"
+                      "<p>SSID かデバイストークンを入力してください。</p>"
+                      "<p><a href=\"/\">戻る</a></p>");
+      return;
+    }
+    if (token.length()) {
+      if (toiPrefsReady && token != nvsDeviceToken &&
+          toiPrefs.putString("dev_token", token) == token.length()) {
+        nvsDeviceToken = token;
+        Serial.println("[toi] portal: device token updated");  // value never logged
+      }
+      if (!ssid.length()) {
+        wifiPortal.send(200, "text/html; charset=utf-8",
+                        "<!doctype html><meta charset=\"utf-8\">"
+                        "<p>トークンを保存しました。ToiCamera を再起動します。</p>");
+        showStatus("保存しました\n再起動します...", TFT_CYAN);
+        delay(1500);
+        ESP.restart();
+        return;
+      }
+    }
+    if (!saveWifiCredentials(ssid, pass)) {
+      wifiPortal.send(500, "text/html; charset=utf-8",
+                      "<!doctype html><meta charset=\"utf-8\">"
+                      "<p>保存に失敗しました。もう一度お試しください。</p>"
+                      "<p><a href=\"/\">戻る</a></p>");
+      Serial.println("[toi] wifi portal: save failed");
+      return;
+    }
+    wifiPortal.send(200, "text/html; charset=utf-8",
+                    "<!doctype html><meta charset=\"utf-8\">"
+                    "<p>保存しました。ToiCamera を再起動します。</p>");
+    String loggedSsid = ssid;
+    loggedSsid.replace("\r", " ");
+    loggedSsid.replace("\n", " ");
+    Serial.printf("[toi] wifi portal: saved ssid=%s\n", loggedSsid.c_str());
+    showStatus("保存しました\n再起動します...", TFT_CYAN);
+    delay(1500);
+    ESP.restart();
+  });
+
+  wifiPortalRoutesRegistered = true;
+}
+
+static void enterWifiSetup() {
+  state = AppState::WifiSetup;
+  streamStop();
+  homeDirty = false;  // stale flag must not repaint Home over this screen
+  drawWifiSetup();    // QR up first — the scan below blocks for seconds
+  scanWifiOptions();
+  registerWifiPortalRoutes();
+  wifiPortal.begin();
+  Serial.println("[toi] wifi portal: started on 192.168.4.1");
 }
 
 static void enterIdle() {
@@ -1573,15 +2160,8 @@ static void homeTick() {
   const bool gpsFix = hasFreshGpsFix();
   if (gpsFix != homeHadGpsFix) {
     homeHadGpsFix = gpsFix;
-    homeDirty = true;
-    if (gpsFix) {
-      placeLookupPending = true;
-    } else {
-      homePlace = "";
-      homeStation = "";
-      homeDistanceM = 0;
-      homeWalkMin = 0;
-    }
+    homeDirty = true;  // restyle only — the last-known location stays visible
+    if (gpsFix) placeLookupPending = true;
   }
   bool requestSent = false;
   if (gpsFix && WiFi.status() == WL_CONNECTED &&
@@ -1613,19 +2193,33 @@ static void homeTick() {
       // so "今日の問い" never shows yesterday's count.
       const int32_t dateKey = localDateKey();
       if (dateKey >= 0 && inquiryDateKey >= 0 && dateKey != inquiryDateKey) {
+        const int32_t previousDateKey = inquiryDateKey;
+        const uint32_t previousToday = inquiryToday;
+        const String previousHistory = inquiryHistory;
+        const String previousDigest = inquiryDigest;
+        const int32_t previousDigestCount = inquiryDigestCount;
         inquiryDateKey = dateKey;
         inquiryToday = 0;
         inquiryHistory = "";
         homeHistoryScrollY = 0;
+        historyDetailIndex = -1;
         inquiryDigest = "";
         inquiryDigestCount = -1;
         if (toiPrefsReady) {
-          toiPrefs.putInt("dkey", inquiryDateKey);
-          toiPrefs.putUInt("today", 0);
-          toiPrefs.putString("hist", "");
-          toiPrefs.putString("digest", "");
-          toiPrefs.putInt("digN", -1);
+          if (inquiryDateKey != previousDateKey) {
+            toiPrefs.putInt("dkey", inquiryDateKey);
+          }
+          if (inquiryToday != previousToday) {
+            toiPrefs.putUInt("today", inquiryToday);
+          }
+          if (inquiryDigest != previousDigest) {
+            toiPrefs.putString("digest", inquiryDigest);
+          }
+          if (inquiryDigestCount != previousDigestCount) {
+            toiPrefs.putInt("digN", inquiryDigestCount);
+          }
         }
+        saveInquiryHistory(previousHistory);
         Serial.println("[toi] inquiries: reset for new day");
       }
     }
@@ -1660,10 +2254,15 @@ static void homeTouchTick() {
       homeTouchLastX = t.x;
       homeTouchLastY = t.y;
       homeHistoryScrollStartY = homeHistoryScrollY;
+      homeHistoryScrolled = false;
       // Slider gestures are captured so the full 0-255 range is reachable.
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
-                           t.y >= 190 && t.y <= 250;
+                           t.y >= 108 && t.y <= 156;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
+      if (homePage == 2 && !homeVolumeDragging) {
+        settingsPressedRow = settingsRowForY(t.y);
+        if (settingsPressedRow >= 0) homeDirty = true;
+      }
       return;
     }
 
@@ -1674,8 +2273,14 @@ static void homeTouchTick() {
       setSpeakerVolumeFromTouch(t.x);
       return;
     }
+    if (settingsPressedRow >= 0 &&
+        (abs(t.x - homeTouchStartX) > 12 || abs(t.y - homeTouchStartY) > 12 ||
+         settingsRowForY(t.y) != settingsPressedRow)) {
+      settingsPressedRow = -1;  // drifted out — cancel the pending tap
+      homeDirty = true;
+    }
 
-    if (homePage == 1) {
+    if (homePage == 1 && historyDetailIndex < 0) {
       const int dx = homeTouchLastX - homeTouchStartX;
       const int dy = homeTouchLastY - homeTouchStartY;
       const int absDx = abs(dx);
@@ -1691,6 +2296,7 @@ static void homeTouchTick() {
             maxHomeHistoryScrollY());
         if (nextScroll != homeHistoryScrollY) {
           homeHistoryScrollY = nextScroll;
+          homeHistoryScrolled = true;
           homeDirty = true;
         }
       }
@@ -1703,18 +2309,70 @@ static void homeTouchTick() {
   const int dy = homeTouchLastY - homeTouchStartY;
   const int absDx = abs(dx);
   const int absDy = abs(dy);
+  const bool isSwipe = absDx >= 60 && absDx * 2 > absDy * 3;
+  const bool isTap = dx * dx + dy * dy < 12 * 12;
   if (homeVolumeDragging) {
     saveSpeakerVolume();
-  } else if (absDx >= 60 && absDx * 2 > absDy * 3) {
+  } else if (isSwipe) {
     if (homePage == 1) homeHistoryScrollY = homeHistoryScrollStartY;
+    historyDetailIndex = -1;
     const int nextPage = constrain(homePage + (dx < 0 ? 1 : -1), 0, 2);
     if (nextPage != homePage) {
       homePage = nextPage;
       homeDirty = true;
     }
+  } else if (isTap) {
+    if (homePage == 1) {
+      if (historyDetailIndex >= 0) {
+        historyDetailIndex = -1;
+        homeDirty = true;
+      } else if (!homeHistoryScrolled && homeTouchLastY >= 100 &&
+                 homeTouchLastY < 380) {
+        const int tappedIndex =
+            (homeHistoryScrollY + homeTouchLastY - 100) / 56;
+        if (tappedIndex >= 0 && tappedIndex < inquiryHistoryLineCount()) {
+          historyDetailIndex = tappedIndex;
+          homeDirty = true;
+        }
+      }
+    } else if (homePage == 2) {
+      const int releasedRow = settingsPressedRow;
+      settingsPressedRow = -1;
+      homeDirty = true;
+      if (releasedRow == 0) {
+        selectedModel = (selectedModel + 1) % 2;
+        if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
+        Serial.printf("[toi] model: %s\n", selectedModelName());
+      } else if (releasedRow == 2) {
+        captureQuality = captureQuality == 0 ? 1 : 0;
+        if (toiPrefsReady) toiPrefs.putUChar("qual", captureQuality);
+        Serial.printf("[toi] quality: %s\n",
+                      captureQuality == 1 ? "VGA" : "QVGA");
+      } else if (releasedRow == 3) {
+        aiDetailHigh = !aiDetailHigh;
+        if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
+        Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
+      } else if (releasedRow == 4) {
+        enterWifiSetup();
+      } else if (releasedRow == 5) {
+        selectedLang = (selectedLang + 1) % 3;
+        if (toiPrefsReady) {
+          toiPrefs.putUChar("lang", selectedLang);
+          if (inquiryDigestCount != -1) toiPrefs.putInt("digN", -1);
+        }
+        inquiryDigestCount = -1;
+        digestLookupPending = true;
+        Serial.printf("[toi] language: %s\n", selectedLangCode());
+      }
+    }
+  }
+  if (settingsPressedRow >= 0) {
+    settingsPressedRow = -1;  // swipe/drag release — drop the highlight
+    homeDirty = true;
   }
   homeTouchActive = false;
   homeVolumeDragging = false;
+  homeHistoryScrolled = false;
 }
 
 static void enterSleeping() {
@@ -1750,6 +2408,7 @@ static void sleepingTick() {
   startSoftAp();
   Serial.printf("[toi] wake: light sleep result=%d STA=%s\n", sleepResult,
                 gNetOk ? "ok" : "FAIL");
+  applyPaBoost();  // codec registers may have reset across light sleep
   enterHome();
 }
 
@@ -1779,7 +2438,21 @@ static void runCaptureCycle() {
   sfxShutter();
 
   drawBusy("カメラ通信中", TFT_YELLOW);
-  if (!captureFromCam()) {
+  bool captureOk = false;
+  if (captureQuality == 1) {
+    streamStop();
+    const bool vgaOk =
+        camGet("/api/v1/control?var=framesize&val=10");
+    delay(400);
+    captureOk = captureFromCam(false);
+    const bool qvgaOk =
+        camGet("/api/v1/control?var=framesize&val=6");
+    Serial.printf("[toi] capture quality: VGA=%s restore-QVGA=%s\n",
+                  vgaOk ? "ok" : "FAIL", qvgaOk ? "ok" : "FAIL");
+  } else {
+    captureOk = captureFromCam(true);
+  }
+  if (!captureOk) {
     sfxError();
     enterError(lastError.length() ? lastError : "カメラに接続できません");
     return;
@@ -1798,7 +2471,7 @@ static void runCaptureCycle() {
     return;
   }
 
-  recordInquiry(caption);
+  recordInquiry(caption, detailText);
 
   buildResultCanvas();
   drawResult(true);
@@ -1826,11 +2499,34 @@ void setup() {
     inquiryTotal = toiPrefs.getUInt("total", 0);
     inquiryToday = toiPrefs.getUInt("today", 0);
     inquiryDateKey = toiPrefs.getInt("dkey", -1);
-    inquiryHistory = toiPrefs.getString("hist", "");
+    const size_t historyLength = toiPrefs.getBytesLength("histb");
+    if (historyLength > 0 && historyLength <= kInquiryHistoryMaxBytes) {
+      char *historyData = static_cast<char *>(malloc(historyLength + 1));
+      if (historyData) {
+        const size_t bytesRead =
+            toiPrefs.getBytes("histb", historyData, historyLength);
+        historyData[bytesRead] = '\0';
+        inquiryHistory = String(historyData);
+        free(historyData);
+      }
+    }
     inquiryDigest = toiPrefs.getString("digest", "");
     inquiryDigestCount = toiPrefs.getInt("digN", -1);
     speakerVolume = toiPrefs.getUChar("vol", 255);
     savedSpeakerVolume = speakerVolume;
+    paBoostPulses = toiPrefs.getUChar("paboost", 0);
+    if (paBoostPulses > 3) paBoostPulses = 0;
+    es8311DacBoost = toiPrefs.getUChar("dacboost", 1) != 0;
+    captureQuality = toiPrefs.getUChar("qual", 0);
+    if (captureQuality > 1) captureQuality = 0;
+    selectedModel = toiPrefs.getUChar("model", 1);
+    if (selectedModel > 1) selectedModel = 1;  // old sol/luna indices clamp to luna
+    selectedLang = toiPrefs.getUChar("lang", 0);
+    if (selectedLang > 2) selectedLang = 0;
+    aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
+    nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
+    nvsWifiPass = toiPrefs.getString("wifi_pass", "");
+    nvsDeviceToken = toiPrefs.getString("dev_token", "");
     Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
                   (unsigned)inquiryHistory.length());
@@ -1838,12 +2534,18 @@ void setup() {
     Serial.println("[toi] inquiries: Preferences begin failed");
   }
   M5.Speaker.setVolume(speakerVolume);
+  M5.Speaker.begin();
+  applyPaBoost();
+  // Hold-to-talk engages at 350ms (default 500) — the mic starts sooner
+  // relative to speech onset, so first words are less likely to be lost.
+  M5.BtnA.setHoldThresh(350);
 
   showStatus("WiFi接続中...");
   state = AppState::WifiConnecting;
-  // Unit GPS v1.1 (AT6668, 9600bps NMEA) on the Grove port. RX/TX assignment
-  // is auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
-  Serial1.begin(9600, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
+  // Unit GPS v1.1 (AT6668) streams NMEA at 115200 — verified by raw dump
+  // 2026-08-05 (9600 yielded framing garbage, sats never valid). RX/TX is
+  // auto-detected: start with RX=G10, swap to RX=G11 if no NMEA arrives.
+  Serial1.begin(115200, SERIAL_8N1, 10 /*RX*/, 11 /*TX*/);
   gpsSwapDeadline = millis() + 10000;
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);  // modem sleep adds 100-300ms bursts to every request
@@ -1886,6 +2588,53 @@ void loop() {
   if (Serial.available()) {
     const char cmd = Serial.read();
     if (cmd == 'd') debugDumpFrame();
+    else if (cmd == 'v') {
+      paBoostPulses = (paBoostPulses + 1) % 4;
+      if (toiPrefsReady) toiPrefs.putUChar("paboost", paBoostPulses);
+      M5.Speaker.end();
+      M5.Speaker.begin();
+      applyPaBoost();
+      M5.Speaker.setVolume(speakerVolume);
+      volumeTestFeedback("PA " + String(paBoostPulses));
+    } else if (cmd == 'V') {
+      es8311DacBoost = !es8311DacBoost;
+      if (toiPrefsReady) toiPrefs.putUChar("dacboost", es8311DacBoost ? 1 : 0);
+      const uint8_t dacVolume = es8311DacBoost ? 0xD3 : 0xBF;
+      m5::In_I2C.writeRegister8(0x18, 0x32, dacVolume, 400000);
+      Serial.printf("[toi] es8311: dacvol=0x%02X\n", dacVolume);
+      volumeTestFeedback(es8311DacBoost ? "DAC +10dB" : "DAC 0dB");
+    }
+    else if (cmd == 'g') {
+      // Raw GPS dump — 2s of Serial1 as hex+ascii, to diagnose baud/wiring.
+      Serial.println("[toi] gps raw dump (2s):");
+      const uint32_t until = millis() + 2000;
+      String ascii;
+      int n = 0;
+      while (millis() < until) {
+        while (Serial1.available()) {
+          const uint8_t b = Serial1.read();
+          ++n;
+          Serial.printf("%02X ", b);
+          ascii += (b >= 32 && b < 127) ? (char)b : '.';
+          if (n % 24 == 0) {
+            Serial.printf("  |%s|\n", ascii.c_str());
+            ascii = "";
+          }
+        }
+        delay(2);
+      }
+      if (ascii.length()) Serial.printf("  |%s|\n", ascii.c_str());
+      Serial.printf("[toi] gps raw dump end (%d bytes)\n", n);
+    } else if (cmd == 'G') {
+      // Cycle GPS baud 9600 -> 38400 -> 115200 (persists until reboot).
+      static const uint32_t kBauds[] = {115200, 9600, 38400};
+      static int baudIdx = 0;
+      baudIdx = (baudIdx + 1) % 3;
+      Serial1.end();
+      Serial1.begin(kBauds[baudIdx], SERIAL_8N1, gpsPinsSwapped ? 11 : 10,
+                    gpsPinsSwapped ? 10 : 11);
+      Serial.printf("[toi] gps: baud=%lu\n", (unsigned long)kBauds[baudIdx]);
+    }
     // Live camera tuning (PY260/mega_ccm: quality 0=high,1=default,2=low;
     // framesize: only QVGA/VGA/HD/UXGA/FHD/5MP + square sizes exist)
     else if (cmd >= '0' && cmd <= '2') {
@@ -1906,7 +2655,7 @@ void loop() {
   if (!gpsBytes && !gpsPinsSwapped && millis() > gpsSwapDeadline) {
     gpsPinsSwapped = true;
     Serial1.end();
-    Serial1.begin(9600, SERIAL_8N1, 11 /*RX*/, 10 /*TX*/);
+    Serial1.begin(115200, SERIAL_8N1, 11 /*RX*/, 10 /*TX*/);
     Serial.println("[toi] gps: no data on RX=G10, swapped to RX=G11");
   }
   if (millis() - gpsLastLogAt > 10000) {
@@ -1932,9 +2681,21 @@ void loop() {
         break;
       }
       homeTouchTick();
-      homeTick();
+      // A tap may have transitioned into WifiSetup — homeTick() would
+      // repaint the settings page over the QR screen via a stale homeDirty.
+      if (state == AppState::Home) homeTick();
       break;
     }
+
+    case AppState::WifiSetup:
+      wifiPortal.handleClient();
+      if (M5.BtnB.wasPressed()) {
+        wifiPortal.stop();
+        Serial.println("[toi] wifi portal: stopped");
+        enterHome(2);
+        flushButtons();
+      }
+      break;
 
     case AppState::Idle:
       if (M5.BtnA.wasPressed()) {
