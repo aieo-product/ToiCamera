@@ -75,28 +75,27 @@ static int32_t homeLastMinute = -1;
 static int homePage = 0;
 static int homeHistoryScrollY = 0;
 static int historyDetailIndex = -1;
-// Settings row currently held down (-1 = none) — highlighted while pressed,
-// the action fires on finger-up inside the same row.
+static int settingsScrollY = 0;
+// Settings item currently held down (-1 = none) — highlighted while pressed,
+// the action fires on finger-up inside the same item.
 static int settingsPressedRow = -1;
 
-// Maps a touch Y to a tappable settings row (row 1 is the volume slider and
-// handled separately). Bands mirror drawPageSettings().
-static int settingsRowForY(int y) {
-  if (y >= 60 && y < 108) return 0;    // model
-  if (y >= 156 && y < 204) return 2;   // capture quality
-  if (y >= 204 && y < 252) return 3;   // AI detail
-  if (y >= 252 && y < 300) return 4;   // WiFi
-  if (y >= 300 && y <= 348) return 5;  // language
-  return -1;
+// Maps a viewport touch Y to a settings item in 78px content-space bands.
+static int settingsItemForY(int screenY) {
+  if (screenY < 128 || screenY >= 432) return -1;
+  const int item = (screenY - 128 + settingsScrollY) / 78;
+  return constrain(item, 0, 5);
 }
 static bool homeTouchActive = false;
 static bool homeVolumeDragging = false;
 static bool homeHistoryScrolled = false;
+static bool settingsScrolled = false;
 static int homeTouchStartX = 0;
 static int homeTouchStartY = 0;
 static int homeTouchLastX = 0;
 static int homeTouchLastY = 0;
 static int homeHistoryScrollStartY = 0;
+static int settingsScrollStartY = 0;
 
 static Preferences toiPrefs;
 static bool toiPrefsReady = false;
@@ -707,8 +706,8 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
-// Six compact rows: model / volume / quality / AI detail / WiFi / language.
-// Each tappable row uses its center +/- 24px; the slider captures y=108-156.
+// Six spacious items: model / volume / quality / AI detail / WiFi / language.
+// Items use 78px content-space bands inside the clipped y=128..431 viewport.
 static void drawPageSettings() {
   homeCanvas.setFont(&fonts::efontJA_16);
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
@@ -717,87 +716,81 @@ static void drawPageSettings() {
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
   homeCanvas.drawString("設定", M5.Display.width() / 2, 40);
 
-  // Pressed-row highlight: filled band behind the held row (finger-down
-  // feedback; the action itself fires on release).
-  static constexpr int kRowBands[6][2] = {
-      {60, 108}, {108, 156}, {156, 204},
-      {204, 252}, {252, 300}, {300, 348}};
-  if (settingsPressedRow >= 0 && settingsPressedRow < 6 &&
-      settingsPressedRow != 1) {
-    homeCanvas.fillRect(36, kRowBands[settingsPressedRow][0], 394,
-                        kRowBands[settingsPressedRow][1] -
-                            kRowBands[settingsPressedRow][0],
-                        0x2945);
-  }
+  settingsScrollY = constrain(settingsScrollY, 0, 164);
+  homeCanvas.setClipRect(0, 128, 466, 304);
   const auto rowBg = [&](int row) {
     return settingsPressedRow == row ? 0x2945 : (int)TFT_BLACK;
   };
 
-  homeCanvas.setTextDatum(middle_left);
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, rowBg(0));
-  homeCanvas.drawString("モデル", 60, 84);
-  homeCanvas.setTextDatum(middle_right);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, rowBg(0));
-  homeCanvas.drawString(selectedModelName(), 406, 84);
-  homeCanvas.drawFastHLine(40, 108, 386, 0x2124);
+  for (int item = 0; item < 6; ++item) {
+    const int itemTop = item * 78;
+    const int screenItemTop = 128 + itemTop - settingsScrollY;
+    if (screenItemTop >= 432 || screenItemTop + 78 <= 128) continue;
 
-  homeCanvas.setTextDatum(middle_left);
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("音量", 60, 132);
-  homeCanvas.fillRoundRect(150, 129, 230, 6, 3, TFT_DARKGREY);
-  const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
-  homeCanvas.fillCircle(volumeX, 132, 14, TFT_CYAN);
-  homeCanvas.drawFastHLine(40, 156, 386, 0x2124);
+    if (settingsPressedRow == item) {
+      homeCanvas.fillRect(36, screenItemTop, 394, 78, 0x2945);
+    }
 
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, rowBg(2));
-  homeCanvas.drawString("画質", 60, 180);
-  homeCanvas.setTextDatum(middle_right);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(2));
-  homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
-                                            : "速度優先(QVGA)",
-                        406, 180);
-  homeCanvas.drawFastHLine(40, 204, 386, 0x2124);
-
-  homeCanvas.setTextDatum(middle_left);
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, rowBg(3));
-  homeCanvas.drawString("AI精度", 60, 228);
-  homeCanvas.setTextDatum(middle_right);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(3));
-  homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
-                                     : "低(速い・省トークン)",
-                        406, 228);
-  homeCanvas.drawFastHLine(40, 252, 386, 0x2124);
-
-  homeCanvas.setTextDatum(middle_left);
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, rowBg(4));
-  homeCanvas.drawString("WiFi", 60, 276);
-  homeCanvas.setTextDatum(middle_right);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, rowBg(4));
-  const String currentWifi =
-      WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
-  homeCanvas.drawString(fitHomeText(currentWifi, 250), 406, 276);
-  homeCanvas.drawFastHLine(40, 300, 386, 0x2124);
-
-  homeCanvas.setTextDatum(middle_left);
-  homeCanvas.setTextSize(2);
-  homeCanvas.setTextColor(TFT_WHITE, rowBg(5));
-  homeCanvas.drawString("言語", 60, 324);
-  homeCanvas.setTextDatum(middle_right);
-  homeCanvas.setTextSize(1);
-  homeCanvas.setTextColor(TFT_CYAN, rowBg(5));
-  static constexpr const char *kLangLabels[] = {"日本語", "English", "中文"};
-  homeCanvas.drawString(kLangLabels[selectedLang < 3 ? selectedLang : 0], 406,
-                        324);
-  homeCanvas.drawFastHLine(40, 348, 386, 0x2124);
+    homeCanvas.setTextDatum(middle_left);
+    homeCanvas.setTextSize(2);
+    homeCanvas.setTextColor(TFT_WHITE, rowBg(item));
+    switch (item) {
+      case 0:
+        homeCanvas.drawString("モデル", 90, screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
+        homeCanvas.drawString(selectedModelName(), 90, screenItemTop + 46);
+        break;
+      case 1: {
+        homeCanvas.drawString("音量", 90, screenItemTop + 18);
+        homeCanvas.fillRoundRect(190, screenItemTop + 15, 190, 6, 3,
+                                 TFT_DARKGREY);
+        const int volumeX =
+            190 + (static_cast<int>(speakerVolume) * 190 + 127) / 255;
+        homeCanvas.fillCircle(volumeX, screenItemTop + 18, 14, TFT_CYAN);
+        break;
+      }
+      case 2:
+        homeCanvas.drawString("画質", 90, screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
+        homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
+                                                  : "速度優先(QVGA)",
+                              90, screenItemTop + 46);
+        break;
+      case 3:
+        homeCanvas.drawString("AI精度", 90, screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
+        homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
+                                           : "低(速い・省トークン)",
+                              90, screenItemTop + 46);
+        break;
+      case 4: {
+        homeCanvas.drawString("WiFi", 90, screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
+        const String currentWifi =
+            WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
+        homeCanvas.drawString(fitHomeText(currentWifi, 300), 90,
+                              screenItemTop + 46);
+        break;
+      }
+      case 5: {
+        homeCanvas.drawString("言語", 90, screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
+        static constexpr const char *kLangLabels[] = {"日本語", "English",
+                                                       "中文"};
+        homeCanvas.drawString(
+            kLangLabels[selectedLang < 3 ? selectedLang : 0], 90,
+            screenItemTop + 46);
+        break;
+      }
+    }
+    homeCanvas.drawFastHLine(60, screenItemTop + 72, 346, 0x2124);
+  }
+  homeCanvas.clearClipRect();
 }
 
 static void drawHomePageDots() {
@@ -1886,10 +1879,12 @@ static void enterHome(int targetPage = 0) {
   homePage = constrain(targetPage, 0, 2);
   settingsPressedRow = -1;
   homeHistoryScrollY = 0;
+  settingsScrollY = 0;
   historyDetailIndex = -1;
   homeTouchActive = false;
   homeVolumeDragging = false;
   homeHistoryScrolled = false;
+  settingsScrolled = false;
   homeLastMinute = -1;
   placeLookupPending = true;
   lastPlaceAt = 0;
@@ -2234,9 +2229,9 @@ static void homeTick() {
 }
 
 static void setSpeakerVolumeFromTouch(int touchX) {
-  const int sliderX = constrain(touchX, 150, 380);
+  const int sliderX = constrain(touchX, 190, 380);
   const uint8_t nextVolume =
-      static_cast<uint8_t>(((sliderX - 150) * 255 + 115) / 230);
+      static_cast<uint8_t>(((sliderX - 190) * 255 + 95) / 190);
   if (nextVolume == speakerVolume) return;
   speakerVolume = nextVolume;
   M5.Speaker.setVolume(speakerVolume);
@@ -2261,12 +2256,15 @@ static void homeTouchTick() {
       homeTouchLastY = t.y;
       homeHistoryScrollStartY = homeHistoryScrollY;
       homeHistoryScrolled = false;
+      settingsScrollStartY = settingsScrollY;
+      settingsScrolled = false;
+      const int settingsItem =
+          homePage == 2 ? settingsItemForY(t.y) : -1;
       // Slider gestures are captured so the full 0-255 range is reachable.
-      homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
-                           t.y >= 108 && t.y <= 156;
+      homeVolumeDragging = settingsItem == 1 && t.x >= 160 && t.x <= 410;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
       if (homePage == 2 && !homeVolumeDragging) {
-        settingsPressedRow = settingsRowForY(t.y);
+        settingsPressedRow = settingsItem;
         if (settingsPressedRow >= 0) homeDirty = true;
       }
       return;
@@ -2278,12 +2276,6 @@ static void homeTouchTick() {
     if (homeVolumeDragging) {
       setSpeakerVolumeFromTouch(t.x);
       return;
-    }
-    if (settingsPressedRow >= 0 &&
-        (abs(t.x - homeTouchStartX) > 12 || abs(t.y - homeTouchStartY) > 12 ||
-         settingsRowForY(t.y) != settingsPressedRow)) {
-      settingsPressedRow = -1;  // drifted out — cancel the pending tap
-      homeDirty = true;
     }
 
     if (homePage == 1 && historyDetailIndex < 0) {
@@ -2306,6 +2298,33 @@ static void homeTouchTick() {
           homeDirty = true;
         }
       }
+    } else if (homePage == 2) {
+      const int dx = homeTouchLastX - homeTouchStartX;
+      const int dy = homeTouchLastY - homeTouchStartY;
+      const int absDx = abs(dx);
+      const int absDy = abs(dy);
+      if (absDx > 12 && absDx * 2 > absDy * 3) {
+        if (settingsScrollY != settingsScrollStartY) {
+          settingsScrollY = settingsScrollStartY;
+          homeDirty = true;
+        }
+      } else if (homeTouchLastY != previousY) {
+        const int nextScroll =
+            constrain(settingsScrollY - (homeTouchLastY - previousY), 0, 164);
+        if (nextScroll != settingsScrollY) {
+          settingsScrollY = nextScroll;
+          settingsScrolled = true;
+          homeDirty = true;
+        }
+      }
+    }
+
+    if (settingsPressedRow >= 0 &&
+        (settingsScrolled || abs(t.x - homeTouchStartX) > 12 ||
+         abs(t.y - homeTouchStartY) > 12 ||
+         settingsItemForY(t.y) != settingsPressedRow)) {
+      settingsPressedRow = -1;  // drifted or scrolled — cancel pending tap
+      homeDirty = true;
     }
     return;
   }
@@ -2321,6 +2340,7 @@ static void homeTouchTick() {
     saveSpeakerVolume();
   } else if (isSwipe) {
     if (homePage == 1) homeHistoryScrollY = homeHistoryScrollStartY;
+    if (homePage == 2) settingsScrollY = settingsScrollStartY;
     historyDetailIndex = -1;
     const int nextPage = constrain(homePage + (dx < 0 ? 1 : -1), 0, 2);
     if (nextPage != homePage) {
@@ -2341,7 +2361,7 @@ static void homeTouchTick() {
           homeDirty = true;
         }
       }
-    } else if (homePage == 2) {
+    } else if (homePage == 2 && !settingsScrolled) {
       const int releasedRow = settingsPressedRow;
       settingsPressedRow = -1;
       homeDirty = true;
@@ -2379,6 +2399,7 @@ static void homeTouchTick() {
   homeTouchActive = false;
   homeVolumeDragging = false;
   homeHistoryScrolled = false;
+  settingsScrolled = false;
 }
 
 static void enterSleeping() {
