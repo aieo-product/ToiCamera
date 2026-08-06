@@ -237,7 +237,7 @@ GRID3_D = derived_grid3()
 # the proven hole, screw, and print compensation values from PARAMS; the v3.4
 # backpack and v3.5 grid3 parameter sets and build paths remain unchanged.
 DUO_PARAMS = {
-    "PLATE_WIDTH": 56.0,
+    "PLATE_WIDTH": 58.0,
     # The explicit Z=-24..+24 envelope takes precedence over the approximate
     # "44 mm" prose dimension in the field feedback, yielding a 48 mm bbox.
     "PLATE_HEIGHT": 48.0,
@@ -247,10 +247,11 @@ DUO_PARAMS = {
     "FEATURE_FILLET_RADIUS": 2.0,
     "OUTLINE_VERTICES_PER_CORNER": 16,
 
-    "CAMERA_ROW_Z": 10.0,
-    "CAMERA_ROW_XS": (-4.0, 4.0),
+    "CAMERA_ROW_Z": 14.0,  # raised so the wider 16mm band clears the side openings
+    # Field-verified: CLIP joints span 16 mm (skip-one hole), not 8 mm.
+    "CAMERA_ROW_XS": (-8.0, 8.0),
     "GPS_ROW_Z": -14.0,
-    "GPS_ROW_XS": (-16.0, -8.0, 8.0, 16.0),
+    "GPS_ROW_XS": (-24.0, -8.0, 8.0, 24.0),
     "ROW_BAND_HEIGHT": 9.6,
 
     "SPEAKER_OPENING_D": 17.5,
@@ -600,7 +601,7 @@ def validate_duo_param_contract():
     plate_left, plate_right, plate_bottom, plate_top = DUO_D["plate_bounds"]
 
     exact_values = (
-        (q["PLATE_WIDTH"], 56.0, "duo plate width"),
+        (q["PLATE_WIDTH"], 58.0, "duo plate width"),
         (q["PLATE_HEIGHT"], 48.0, "duo explicit Z=-24..+24 height"),
         (q["END_CAP_RADIUS"], 12.0, "duo end-cap radius"),
         (q["FEATURE_FILLET_RADIUS"], 2.0, "duo feature fillet"),
@@ -623,14 +624,16 @@ def validate_duo_param_contract():
         if not math.isclose(actual, expected, abs_tol=1.0e-9):
             raise ValueError(f"{label} must remain {expected:.3f} mm")
 
-    if q["CAMERA_ROW_XS"] != (-4.0, 4.0) or not math.isclose(
-        q["CAMERA_ROW_Z"], 10.0, abs_tol=1.0e-9
+    # Field-verified 2026-08-06: CLIP joints span 16 mm (skip-one), so each
+    # mounting pair is 16 mm wide.
+    if q["CAMERA_ROW_XS"] != (-8.0, 8.0) or not math.isclose(
+        q["CAMERA_ROW_Z"], 14.0, abs_tol=1.0e-9
     ):
-        raise ValueError("duo camera row must remain (-4,+4) at Z=+10 mm")
-    if q["GPS_ROW_XS"] != (-16.0, -8.0, 8.0, 16.0) or not math.isclose(
+        raise ValueError("duo camera row must remain (-8,+8) at Z=+14 mm")
+    if q["GPS_ROW_XS"] != (-24.0, -8.0, 8.0, 24.0) or not math.isclose(
         q["GPS_ROW_Z"], -14.0, abs_tol=1.0e-9
     ):
-        raise ValueError("duo GPS row must remain (-16,-8,+8,+16) at Z=-14 mm")
+        raise ValueError("duo GPS row must remain (-24,-8,+8,+24) at Z=-14 mm")
     if tuple(q["GRIP_SCALLOP_ZS"]) != (-12.0, 0.0, 12.0):
         raise ValueError("duo grip scallops must remain at Z=-12,0,+12 mm")
     if tuple(q["SPEAKER_OPENING_XS"]) != (-17.5, 17.5):
@@ -644,11 +647,13 @@ def validate_duo_param_contract():
     camera_pitch = camera_positions[1][0] - camera_positions[0][0]
     gps_left_pitch = gps_positions[1][0] - gps_positions[0][0]
     gps_right_pitch = gps_positions[3][0] - gps_positions[2][0]
+    # Pairs sit on the 8 mm lattice but each joint spans 2 units = 16 mm.
+    joint_span = 2.0 * p["TECHNIC_PITCH"]
     if any(
-        not math.isclose(pitch, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        not math.isclose(pitch, joint_span, abs_tol=1.0e-9)
         for pitch in (camera_pitch, gps_left_pitch, gps_right_pitch)
     ):
-        raise ValueError("a duo camera/GPS pair is not on 8.0 mm pitch")
+        raise ValueError("a duo camera/GPS pair is not on the 16.0 mm joint span")
 
     nominal_center_gap = min(abs(x) for x in q["GPS_ROW_XS"]) - (
         p["TECHNIC_HOLE_D"] / 2.0
@@ -662,12 +667,12 @@ def validate_duo_param_contract():
         raise ValueError("duo compensated center gap must remain above 5.5 mm")
 
     if not (
-        math.isclose(plate_left, -28.0, abs_tol=1.0e-9)
-        and math.isclose(plate_right, 28.0, abs_tol=1.0e-9)
+        math.isclose(plate_left, -29.0, abs_tol=1.0e-9)
+        and math.isclose(plate_right, 29.0, abs_tol=1.0e-9)
         and math.isclose(plate_bottom, -24.0, abs_tol=1.0e-9)
         and math.isclose(plate_top, 24.0, abs_tol=1.0e-9)
     ):
-        raise ValueError("duo bbox must span X=+/-28 and Z=+/-24 mm")
+        raise ValueError("duo bbox must span X=+/-29 and Z=+/-24 mm")
     if q["END_CAP_RADIUS"] <= q["FEATURE_FILLET_RADIUS"]:
         raise ValueError("duo end caps must use a larger radius than detail fillets")
     if not (0.0 < q["FEATURE_FILLET_RADIUS"] <= q["ROW_BAND_HEIGHT"] / 2.0):
@@ -792,11 +797,11 @@ def validate_duo_param_contract():
         f"Z={plate_bottom:.3f}..{plate_top:.3f} / endcap R{q['END_CAP_RADIUS']:.3f}"
     )
     print(
-        f"DUO_CAMERA_ROW_GRID_CHECK: PASS (X=-4/+4 / Z=+10 / "
+        f"DUO_CAMERA_ROW_GRID_CHECK: PASS (X=-8/+8 / Z=+14 / "
         f"pitch {camera_pitch:.3f} mm)"
     )
     print(
-        f"DUO_GPS_ROW_GRID_CHECK: PASS (left X=-16/-8 pitch {gps_left_pitch:.3f} / "
+        f"DUO_GPS_ROW_GRID_CHECK: PASS (left X=-24/-8 pitch {gps_left_pitch:.3f} / "
         f"right X=+8/+16 pitch {gps_right_pitch:.3f} / Z=-14 mm)"
     )
     print(
