@@ -1,8 +1,10 @@
-# ToiCamera ケース v3.4 backpack / v3.5 grid3
+# ToiCamera ケース v3.4 backpack / v3.5 grid3 / duo
 
 M5Stack StopWatch C152 の背面ネジ 2 本を長ネジへ交換し、汎用拡張ラックを樹脂ボスへ共締めする構成です。v3.3 の LEGO テクニック寸法を維持したまま、プレートを 64 mm へ延長し、取り付け可能な位置まで 2 列 × 8 行の候補を敷き詰めました。Unit CamS3、GPS、その他の Unit は CLIP-A/B またはピン式ブラケットで空き穴へ追加できます。
 
 v3.5 では、既存の `backpack` を一切変更せず、モジュールを多めに盛る用途向けの 3 列版を別パーツ `grid3` として追加しています。`grid3` はウォッチ外周内へ円形クリップされるため、v3.4 backpack と用途に応じて選択できます。
+
+`duo` は実機で判明した CamS3 側 CLIP と GPS の干渉を避けるための、カメラ＋GPS 同時装着専用プレートです。カメラを上列、GPS を下列の左または右の 2 穴へ分離して固定します。実機適合済みの 8 mm 格子、穴径補正、ネジ位置は変更していません。`backpack` と `grid3` の形状も従来どおりです。
 
 正本は [`blender/build_case.py`](blender/build_case.py) です。寸法は `PARAMS` に集約し、1 Blender Unit = 1 mm で STL を生成します。公式寸法の根拠は M5Stack の [`C152-StopWatch-model-size.pdf`](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1242/C152-StopWatch-model-size.pdf) です。
 
@@ -43,6 +45,28 @@ v3.5 では、既存の `backpack` を一切変更せず、モジュールを多
 
 生成結果は **10 穴 / 24 候補**です。スキップ内訳は円形外周リム 8、ネジ座 4、磁石逃げ座 2、スピーカー 0。スピーカーは候補穴だけでなくプレート外形の段階で keep-out を確保します。
 
+## duo（カメラ＋GPS 同時装着プレート）
+
+- **別パーツ**: `--part duo` で生成します。既存の `backpack` / `grid3` の寸法・穴・形状は変更しません。
+- **横長プレート**: bbox は X=-28〜+28、Z=-24〜+24 の 56 × 48 mm、ウィング厚は 3.0 mm です。左右端を R12 の大きなエンドキャップ形状、穴帯端を R2 に丸めています。
+- **カメラ上列**: X=`-4 / +4`、Z=`+10` mm の 2 穴だけを使います。中心間隔は実機適合済みの 8.0 mm です。
+- **GPS 下列**: X=`-16 / -8 / +8 / +16`、Z=`-14` mm の 4 穴です。GPS は左ペア `-16/-8` と右ペア `+8/+16` のどちらにも取り付けられます。各ペアのピッチは 8.0 mm です。
+- **CLIP 干渉回避**: 下列内側穴は中心から ±8 mm 離しています。中心線から nominal φ4.8 穴の内側エッジまで 5.6 mm、径補正後 φ4.95 では 5.525 mm の空間が残ります。
+- **穴仕様**: 全 6 穴が φ4.8 + 径補正 0.15 mm、両面座ぐり φ6.2 × 0.8 mm、内側面取り 0.3 mm です。上列・下列それぞれの R2 穴帯だけが穴軸方向 7.8 mm、周囲のウィングは 3.0 mm のままです。
+- **ネジ固定**: X=0、Z=±20 の φ2.4 貫通と φ4.5・90°皿もみを維持します。下側穴帯と重なるネジタブ φ8 の領域は 3.0 mm のまま残し、ネジ頭へアクセスできます。
+- **左右開口**: X=±17.5、Z=0 に φ17.5 の対称貫通穴を設けています。左はスピーカー開口、右は見た目の対称性・軽量化・指掛かりを兼ねます。
+- **グリップ**: 左右外周に R6、深さ 1.5 mm の浅い指スカラップを Z=`-12 / 0 / +12` の 3 箇所ずつ配置しています。
+- **印刷向き**: ウォッチ接触面を下、穴帯を上にして平置きします。穴軸が積層方向と一致し、サポートなしで印刷できます。
+
+### duo 穴座標マップ
+
+| 用途 / Z (mm) | 左側 | 中央左 | 中央右 | 右側 |
+|---|---:|---:|---:|---:|
+| カメラ / +10 | — | X=-4 | X=+4 | — |
+| GPS / -14 | X=-16 | X=-8 | X=+8 | X=+16 |
+
+カメラは上列の 2 穴へ固定し、GPS は下列の左 2 穴または右 2 穴へ固定します。上下を分けることで CamS3 側 CLIP の中央占有領域を避け、GPS の着脱空間を確保します。
+
 ## 穴グリッド座標マップ
 
 候補は X=`0, 8` × Z=`-28, -20, -12, -4, +4, +12, +20, +28` mm。`●` が生成穴、`—` が自動スキップです。
@@ -66,13 +90,14 @@ v3.5 では、既存の `backpack` を一切変更せず、モジュールを多
 |---|---|---|
 | Unit CamS3 | **CLIP-A** | 中央の 2 × 2（X=0/8、Z=-4/+4）を使い、レンズを画面と反対の後ろ向きへ向ける |
 | Unit GPS v1.1 | **ピン 2 本**または **CLIP-B** | 下端の X=0/8・Z=-28 を 2 ピンブラケットで使う。16 mm スパンの CLIP-B は X=0・Z=-28/-12 が使用可能 |
+| Unit CamS3 + GPS（duo） | **CLIP-A/B またはピン式ブラケット** | CamS3 は上列 X=-4/+4・Z=+10、GPS は下列 X=-16/-8 または +8/+16・Z=-14 を使う |
 | その他の M5Stack Unit | ピン式ブラケット / CLIP-A/B | 空き穴から荷重とケーブル経路に合う 1〜4 点を選ぶ。片持ちが長い場合は 2 点以上で固定する |
 
 GPS を追加するときだけ Grove Y 分岐を追加し、電源・信号ピン、I2C/UART 構成、電流容量を確認してください。下端へ大きな Unit を付ける場合は、ウォッチ装着時の揺れ、操作部、ケーブル曲げ半径も実機で確認します。
 
 ## STL の生成
 
-`--part` を省略した場合は `backpack` が既定です。`--part all` は指定したパスへ従来どおり backpack を書き出し、同じディレクトリへファイル名末尾 `_grid3` の grid3 も書き出します。下の例では `toicamera.stl` と `toicamera_grid3.stl` の 2 ファイルを生成します。
+`--part` を省略した場合は `backpack` が既定です。`--part all` は指定したパスへ従来どおり backpack を書き出し、同じディレクトリへファイル名末尾 `_grid3` の grid3 と `_duo` の duo も書き出します。下の例では `toicamera.stl`、`toicamera_grid3.stl`、`toicamera_duo.stl` の 3 ファイルを生成します。
 
 ```bash
 /Applications/Blender.app/Contents/MacOS/Blender -b \
@@ -99,6 +124,15 @@ grid3 だけを書き出す場合:
   --out case/blender/out/toicamera_grid3_v3_5.stl
 ```
 
+duo だけを書き出す場合は、指定した出力 stem に `_duo` が自動付与されます。次のコマンドは `case/blender/out/toicamera_duo.stl` を生成します。
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender -b \
+  --python case/blender/build_case.py -- \
+  --part duo \
+  --out case/blender/out/toicamera.stl
+```
+
 ## 自己検証とログ
 
 スクリプトは候補ごとの採否を計算してから形状を構築し、次を自己検証します。
@@ -114,8 +148,12 @@ grid3 だけを書き出す場合:
 - grid3 が 25.6 × 7.8 × 51.0 mm（X × Y × Z）の bbox に収まり、全頂点の X/Z 半径が 25.5 mm 以下
 - grid3 の列候補を穴数とスピーカー外形間隔で比較し、X=-4/+4/+12 が最大 10 穴になること
 - grid3 の下端が Z=-25.5 mm の円弧へ届き、ウォッチ公式半径 25.975 mm に対して外へ出ないこと
+- duo が 56.0 × 7.8 × 48.0 mm（X × Y × Z）の bbox に収まること
+- duo のカメラ列 X=-4/+4 と GPS 左右ペア X=-16/-8、+8/+16 がそれぞれ 8.0 mm ピッチであること
+- duo の全 6 穴、ネジ皿もみ、左右 φ17.5 開口、上下の 7.8 mm 穴帯、R6 × 深さ 1.5 mm スカラップが相互干渉しないこと
+- duo の生成オブジェクトと再インポートした STL の非多様体エッジが 0、接続コンポーネントが 1 であること
 
-backpack のログには `TECHNIC_HOLE_SKIP`、`TECHNIC_HOLES_GENERATED`、`TECHNIC_HOLES_SKIPPED`、`TECHNIC_SKIP_REASON_COUNTS`、`TECHNIC_GRID_CHECK` を出力します。grid3 では `GRID3_COLUMN_OPTION`、`GRID3_COLUMN_SELECTION`、`GRID3_TECHNIC_HOLE_SKIP`、`GRID3_TECHNIC_HOLES_GENERATED`、`GRID3_TECHNIC_SKIP_REASON_COUNTS`、`GRID3_TECHNIC_GRID_CHECK`、`GRID3_WATCH_CLIP` を追加し、各部品の `BACKPACK_STL_SELF_CHECK: PASS` / `GRID3_STL_SELF_CHECK: PASS` を確認します。最後に `CASE_BUILD_RESULT: PASS` が表示された STL だけを印刷してください。
+backpack のログには `TECHNIC_HOLE_SKIP`、`TECHNIC_HOLES_GENERATED`、`TECHNIC_HOLES_SKIPPED`、`TECHNIC_SKIP_REASON_COUNTS`、`TECHNIC_GRID_CHECK` を出力します。grid3 では `GRID3_COLUMN_OPTION`、`GRID3_COLUMN_SELECTION`、`GRID3_TECHNIC_HOLE_SKIP`、`GRID3_TECHNIC_HOLES_GENERATED`、`GRID3_TECHNIC_SKIP_REASON_COUNTS`、`GRID3_TECHNIC_GRID_CHECK`、`GRID3_WATCH_CLIP` を追加します。duo では `DUO_CAMERA_ROW_GRID_CHECK`、`DUO_GPS_ROW_GRID_CHECK`、`DUO_TECHNIC_HOLE_CENTERS_XZ`、`DUO_CENTER_CLIP_CLEARANCE`、`DUO_INTERFERENCE_CHECK` を出力します。各部品の `BACKPACK_STL_SELF_CHECK: PASS` / `GRID3_STL_SELF_CHECK: PASS` / `DUO_STL_SELF_CHECK: PASS` と、最後の `CASE_BUILD_RESULT: PASS` が表示された STL だけを印刷してください。
 
 ## 印刷向き
 
@@ -153,6 +191,9 @@ backpack のログには `TECHNIC_HOLE_SKIP`、`TECHNIC_HOLES_GENERATED`、`TECH
 | `GRID3_PARAMS["WATCH_CLIP_RADIUS"]` | grid3 外形を制限する半径 25.5 mm の円 |
 | `GRID3_PARAMS["TECHNIC_GRID_XS"]` | grid3 の 3 列 X=-4/+4/+12 mm |
 | `GRID3_PARAMS["TECHNIC_GRID_X_OPTIONS"]` | 穴数とスピーカー keep-out を比較する列候補 |
+| `DUO_PARAMS["CAMERA_ROW_*"]` / `DUO_PARAMS["GPS_ROW_*"]` | duo の上側カメラ 2 穴 / 下側 GPS 左右 2 穴ペア |
+| `DUO_PARAMS["SPEAKER_OPENING_*"]` | X=±17.5、Z=0 の左右 φ17.5 貫通開口 |
+| `DUO_PARAMS["GRIP_SCALLOP_*"]` | 左右端の R6 × 深さ 1.5 mm 指スカラップ |
 
 ## 3D 組立シミュレーター
 

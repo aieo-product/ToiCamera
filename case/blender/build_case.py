@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the ToiCamera v3.4 backpack and v3.5 three-column grid plate.
+"""Build the ToiCamera backpack, grid3, and camera+GPS duo plates.
 
 The plate replaces the StopWatch's two rear screws with longer screws and is
 clamped directly to the existing plastic bosses.  It does not grip or enter the
@@ -126,14 +126,14 @@ GRID3_PARAMS = {
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(
-        description="Build the ToiCamera v3.4 backpack and v3.5 grid3 plate"
+        description="Build the ToiCamera backpack, grid3, and camera+GPS duo plates"
     )
     parser.add_argument("--out", required=True, help="output STL path")
     parser.add_argument(
         "--part",
-        choices=("backpack", "grid3", "all"),
+        choices=("backpack", "grid3", "duo", "all"),
         default="backpack",
-        help="part to export; all writes backpack and grid3 (default: backpack)",
+        help="part to export; all writes backpack, grid3, and duo (default: backpack)",
     )
     parser.add_argument(
         "--bbox-tol",
@@ -231,6 +231,88 @@ def derived_grid3():
 
 
 GRID3_D = derived_grid3()
+
+
+# The duo plate is a separate, hardware-feedback-driven part.  It reuses only
+# the proven hole, screw, and print compensation values from PARAMS; the v3.4
+# backpack and v3.5 grid3 parameter sets and build paths remain unchanged.
+DUO_PARAMS = {
+    "PLATE_WIDTH": 56.0,
+    # The explicit Z=-24..+24 envelope takes precedence over the approximate
+    # "44 mm" prose dimension in the field feedback, yielding a 48 mm bbox.
+    "PLATE_HEIGHT": 48.0,
+    "PLATE_CENTER_X": 0.0,
+    "PLATE_CENTER_Z": 0.0,
+    "END_CAP_RADIUS": 12.0,
+    "FEATURE_FILLET_RADIUS": 2.0,
+    "OUTLINE_VERTICES_PER_CORNER": 16,
+
+    "CAMERA_ROW_Z": 10.0,
+    "CAMERA_ROW_XS": (-4.0, 4.0),
+    "GPS_ROW_Z": -14.0,
+    "GPS_ROW_XS": (-16.0, -8.0, 8.0, 16.0),
+    "ROW_BAND_HEIGHT": 9.6,
+
+    "SPEAKER_OPENING_D": 17.5,
+    "SPEAKER_OPENING_XS": (-17.5, 17.5),
+    "SPEAKER_OPENING_Z": 0.0,
+
+    "GRIP_SCALLOP_RADIUS": 6.0,
+    "GRIP_SCALLOP_DEPTH": 1.5,
+    "GRIP_SCALLOP_ZS": (-12.0, 0.0, 12.0),
+}
+
+
+def derived_duo():
+    p = PARAMS
+    q = DUO_PARAMS
+    half_width = q["PLATE_WIDTH"] / 2.0
+    half_height = q["PLATE_HEIGHT"] / 2.0
+    camera_span = max(q["CAMERA_ROW_XS"]) - min(q["CAMERA_ROW_XS"])
+    gps_span = max(q["GPS_ROW_XS"]) - min(q["GPS_ROW_XS"])
+    camera_band_width = camera_span + p["TECHNIC_RAIL_WIDTH"]
+    gps_band_width = gps_span + p["TECHNIC_RAIL_WIDTH"]
+    scallop_center_x = (
+        half_width
+        + q["GRIP_SCALLOP_RADIUS"]
+        - q["GRIP_SCALLOP_DEPTH"]
+    )
+    return {
+        "plate_center_y": D["plate_center_y"],
+        "rail_center_y": D["rail_center_y"],
+        "plate_bounds": (-half_width, half_width, -half_height, half_height),
+        "camera_band_width": camera_band_width,
+        "gps_band_width": gps_band_width,
+        "camera_band_bounds": (
+            -camera_band_width / 2.0,
+            camera_band_width / 2.0,
+            q["CAMERA_ROW_Z"] - q["ROW_BAND_HEIGHT"] / 2.0,
+            q["CAMERA_ROW_Z"] + q["ROW_BAND_HEIGHT"] / 2.0,
+        ),
+        "gps_band_bounds": (
+            -gps_band_width / 2.0,
+            gps_band_width / 2.0,
+            q["GPS_ROW_Z"] - q["ROW_BAND_HEIGHT"] / 2.0,
+            q["GPS_ROW_Z"] + q["ROW_BAND_HEIGHT"] / 2.0,
+        ),
+        "speaker_positions": tuple(
+            (x, q["SPEAKER_OPENING_Z"])
+            for x in q["SPEAKER_OPENING_XS"]
+        ),
+        "scallop_positions": tuple(
+            (side * scallop_center_x, z)
+            for side in (-1.0, 1.0)
+            for z in q["GRIP_SCALLOP_ZS"]
+        ),
+        "duo_bbox": (
+            q["PLATE_WIDTH"],
+            p["TECHNIC_RAIL_THICKNESS"],
+            q["PLATE_HEIGHT"],
+        ),
+    }
+
+
+DUO_D = derived_duo()
 
 
 def reset_scene():
@@ -489,6 +571,276 @@ def grid3_column_option_plan():
             }
         )
     return plans
+
+
+def duo_camera_hole_positions():
+    q = DUO_PARAMS
+    return [(x, q["CAMERA_ROW_Z"]) for x in q["CAMERA_ROW_XS"]]
+
+
+def duo_gps_hole_positions():
+    q = DUO_PARAMS
+    return [(x, q["GPS_ROW_Z"]) for x in q["GPS_ROW_XS"]]
+
+
+def duo_technic_hole_positions():
+    return duo_camera_hole_positions() + duo_gps_hole_positions()
+
+
+def validate_duo_param_contract():
+    """Validate the field-tested duo layout before constructing any mesh."""
+    p = PARAMS
+    q = DUO_PARAMS
+    web = p["HOLE_MIN_WEB"]
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    effective_hole_radius = D["technic_effective_hole_d"] / 2.0
+    screw_hole_radius = p["SCREW_HOLE_D"] / 2.0
+    countersink_radius = p["SCREW_COUNTERSINK_D"] / 2.0
+    opening_radius = q["SPEAKER_OPENING_D"] / 2.0
+    plate_left, plate_right, plate_bottom, plate_top = DUO_D["plate_bounds"]
+
+    exact_values = (
+        (q["PLATE_WIDTH"], 56.0, "duo plate width"),
+        (q["PLATE_HEIGHT"], 48.0, "duo explicit Z=-24..+24 height"),
+        (q["END_CAP_RADIUS"], 12.0, "duo end-cap radius"),
+        (q["FEATURE_FILLET_RADIUS"], 2.0, "duo feature fillet"),
+        (q["GRIP_SCALLOP_RADIUS"], 6.0, "duo grip scallop radius"),
+        (q["GRIP_SCALLOP_DEPTH"], 1.5, "duo grip scallop depth"),
+        (q["SPEAKER_OPENING_D"], 17.5, "duo speaker opening diameter"),
+        (p["PLATE_THICKNESS"], 3.0, "duo wing thickness"),
+        (p["TECHNIC_RAIL_THICKNESS"], 7.8, "duo hole-band thickness"),
+        (p["TECHNIC_HOLE_D"], 4.8, "duo nominal Technic hole diameter"),
+        (p["TECHNIC_HOLE_PRINT_COMP"], 0.15, "duo hole print compensation"),
+        (p["TECHNIC_COUNTERBORE_D"], 6.2, "duo counterbore diameter"),
+        (p["TECHNIC_COUNTERBORE_DEPTH"], 0.8, "duo counterbore depth"),
+        (p["TECHNIC_HOLE_CHAMFER"], 0.3, "duo hole chamfer"),
+        (p["TECHNIC_PITCH"], 8.0, "duo grid pitch"),
+        (p["SCREW_SPACING"], 40.0, "duo screw pitch"),
+        (p["SCREW_HOLE_D"], 2.4, "duo screw through diameter"),
+        (p["BOOLEAN_EPS"], 0.05, "duo boolean penetration"),
+    )
+    for actual, expected, label in exact_values:
+        if not math.isclose(actual, expected, abs_tol=1.0e-9):
+            raise ValueError(f"{label} must remain {expected:.3f} mm")
+
+    if q["CAMERA_ROW_XS"] != (-4.0, 4.0) or not math.isclose(
+        q["CAMERA_ROW_Z"], 10.0, abs_tol=1.0e-9
+    ):
+        raise ValueError("duo camera row must remain (-4,+4) at Z=+10 mm")
+    if q["GPS_ROW_XS"] != (-16.0, -8.0, 8.0, 16.0) or not math.isclose(
+        q["GPS_ROW_Z"], -14.0, abs_tol=1.0e-9
+    ):
+        raise ValueError("duo GPS row must remain (-16,-8,+8,+16) at Z=-14 mm")
+    if tuple(q["GRIP_SCALLOP_ZS"]) != (-12.0, 0.0, 12.0):
+        raise ValueError("duo grip scallops must remain at Z=-12,0,+12 mm")
+    if tuple(q["SPEAKER_OPENING_XS"]) != (-17.5, 17.5):
+        raise ValueError("duo openings must remain symmetric at X=+/-17.5 mm")
+
+    camera_positions = duo_camera_hole_positions()
+    gps_positions = duo_gps_hole_positions()
+    positions = duo_technic_hole_positions()
+    if len(camera_positions) != 2 or len(gps_positions) != 4:
+        raise ValueError("duo must generate exactly two camera and four GPS holes")
+    camera_pitch = camera_positions[1][0] - camera_positions[0][0]
+    gps_left_pitch = gps_positions[1][0] - gps_positions[0][0]
+    gps_right_pitch = gps_positions[3][0] - gps_positions[2][0]
+    if any(
+        not math.isclose(pitch, p["TECHNIC_PITCH"], abs_tol=1.0e-9)
+        for pitch in (camera_pitch, gps_left_pitch, gps_right_pitch)
+    ):
+        raise ValueError("a duo camera/GPS pair is not on 8.0 mm pitch")
+
+    nominal_center_gap = min(abs(x) for x in q["GPS_ROW_XS"]) - (
+        p["TECHNIC_HOLE_D"] / 2.0
+    )
+    effective_center_gap = min(abs(x) for x in q["GPS_ROW_XS"]) - (
+        D["technic_effective_hole_d"] / 2.0
+    )
+    if not math.isclose(nominal_center_gap, 5.6, abs_tol=1.0e-9):
+        raise ValueError("duo nominal center-to-inner-hole-edge gap must be 5.6 mm")
+    if effective_center_gap <= 5.5:
+        raise ValueError("duo compensated center gap must remain above 5.5 mm")
+
+    if not (
+        math.isclose(plate_left, -28.0, abs_tol=1.0e-9)
+        and math.isclose(plate_right, 28.0, abs_tol=1.0e-9)
+        and math.isclose(plate_bottom, -24.0, abs_tol=1.0e-9)
+        and math.isclose(plate_top, 24.0, abs_tol=1.0e-9)
+    ):
+        raise ValueError("duo bbox must span X=+/-28 and Z=+/-24 mm")
+    if q["END_CAP_RADIUS"] <= q["FEATURE_FILLET_RADIUS"]:
+        raise ValueError("duo end caps must use a larger radius than detail fillets")
+    if not (0.0 < q["FEATURE_FILLET_RADIUS"] <= q["ROW_BAND_HEIGHT"] / 2.0):
+        raise ValueError("duo feature fillet does not fit the raised bands")
+
+    # A radius-4 screw tab at Z=+/-20 reaches exactly to Z=+/-24.  The
+    # horizontal portion of the rounded rectangle contains both tab circles.
+    for screw_x, screw_z in D["screw_positions"]:
+        if not (
+            plate_left <= screw_x - D["tab_radius"]
+            and screw_x + D["tab_radius"] <= plate_right
+            and plate_bottom <= screw_z - D["tab_radius"]
+            and screw_z + D["tab_radius"] <= plate_top
+        ):
+            raise ValueError("a duo screw tab exceeds the explicit plate bbox")
+
+    band_specs = (
+        (DUO_D["camera_band_bounds"], camera_positions, "camera"),
+        (DUO_D["gps_band_bounds"], gps_positions, "GPS"),
+    )
+    for bounds, row_positions, label in band_specs:
+        left, right, bottom, top = bounds
+        if not (
+            plate_left <= left < right <= plate_right
+            and plate_bottom <= bottom < top <= plate_top
+        ):
+            raise ValueError(f"duo {label} band exceeds the plate")
+        for x, z in row_positions:
+            if not (
+                left + counterbore_radius + web <= x <= right - counterbore_radius - web
+                and bottom + counterbore_radius + web <= z <= top - counterbore_radius - web
+            ):
+                raise ValueError(f"a duo {label} counterbore violates its band web")
+
+    min_hole_web = math.inf
+    for index, first in enumerate(positions):
+        for second in positions[index + 1:]:
+            clear_web = (
+                math.hypot(first[0] - second[0], first[1] - second[1])
+                - 2.0 * counterbore_radius
+            )
+            min_hole_web = min(min_hole_web, clear_web)
+    if min_hole_web < web - 1.0e-9:
+        raise ValueError("duo Technic counterbores leave less than minimum web")
+
+    min_screw_hole_web = math.inf
+    for screw_x, screw_z in D["screw_positions"]:
+        for hole_x, hole_z in positions:
+            center_distance = math.hypot(screw_x - hole_x, screw_z - hole_z)
+            clear_web = min(
+                center_distance - countersink_radius - effective_hole_radius,
+                center_distance - screw_hole_radius - counterbore_radius,
+            )
+            min_screw_hole_web = min(min_screw_hole_web, clear_web)
+    if min_screw_hole_web < p["SCREW_KEEP_OUT_WEB"] - 1.0e-9:
+        raise ValueError("a duo screw profile is too close to a Technic hole")
+
+    min_opening_hole_web = math.inf
+    min_opening_screw_web = math.inf
+    for opening_x, opening_z in DUO_D["speaker_positions"]:
+        side_web = plate_right - abs(opening_x) - opening_radius
+        if side_web < web - 1.0e-9:
+            raise ValueError("a duo speaker opening leaves too little outer side web")
+        for hole_x, hole_z in positions:
+            clear_web = (
+                math.hypot(opening_x - hole_x, opening_z - hole_z)
+                - opening_radius
+                - counterbore_radius
+            )
+            min_opening_hole_web = min(min_opening_hole_web, clear_web)
+        for screw_x, screw_z in D["screw_positions"]:
+            clear_web = (
+                math.hypot(opening_x - screw_x, opening_z - screw_z)
+                - opening_radius
+                - countersink_radius
+            )
+            min_opening_screw_web = min(min_opening_screw_web, clear_web)
+    if min_opening_hole_web < web - 1.0e-9:
+        raise ValueError("a duo speaker opening interferes with a Technic counterbore")
+    if min_opening_screw_web < p["SCREW_KEEP_OUT_WEB"] - 1.0e-9:
+        raise ValueError("a duo speaker opening interferes with a screw countersink")
+
+    opening_band_gaps = []
+    for opening_x, opening_z in DUO_D["speaker_positions"]:
+        for bounds in (DUO_D["camera_band_bounds"], DUO_D["gps_band_bounds"]):
+            opening_band_gaps.append(
+                point_to_rectangle_distance(opening_x, opening_z, bounds)
+                - opening_radius
+            )
+    min_opening_band_gap = min(opening_band_gaps)
+    if min_opening_band_gap <= 0.0:
+        raise ValueError("a duo speaker opening enters a raised hole band")
+
+    scallop_radius = q["GRIP_SCALLOP_RADIUS"]
+    measured_depth = (
+        q["PLATE_WIDTH"] / 2.0
+        - (abs(DUO_D["scallop_positions"][0][0]) - scallop_radius)
+    )
+    if not math.isclose(measured_depth, q["GRIP_SCALLOP_DEPTH"], abs_tol=1.0e-9):
+        raise ValueError("duo scallop cutter does not produce the requested depth")
+    min_opening_scallop_web = math.inf
+    for opening_x, opening_z in DUO_D["speaker_positions"]:
+        same_side = [
+            (x, z)
+            for x, z in DUO_D["scallop_positions"]
+            if math.copysign(1.0, x) == math.copysign(1.0, opening_x)
+        ]
+        for scallop_x, scallop_z in same_side:
+            clear_web = (
+                math.hypot(opening_x - scallop_x, opening_z - scallop_z)
+                - opening_radius
+                - scallop_radius
+            )
+            min_opening_scallop_web = min(min_opening_scallop_web, clear_web)
+    if min_opening_scallop_web <= 0.0:
+        raise ValueError("a duo grip scallop breaks into a speaker opening")
+
+    print("DUO_PARAM_CONTRACT: PASS")
+    print(
+        f"DUO_PLATE_BASE: {q['PLATE_WIDTH']:.3f} x {q['PLATE_HEIGHT']:.3f} x "
+        f"{p['PLATE_THICKNESS']:.3f} mm / X={plate_left:.3f}..{plate_right:.3f} / "
+        f"Z={plate_bottom:.3f}..{plate_top:.3f} / endcap R{q['END_CAP_RADIUS']:.3f}"
+    )
+    print(
+        f"DUO_CAMERA_ROW_GRID_CHECK: PASS (X=-4/+4 / Z=+10 / "
+        f"pitch {camera_pitch:.3f} mm)"
+    )
+    print(
+        f"DUO_GPS_ROW_GRID_CHECK: PASS (left X=-16/-8 pitch {gps_left_pitch:.3f} / "
+        f"right X=+8/+16 pitch {gps_right_pitch:.3f} / Z=-14 mm)"
+    )
+    print(
+        "DUO_TECHNIC_HOLE_CENTERS_XZ: "
+        + " ".join(f"({x:.3f},{z:.3f})" for x, z in positions)
+    )
+    print(
+        f"DUO_CENTER_CLIP_CLEARANCE: nominal {nominal_center_gap:.3f} / "
+        f"effective {effective_center_gap:.3f} mm from centerline to inner hole edge"
+    )
+    print(
+        f"DUO_TECHNIC_DETAILS: nominal dia {p['TECHNIC_HOLE_D']:.3f} + "
+        f"compensation {p['TECHNIC_HOLE_PRINT_COMP']:+.3f} = "
+        f"{D['technic_effective_hole_d']:.3f} / counterbores dia "
+        f"{p['TECHNIC_COUNTERBORE_D']:.3f} x {p['TECHNIC_COUNTERBORE_DEPTH']:.3f} "
+        f"both faces / chamfer {p['TECHNIC_HOLE_CHAMFER']:.3f}"
+    )
+    print(
+        f"DUO_RAISED_BANDS: camera {DUO_D['camera_band_width']:.3f} x "
+        f"{q['ROW_BAND_HEIGHT']:.3f} / GPS {DUO_D['gps_band_width']:.3f} x "
+        f"{q['ROW_BAND_HEIGHT']:.3f} / thickness {p['TECHNIC_RAIL_THICKNESS']:.3f} / "
+        f"feature fillet R{q['FEATURE_FILLET_RADIUS']:.3f} mm"
+    )
+    print(
+        f"DUO_SCREW_MOUNT: centers (0,+/-20) / dia {p['SCREW_HOLE_D']:.3f} / "
+        f"countersink dia {p['SCREW_COUNTERSINK_D']:.3f} x "
+        f"{p['SCREW_COUNTERSINK_ANGLE']:.1f} deg / minimum hole web "
+        f"{min_screw_hole_web:.3f} mm"
+    )
+    print(
+        f"DUO_SPEAKER_OPENINGS: centers (-17.5,0)/(+17.5,0) / dia "
+        f"{q['SPEAKER_OPENING_D']:.3f} / minimum Technic web "
+        f"{min_opening_hole_web:.3f} / screw web {min_opening_screw_web:.3f} / "
+        f"raised-band gap {min_opening_band_gap:.3f} mm"
+    )
+    print(
+        f"DUO_GRIP_SCALLOPS: 3 per side / R{scallop_radius:.3f} / "
+        f"depth {measured_depth:.3f} / minimum opening web "
+        f"{min_opening_scallop_web:.3f} mm"
+    )
+    print(
+        f"DUO_INTERFERENCE_CHECK: PASS (minimum counterbore web "
+        f"{min_hole_web:.3f} / speaker, screw, band, scallop clear)"
+    )
 
 
 def validate_param_contract():
@@ -1074,6 +1426,74 @@ def box(name, size_x, size_y, size_z, location):
     return obj
 
 
+def rounded_rectangle_y(
+    name,
+    size_x,
+    depth_y,
+    size_z,
+    corner_radius,
+    location,
+    vertices_per_corner=16,
+):
+    """Create a manifold Y-extruded rounded rectangle in the X/Z plane."""
+    if min(size_x, depth_y, size_z, corner_radius) <= 0.0:
+        raise ValueError("rounded rectangle dimensions and radius must be positive")
+    if corner_radius > min(size_x, size_z) / 2.0:
+        raise ValueError("rounded rectangle radius exceeds half its short side")
+    if vertices_per_corner < 2:
+        raise ValueError("rounded rectangle needs at least two vertices per corner")
+
+    center_x, center_y, center_z = location
+    half_x = size_x / 2.0
+    half_z = size_z / 2.0
+    corner_centers = (
+        (half_x - corner_radius, half_z - corner_radius, 0.0),
+        (-half_x + corner_radius, half_z - corner_radius, 90.0),
+        (-half_x + corner_radius, -half_z + corner_radius, 180.0),
+        (half_x - corner_radius, -half_z + corner_radius, 270.0),
+    )
+    outline = []
+    for corner_x, corner_z, start_degrees in corner_centers:
+        for step in range(vertices_per_corner + 1):
+            angle = math.radians(
+                start_degrees + 90.0 * step / vertices_per_corner
+            )
+            outline.append(
+                (
+                    center_x + corner_x + corner_radius * math.cos(angle),
+                    center_z + corner_z + corner_radius * math.sin(angle),
+                )
+            )
+
+    inner_y = center_y - depth_y / 2.0
+    outer_y = center_y + depth_y / 2.0
+    coordinates = (
+        [(x, inner_y, z) for x, z in outline]
+        + [(x, outer_y, z) for x, z in outline]
+    )
+    ring_size = len(outline)
+    faces = [tuple(reversed(range(ring_size)))]
+    faces.append(tuple(ring_size + index for index in range(ring_size)))
+    for index in range(ring_size):
+        next_index = (index + 1) % ring_size
+        faces.append(
+            (
+                index,
+                next_index,
+                ring_size + next_index,
+                ring_size + index,
+            )
+        )
+
+    mesh = bpy.data.meshes.new(name + "_mesh")
+    mesh.from_pydata(coordinates, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    cleanup_mesh(obj)
+    return obj
+
+
 def cylinder_y(name, diameter, depth, location, vertices=64):
     bpy.ops.mesh.primitive_cylinder_add(
         vertices=vertices,
@@ -1264,6 +1684,41 @@ def cut_grid3_technic_holes(target):
         boolean(target, cutter, "DIFFERENCE")
 
 
+def cut_duo_technic_holes(target):
+    p = PARAMS
+    eps = p["BOOLEAN_EPS"]
+    positions = duo_technic_hole_positions()
+    hole_radius = D["technic_effective_hole_d"] / 2.0
+    counterbore_radius = p["TECHNIC_COUNTERBORE_D"] / 2.0
+    counterbore_depth = p["TECHNIC_COUNTERBORE_DEPTH"]
+    chamfer = p["TECHNIC_HOLE_CHAMFER"]
+    chamfer_radius = hole_radius + chamfer
+    outer_counterbore_y = p["TECHNIC_RAIL_THICKNESS"] - counterbore_depth
+    outer_chamfer_y = outer_counterbore_y - chamfer
+
+    # Reuse the proven v3.4/v3.5 epsilon-penetrating single cutter profile.
+    # Keeping duplicate shoulder rings avoids coplanar seams between separate
+    # through-hole, counterbore, and chamfer boolean tools.
+    profile = (
+        (-eps, counterbore_radius),
+        (counterbore_depth, counterbore_radius),
+        (counterbore_depth, chamfer_radius),
+        (counterbore_depth + chamfer, hole_radius),
+        (outer_chamfer_y, hole_radius),
+        (outer_counterbore_y, chamfer_radius),
+        (outer_counterbore_y, counterbore_radius),
+        (p["TECHNIC_RAIL_THICKNESS"] + eps, counterbore_radius),
+    )
+    for index, (x, z) in enumerate(positions, start=1):
+        cutter = revolved_profile_y(
+            f"duo_technic_hole_profile_{index}",
+            profile,
+            x,
+            z,
+        )
+        boolean(target, cutter, "DIFFERENCE")
+
+
 def cut_screw_holes(target):
     p = PARAMS
     eps = p["BOOLEAN_EPS"]
@@ -1386,6 +1841,71 @@ def build_grid3():
     cut_grid3_technic_holes(plate)
     cut_screw_holes(plate)
     plate.name = "toicamera_three_column_technic_grid_v3_5"
+    return plate
+
+
+def build_duo():
+    p = PARAMS
+    q = DUO_PARAMS
+    eps = p["BOOLEAN_EPS"]
+
+    plate = rounded_rectangle_y(
+        "duo_plate_body",
+        q["PLATE_WIDTH"],
+        p["PLATE_THICKNESS"],
+        q["PLATE_HEIGHT"],
+        q["END_CAP_RADIUS"],
+        (q["PLATE_CENTER_X"], DUO_D["plate_center_y"], q["PLATE_CENTER_Z"]),
+        vertices_per_corner=q["OUTLINE_VERTICES_PER_CORNER"],
+    )
+
+    camera_band = rounded_rectangle_y(
+        "duo_camera_raised_band",
+        DUO_D["camera_band_width"],
+        p["TECHNIC_RAIL_THICKNESS"],
+        q["ROW_BAND_HEIGHT"],
+        q["FEATURE_FILLET_RADIUS"],
+        (0.0, DUO_D["rail_center_y"], q["CAMERA_ROW_Z"]),
+    )
+    gps_band = rounded_rectangle_y(
+        "duo_gps_raised_band",
+        DUO_D["gps_band_width"],
+        p["TECHNIC_RAIL_THICKNESS"],
+        q["ROW_BAND_HEIGHT"],
+        q["FEATURE_FILLET_RADIUS"],
+        (0.0, DUO_D["rail_center_y"], q["GPS_ROW_Z"]),
+    )
+
+    # The lower factory screw lies partly under the GPS band.  Remove the
+    # raised portion over its existing phi-8 tab so the head remains accessible
+    # from the same 3 mm outer face used by backpack/grid3.
+    lower_screw_x, lower_screw_z = D["screw_positions"][0]
+    tab_clearance = cylinder_y(
+        "duo_lower_screw_tab_3mm_zone",
+        p["SCREW_TAB_D"],
+        p["TECHNIC_RAIL_THICKNESS"] + 2.0 * eps,
+        (lower_screw_x, DUO_D["rail_center_y"], lower_screw_z),
+    )
+    boolean(gps_band, tab_clearance, "DIFFERENCE")
+
+    boolean(plate, camera_band, "UNION")
+    boolean(plate, gps_band, "UNION")
+
+    cut_through_holes(
+        plate,
+        DUO_D["speaker_positions"],
+        q["SPEAKER_OPENING_D"],
+        "duo_symmetric_speaker_opening",
+    )
+    cut_through_holes(
+        plate,
+        DUO_D["scallop_positions"],
+        2.0 * q["GRIP_SCALLOP_RADIUS"],
+        "duo_grip_scallop",
+    )
+    cut_duo_technic_holes(plate)
+    cut_screw_holes(plate)
+    plate.name = "toicamera_camera_gps_duo_plate"
     return plate
 
 
@@ -1515,8 +2035,16 @@ def output_paths(raw_out, part):
         return {"backpack": out}
     if part == "grid3":
         return {"grid3": out}
+    if part == "duo":
+        duo_out = (
+            out
+            if out.stem.endswith("_duo")
+            else out.with_name(f"{out.stem}_duo{out.suffix}")
+        )
+        return {"duo": duo_out}
     grid3_out = out.with_name(f"{out.stem}_grid3{out.suffix}")
-    return {"backpack": out, "grid3": grid3_out}
+    duo_out = out.with_name(f"{out.stem}_duo{out.suffix}")
+    return {"backpack": out, "grid3": grid3_out, "duo": duo_out}
 
 
 def main():
@@ -1527,6 +2055,8 @@ def main():
         validate_param_contract()
     if "grid3" in paths:
         validate_grid3_param_contract()
+    if "duo" in paths:
+        validate_duo_param_contract()
     overall_ok = True
 
     print("UNIT_CONTRACT: 1 Blender Unit = 1 mm")
@@ -1539,6 +2069,11 @@ def main():
         print(
             "LAYOUT_V3_5_GRID3: separate 3-column circular-clipped module plate / "
             "backpack unchanged"
+        )
+    if "duo" in paths:
+        print(
+            "LAYOUT_DUO: camera on upper 2-hole row / GPS on either lower "
+            "left or right 2-hole pair / backpack and grid3 unchanged"
         )
     print("PART_SELECTION: " + "+".join(paths))
     for part, path in paths.items():
@@ -1553,10 +2088,14 @@ def main():
             obj = build_backpack()
             expected = D["backpack_bbox"]
             radial_limit = None
-        else:
+        elif part == "grid3":
             obj = build_grid3()
             expected = GRID3_D["grid3_bbox"]
             radial_limit = GRID3_PARAMS["WATCH_CLIP_RADIUS"]
+        else:
+            obj = build_duo()
+            expected = DUO_D["duo_bbox"]
+            radial_limit = None
         label = part.upper()
         object_ok = validate_object(
             label,
