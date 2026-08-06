@@ -12,6 +12,7 @@
 - **Hackster 記事 EN ドラフト**: `userInput/hackster-article-draft.md`(動画URL・記事URLのプレースホルダあり)
 - **ケース STL 3 種**(`case/blender/out/`、全て検証PASS・印刷向き=レール面上の平置き):
   - `toicamera.stl` 2列12穴 / `toicamera_grid3.stl` 3列11穴・円内 / **`toicamera_duo.stl` v4 = 方位確定版**(N=ボタン/スピーカー側・ネジ左右±20・中央横ペア±8=カメラ縦置き・下段横ペア×2 z=-12=カメラ+GPS並列。**ジョイントは16mmスパン実測確定**)
+  - **ネジ実測確定(2026-08-06): 元ネジ = M2×8mm** → プレート共締めは **M2×10 タッピング推奨**(11 は入手性低、12 は奥突きリスク)。頭形状は元ネジに合わせる(皿なら皿もみに収まる/なべなら次セッションで座ぐり変更可)
   - duo は印刷前確認待ち(レンダ送付済み)。生成: `/Applications/Blender.app/Contents/MacOS/Blender -b --python case/blender/build_case.py -- --part all --out case/blender/out/toicamera.stl`
 
 ## 未対応 issue(次セッションの実装対象・issue駆動で)
