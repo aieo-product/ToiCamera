@@ -2,7 +2,7 @@
 
 ToiCamera never talks to OpenAI directly: the watch calls a small **Cloudflare
 Worker** that holds every API key and answers with strict JSON. This repo ships
-the Worker's full source in [`worker/`](../worker/) — you deploy it under your
+the Worker's full source in [`worker/`](https://github.com/aieo-product/ToiCamera/tree/main/worker) — you deploy it under your
 own Cloudflare account, point the watch at it, and the whole system is yours.
 No shared backend, no third-party server.
 
@@ -53,7 +53,7 @@ npx wrangler secret put DEVICE_TOKEN
 ```
 
 Model, provider and TTS voice defaults live in the `vars` block of
-[`worker/wrangler.jsonc`](../worker/wrangler.jsonc) — edit and redeploy to change them.
+[`worker/wrangler.jsonc`](https://github.com/aieo-product/ToiCamera/blob/main/worker/wrangler.jsonc) — edit and redeploy to change them.
 
 ## 3. Point the watch at your Worker
 
