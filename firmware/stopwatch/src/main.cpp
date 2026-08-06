@@ -2065,14 +2065,15 @@ static void drawWifiSetup() {
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString(
-      tr("WiFi・トークン設定", "WiFi / token setup", "WiFi与令牌设置"),
-      M5.Display.width() / 2, 40);
+  // Round display: the visible chord at y=48 is only ~±136px, so the title
+  // must stay short (size-2 "WiFi設定" = ±64px); longer wording gets clipped.
+  M5.Display.drawString(tr("WiFi設定", "WiFi setup", "WiFi设置"),
+                        M5.Display.width() / 2, 48);
 
   static constexpr const char *kWifiQr =
       "WIFI:T:WPA;S:ToiCamera;P:toi-cam-2026;;";
   constexpr int kQrWidth = 170;
-  M5.Display.qrcode(kWifiQr, (M5.Display.width() - kQrWidth) / 2, 70,
+  M5.Display.qrcode(kWifiQr, (M5.Display.width() - kQrWidth) / 2, 76,
                     kQrWidth);
 
   M5.Display.setTextSize(1);
@@ -2080,20 +2081,21 @@ static void drawWifiSetup() {
   M5.Display.drawString(tr("1. スマホのWiFiで ToiCamera に接続",
                            "1. Join 'ToiCamera' WiFi on phone",
                            "1. 手机WiFi连接 ToiCamera"),
-                        M5.Display.width() / 2, 260);
+                        M5.Display.width() / 2, 266);
   M5.Display.drawString(tr("2. ブラウザで 192.168.4.1 を開く",
                            "2. Open 192.168.4.1 in browser",
                            "2. 浏览器打开 192.168.4.1"),
-                        M5.Display.width() / 2, 288);
+                        M5.Display.width() / 2, 294);
   const String currentWifi = WiFi.status() == WL_CONNECTED
                                  ? WiFi.SSID()
                                  : String(tr("未接続", "Not connected", "未连接"));
   M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
   M5.Display.drawString(String(tr("現在: ", "Now: ", "当前: ")) + currentWifi,
-                        M5.Display.width() / 2, 330);
+                        M5.Display.width() / 2, 334);
   M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  // y=408 keeps the whole hint inside the circle (chord ±154 there).
   M5.Display.drawString(tr("青:戻る", "B: back", "蓝:返回"),
-                        M5.Display.width() / 2, 420);
+                        M5.Display.width() / 2, 408);
 }
 
 static bool saveWifiCredentials(const String &ssid, const String &pass) {
