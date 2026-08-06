@@ -2053,6 +2053,8 @@ h1{color:#41d9ff;font-size:1.6rem}label{display:block;margin-top:1.2rem}
 select,input,button{box-sizing:border-box;width:100%;margin-top:.45rem;padding:.8rem;
 border:1px solid #555;border-radius:.5rem;background:#222;color:#fff;font-size:1rem}
 button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bold}
+small{display:block;margin-top:.4rem;color:#9aa;line-height:1.5}
+small a{color:#41d9ff}
 </style></head><body><main><h1>ToiCamera 設定</h1>
 <p style="color:#9aa">WiFi とデバイストークンを設定できます。変更したい項目だけ入力してください。</p>
 <form method="post" action="/save">
@@ -2064,8 +2066,12 @@ button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bol
 <input id="other_ssid" name="other_ssid" maxlength="32" autocomplete="off">
 <label for="pass">パスワード</label>
 <input id="pass" name="pass" type="password" maxlength="63" autocomplete="new-password">
-<label for="token">デバイストークン(未入力なら変更しない)</label>
+<label for="token">デバイストークン(Worker 認証用・未入力なら変更しない)</label>
 <input id="token" name="token" type="password" maxlength="128" autocomplete="off">
+<small>自分でデプロイした Cloudflare Worker の DEVICE_TOKEN と同じ値を入れます。
+OpenAI の API キーではありません(キーは Worker 側にのみ設定)。
+詳細: <a href="https://aieo-product.github.io/ToiCamera/worker-setup.html"
+target="_blank" rel="noopener">Worker 構築ガイド</a></small>
 <button type="submit">保存</button></form></main></body></html>)HTML";
     wifiPortal.sendHeader("Cache-Control", "no-store");
     wifiPortal.send(200, "text/html; charset=utf-8", html);
