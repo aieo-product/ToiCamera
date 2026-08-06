@@ -184,6 +184,10 @@ static const char *selectedLangCode() {
   return kLangs[selectedLang < 3 ? selectedLang : 0];
 }
 
+static const char *tr(const char *ja, const char *en, const char *zh) {
+  return selectedLang == 1 ? en : selectedLang == 2 ? zh : ja;
+}
+
 static const lgfx::IFont *contentFont() {
   return selectedLang == 2 ? &fonts::efontCN_16 : &fonts::efontJA_16;
 }
@@ -193,7 +197,7 @@ static const lgfx::IFont *contentFont() {
 static void volumeTestFeedback(const String &label) {
   M5.Display.fillRoundRect(83, 183, 300, 100, 16, TFT_BLACK);
   M5.Display.drawRoundRect(83, 183, 300, 100, 16, TFT_YELLOW);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(3);
   M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -222,7 +226,7 @@ static void applyPaBoost() {
 
 static void showStatus(const char *msg, uint32_t color = TFT_WHITE) {
   M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(color, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
@@ -247,14 +251,16 @@ static void showStatus(const char *msg, uint32_t color = TFT_WHITE) {
 
 static void showIdle() {
   M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
   M5.Display.drawString("AI Camera", M5.Display.width() / 2, 180);
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  M5.Display.drawString("黄ボタンで撮影", M5.Display.width() / 2, 260);
+  M5.Display.drawString(
+      tr("黄ボタンで撮影", "Yellow button: shoot", "黄键拍摄"),
+      M5.Display.width() / 2, 260);
 }
 
 static void showIdleWithWarnings(bool netOk, bool camOk) {
@@ -262,10 +268,16 @@ static void showIdleWithWarnings(bool netOk, bool camOk) {
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
   if (!netOk) {
-    M5.Display.drawString("ネット未接続(解析不可)", M5.Display.width() / 2, 310);
+    M5.Display.drawString(
+        tr("ネット未接続(解析不可)", "No internet (no AI)",
+           "网络未连接(无法解析)"),
+        M5.Display.width() / 2, 310);
   }
   if (!camOk) {
-    M5.Display.drawString("カメラ未検出 青長押しで再接続", M5.Display.width() / 2, 340);
+    M5.Display.drawString(
+        tr("カメラ未検出 青長押しで再接続",
+           "No camera: hold blue to reconnect", "未检测到相机 长按蓝键重连"),
+        M5.Display.width() / 2, 340);
   }
 }
 
@@ -370,7 +382,7 @@ static void recordInquiry(const String &inquiryCaption,
 }
 
 static void drawHomeDigest(const String &text) {
-  const String wrappedText = "今日:" + text;
+  const String wrappedText = String(tr("今日:", "Today: ", "今日:")) + text;
   String line;
   size_t i = 0;
   int lineNumber = 0;
@@ -521,13 +533,28 @@ static void drawPageDashboard() {
 
   struct tm local {};
   if (getLocalClock(local)) {
-    static constexpr const char *kWeekdays[] = {
+    static constexpr const char *kWeekdaysJa[] = {
         "日", "月", "火", "水", "木", "金", "土"};
+    static constexpr const char *kWeekdaysEn[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static constexpr const char *kMonthsEn[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    static constexpr const char *kWeekdaysZh[] = {
+        "日", "一", "二", "三", "四", "五", "六"};
     char dateText[40];
     char timeText[8];
-    snprintf(dateText, sizeof(dateText), "%d月%d日 %s曜日", local.tm_mon + 1,
-             local.tm_mday,
-             kWeekdays[local.tm_wday]);
+    if (selectedLang == 1) {
+      snprintf(dateText, sizeof(dateText), "%s, %s %d",
+               kWeekdaysEn[local.tm_wday], kMonthsEn[local.tm_mon],
+               local.tm_mday);
+    } else if (selectedLang == 2) {
+      snprintf(dateText, sizeof(dateText), "%d月%d日 星期%s", local.tm_mon + 1,
+               local.tm_mday, kWeekdaysZh[local.tm_wday]);
+    } else {
+      snprintf(dateText, sizeof(dateText), "%d月%d日 %s曜日", local.tm_mon + 1,
+               local.tm_mday, kWeekdaysJa[local.tm_wday]);
+    }
     snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour,
              local.tm_min);
     homeCanvas.setTextSize(4);
@@ -542,7 +569,9 @@ static void drawPageDashboard() {
     homeCanvas.drawString("--:--", M5.Display.width() / 2, 140);
     homeCanvas.setTextSize(1);
     homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    homeCanvas.drawString("時刻を同期中...", M5.Display.width() / 2, 190);
+    homeCanvas.drawString(
+        tr("時刻を同期中...", "Syncing time...", "正在同步时间..."),
+        M5.Display.width() / 2, 190);
   }
 
   const auto drawStatTile = [&](int centerX, const char *label,
@@ -559,10 +588,12 @@ static void drawPageDashboard() {
     homeCanvas.setTextColor(valueColor, TFT_BLACK);
     homeCanvas.drawString(value, centerX, 278);
   };
-  drawStatTile(112, "今日の問い", String(inquiryToday), TFT_YELLOW);
-  drawStatTile(233, "歩数", stepCounterAvailable ? String(stepCount) : String("--"),
-               TFT_CYAN);
-  drawStatTile(354, "累計", String(inquiryTotal), TFT_WHITE);
+  drawStatTile(112, tr("今日の問い", "Today's Qs", "今日提问"),
+               String(inquiryToday), TFT_YELLOW);
+  drawStatTile(233, tr("歩数", "Steps", "步数"),
+               stepCounterAvailable ? String(stepCount) : String("--"), TFT_CYAN);
+  drawStatTile(354, tr("累計", "Total", "累计"), String(inquiryTotal),
+               TFT_WHITE);
 
   if (inquiryDigest.length()) {
     homeCanvas.setFont(contentFont());
@@ -573,13 +604,15 @@ static void drawPageDashboard() {
 
   // GPS status is always visible; with a fix the label is the postcode-level
   // reverse-geocode result (plain OSM lookup — no AI inference involved).
-  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setFont(contentFont());
   homeCanvas.setTextSize(1);
   const bool gpsLive = hasFreshGpsFix();
   String locationText = homeShort.length() ? homeShort : homePlace;
   if (homeStation.length()) {
-    const String stationText = "最寄り:" + homeStation + " 徒歩" +
-                               String(homeWalkMin) + "分";
+    const String stationText =
+        String(tr("最寄り:", "Near: ", "最近:")) + homeStation +
+        tr(" 徒歩", ", ", " 步行") + String(homeWalkMin) +
+        tr("分", " min walk", "分钟");
     const String combined =
         locationText.length() ? locationText + " / " + stationText
                               : stationText;
@@ -596,13 +629,14 @@ static void drawPageDashboard() {
     homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
     String gpsText;
     if (gpsBytes == 0) {
-      gpsText = "GPS 未接続";
+      gpsText = tr("GPS 未接続", "No GPS unit", "GPS 未连接");
     } else if (gpsLive) {
-      gpsText = "GPS 測位OK";
+      gpsText = tr("GPS 測位OK", "GPS fix OK", "GPS 定位OK");
     } else {
-      gpsText = "GPS 測位中...";
+      gpsText = tr("GPS 測位中...", "GPS locating...", "GPS 定位中...");
       if (gps.satellites.isValid()) {
-        gpsText += " 衛星" + String((int)gps.satellites.value());
+        gpsText += String(tr(" 衛星", " sats ", " 卫星")) +
+                   String((int)gps.satellites.value());
       }
     }
     homeCanvas.drawString(gpsText, M5.Display.width() / 2, 384);
@@ -610,7 +644,8 @@ static void drawPageDashboard() {
 
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  homeCanvas.drawString("黄:カメラ 青:スリープ",
+  homeCanvas.drawString(tr("黄:カメラ 青:スリープ", "Y: camera  B: sleep",
+                           "黄:相机 蓝:休眠"),
                         M5.Display.width() / 2, 420);
 }
 
@@ -640,11 +675,12 @@ static void drawPageHistoryDetail() {
   appendHomeWrapped(detailValue, 73, y, 38, kTextWidth);
   homeCanvas.clearClipRect();
 
-  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setFont(contentFont());
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  homeCanvas.drawString("タップで戻る", M5.Display.width() / 2, 420);
+  homeCanvas.drawString(tr("タップで戻る", "Tap to go back", "点按返回"),
+                        M5.Display.width() / 2, 420);
 }
 
 static void drawPageHistory() {
@@ -657,11 +693,15 @@ static void drawPageHistory() {
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  homeCanvas.drawString("今日の問い", M5.Display.width() / 2, 48);
+  homeCanvas.drawString(
+      tr("今日の問い", "Today's questions", "今日提问"),
+      M5.Display.width() / 2, 48);
 
   if (!inquiryHistory.length()) {
     homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    homeCanvas.drawString("まだ問いがありません", M5.Display.width() / 2,
+    homeCanvas.drawString(tr("まだ問いがありません", "No questions yet",
+                             "还没有提问"),
+                          M5.Display.width() / 2,
                           M5.Display.height() / 2);
     return;
   }
@@ -687,7 +727,7 @@ static void drawPageHistory() {
               ? line.substring(timeEnd + 1,
                                captionEnd >= 0 ? captionEnd : line.length())
               : line;
-      homeCanvas.setFont(&fonts::efontJA_16);
+      homeCanvas.setFont(contentFont());
       homeCanvas.setTextSize(1);
       homeCanvas.setTextDatum(middle_right);
       homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -709,12 +749,13 @@ static void drawPageHistory() {
 // Six spacious items: model / volume / quality / AI detail / WiFi / language.
 // Items use 78px content-space bands inside the clipped y=128..431 viewport.
 static void drawPageSettings() {
-  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setFont(contentFont());
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("設定", M5.Display.width() / 2, 40);
+  homeCanvas.drawString(tr("設定", "Settings", "设置"),
+                        M5.Display.width() / 2, 40);
 
   settingsScrollY = constrain(settingsScrollY, 0, 164);
   homeCanvas.setClipRect(0, 128, 466, 304);
@@ -736,13 +777,15 @@ static void drawPageSettings() {
     homeCanvas.setTextColor(TFT_WHITE, rowBg(item));
     switch (item) {
       case 0:
-        homeCanvas.drawString("モデル", 90, screenItemTop + 18);
+        homeCanvas.drawString(tr("モデル", "Model", "模型"), 90,
+                              screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
         homeCanvas.drawString(selectedModelName(), 90, screenItemTop + 46);
         break;
       case 1: {
-        homeCanvas.drawString("音量", 90, screenItemTop + 18);
+        homeCanvas.drawString(tr("音量", "Volume", "音量"), 90,
+                              screenItemTop + 18);
         homeCanvas.fillRoundRect(190, screenItemTop + 15, 190, 6, 3,
                                  TFT_DARKGREY);
         const int volumeX =
@@ -751,19 +794,31 @@ static void drawPageSettings() {
         break;
       }
       case 2:
-        homeCanvas.drawString("画質", 90, screenItemTop + 18);
+        homeCanvas.drawString(tr("画質", "Quality", "画质"), 90,
+                              screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
-        homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
-                                                  : "速度優先(QVGA)",
+        homeCanvas.drawString(captureQuality == 1
+                                  ? tr("画質優先(VGA・+約2秒)",
+                                       "Quality first (VGA, +2s)",
+                                       "画质优先(VGA,+约2秒)")
+                                  : tr("速度優先(QVGA)",
+                                       "Speed first (QVGA)",
+                                       "速度优先(QVGA)"),
                               90, screenItemTop + 46);
         break;
       case 3:
-        homeCanvas.drawString("AI精度", 90, screenItemTop + 18);
+        homeCanvas.drawString(tr("AI精度", "AI detail", "AI精度"), 90,
+                              screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
-        homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
-                                           : "低(速い・省トークン)",
+        homeCanvas.drawString(aiDetailHigh
+                                  ? tr("高(詳細に見る・消費大)",
+                                       "High (detailed, more tokens)",
+                                       "高(更详细,消耗大)")
+                                  : tr("低(速い・省トークン)",
+                                       "Low (fast, fewer tokens)",
+                                       "低(快速,省token)"),
                               90, screenItemTop + 46);
         break;
       case 4: {
@@ -771,13 +826,16 @@ static void drawPageSettings() {
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
         const String currentWifi =
-            WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
+            WiFi.status() == WL_CONNECTED
+                ? WiFi.SSID()
+                : String(tr("未接続", "Not connected", "未连接"));
         homeCanvas.drawString(fitHomeText(currentWifi, 300), 90,
                               screenItemTop + 46);
         break;
       }
       case 5: {
-        homeCanvas.drawString("言語", 90, screenItemTop + 18);
+        homeCanvas.drawString(tr("言語", "Language", "语言"), 90,
+                              screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
         static constexpr const char *kLangLabels[] = {"日本語", "English",
@@ -807,12 +865,14 @@ static void drawHome() {
         homeCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr;
   }
   if (!homeCanvasReady) {
-    showStatus("ホーム画面を表示できません", TFT_RED);
+    showStatus(tr("ホーム画面を表示できません", "Cannot show home screen",
+                  "无法显示主屏幕"),
+               TFT_RED);
     return;
   }
 
   homeCanvas.fillSprite(TFT_BLACK);
-  homeCanvas.setFont(&fonts::efontJA_16);
+  homeCanvas.setFont(contentFont());
   homeCanvas.setTextDatum(middle_center);
   switch (homePage) {
     case 1:
@@ -835,7 +895,7 @@ static void drawBusy(const char *label, uint32_t color) {
   const int w = 200, h = 32, x = (M5.Display.width() - w) / 2, y = 26;
   M5.Display.fillRoundRect(x, y, w, h, 16, TFT_BLACK);
   M5.Display.drawRoundRect(x, y, w, h, 16, color);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextSize(1);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(color, TFT_BLACK);
@@ -1187,7 +1247,8 @@ static void powerCycleCamera() {
 // factory AP (UnitCamS3-WiFi), point it at OUR SoftAP via set_config, then
 // power-cycle it so it reboots as a client of the Stopwatch.
 static bool pairCamera() {
-  showStatus("カメラをペアリング中...");
+  showStatus(tr("カメラをペアリング中...", "Pairing camera...",
+                "正在配对相机..."));
   Serial.println("[toi] pair: power-cycle camera (watch its LED: should blink off)");
   powerCycleCamera();
   delay(8000);  // let the camera finish booting its AP
@@ -1246,15 +1307,21 @@ static bool pairCamera() {
 
   // Restore our normal radio setup regardless of the outcome.
   WiFi.mode(WIFI_AP_STA);
-  showStatus("WiFi再接続中...");
+  showStatus(tr("WiFi再接続中...", "WiFi reconnecting...",
+                "正在重连WiFi..."));
   gNetOk = connectWifi();
   startSoftAp();
   powerCycleCamera();  // camera reboots and should join our SoftAP
-  showStatus(ok ? "カメラの接続を待っています..." : "カメラを探しています...");
+  showStatus(ok ? tr("カメラの接続を待っています...",
+                     "Waiting for camera...", "等待相机连接...")
+                : tr("カメラを探しています...", "Searching for camera...",
+                     "正在寻找相机..."));
   if (ok) {
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-    M5.Display.drawString("LEDが消えなければGroveを抜き差し",
+    M5.Display.drawString(tr("LEDが消えなければGroveを抜き差し",
+                             "LED stuck on? Re-plug Grove",
+                             "LED不灭请重插Grove"),
                           M5.Display.width() / 2, 340);
   }
   for (int i = 0; i < 24; ++i) {
@@ -1305,7 +1372,7 @@ static bool captureFromCam(bool useRetained) {
     }
   }
   if (camBase.isEmpty() && !cameraReachable()) {
-    lastError = "カメラ未接続";
+    lastError = tr("カメラ未接続", "Camera not connected", "相机未连接");
     return false;
   }
   const uint32_t t0 = millis();
@@ -1493,9 +1560,14 @@ static bool analyzePhoto() {
           DeserializationError::Ok) {
         resetAt = doc["reset_jst"].as<String>();
       }
-      lastError = resetAt.length()
-                      ? "AI無料枠が上限\n(" + resetAt + "頃リセット)"
-                      : "AI無料枠が上限です";
+      lastError =
+          resetAt.length()
+              ? String(tr("AI無料枠が上限\n(",
+                          "AI free quota exhausted\n(resets ~",
+                          "AI免费额度已用完\n(约")) +
+                    resetAt + tr("頃リセット)", ")", "重置)")
+              : String(tr("AI無料枠が上限です", "AI free quota exhausted",
+                          "AI免费额度已用完"));
       analyzeHttp.end();
       break;  // retrying is pointless until the quota resets
     } else {
@@ -1597,11 +1669,12 @@ static void feedJpeg(const uint8_t *d, size_t n) {
           M5.Display.drawJpg(sBuf, frameLen, 0,
                              (int)((M5.Display.height() - 240 * sc) / 2),
                              M5.Display.width(), (int)(240 * sc), 0, 0, sc, sc);
-          M5.Display.setFont(&fonts::efontJA_16);
+          M5.Display.setFont(contentFont());
           M5.Display.setTextSize(1);
           M5.Display.setTextDatum(middle_center);
           M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-          M5.Display.drawString(" 黄:撮影 ", M5.Display.width() / 2, 430);
+          M5.Display.drawString(tr(" 黄:撮影 ", " Y: shoot ", " 黄:拍摄 "),
+                                M5.Display.width() / 2, 430);
         }
         memmove(sBuf, sBuf + frameLen, sLen - frameLen);
         sLen -= frameLen;
@@ -1731,7 +1804,9 @@ static void voiceQuestionFlow() {
   constexpr size_t kChunk = 1024;
   int16_t *pcm = (int16_t *)ps_malloc(kMaxSamples * 2 + 44);
   size_t total = 0;
-  drawBusy("録音中(離すと送信)", TFT_RED);
+  drawBusy(tr("録音中(離すと送信)", "Recording (release to send)",
+              "录音中(松开发送)"),
+           TFT_RED);
   Serial.printf("[toi] ask: mic live %lums after hold\n", millis() - tHold);
   const uint32_t t0 = millis();
   while (total + kChunk <= kMaxSamples) {
@@ -1770,7 +1845,7 @@ static void voiceQuestionFlow() {
   memcpy(wav + 36, "data", 4);
   *(uint32_t *)(wav + 40) = dataLen;
 
-  drawBusy("考え中...", TFT_CYAN);
+  drawBusy(tr("考え中...", "Thinking...", "思考中..."), TFT_CYAN);
   const uint32_t ta = millis();
   bool ok = false;
   {
@@ -1811,7 +1886,9 @@ static void voiceQuestionFlow() {
       } else {
         Serial.printf("[toi] ask: HTTP %d\n", code);
         if (code == 429) {
-          drawBusy("AI無料枠が上限です", TFT_RED);
+          drawBusy(tr("AI無料枠が上限です", "AI free quota exhausted",
+                      "AI免费额度已用完"),
+                   TFT_RED);
           delay(1800);
         }
         analyzeHttp.end();
@@ -1984,11 +2061,13 @@ static void scanWifiOptions() {
 
 static void drawWifiSetup() {
   M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString("WiFi・トークン設定", M5.Display.width() / 2, 40);
+  M5.Display.drawString(
+      tr("WiFi・トークン設定", "WiFi / token setup", "WiFi与令牌设置"),
+      M5.Display.width() / 2, 40);
 
   static constexpr const char *kWifiQr =
       "WIFI:T:WPA;S:ToiCamera;P:toi-cam-2026;;";
@@ -1998,17 +2077,23 @@ static void drawWifiSetup() {
 
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString("1. スマホのWiFiで ToiCamera に接続",
+  M5.Display.drawString(tr("1. スマホのWiFiで ToiCamera に接続",
+                           "1. Join 'ToiCamera' WiFi on phone",
+                           "1. 手机WiFi连接 ToiCamera"),
                         M5.Display.width() / 2, 260);
-  M5.Display.drawString("2. ブラウザで 192.168.4.1 を開く",
+  M5.Display.drawString(tr("2. ブラウザで 192.168.4.1 を開く",
+                           "2. Open 192.168.4.1 in browser",
+                           "2. 浏览器打开 192.168.4.1"),
                         M5.Display.width() / 2, 288);
   const String currentWifi = WiFi.status() == WL_CONNECTED
                                  ? WiFi.SSID()
-                                 : String("未接続");
+                                 : String(tr("未接続", "Not connected", "未连接"));
   M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
-  M5.Display.drawString("現在: " + currentWifi, M5.Display.width() / 2, 330);
+  M5.Display.drawString(String(tr("現在: ", "Now: ", "当前: ")) + currentWifi,
+                        M5.Display.width() / 2, 330);
   M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  M5.Display.drawString("青:戻る", M5.Display.width() / 2, 420);
+  M5.Display.drawString(tr("青:戻る", "B: back", "蓝:返回"),
+                        M5.Display.width() / 2, 420);
 }
 
 static bool saveWifiCredentials(const String &ssid, const String &pass) {
@@ -2095,7 +2180,9 @@ target="_blank" rel="noopener">Worker 構築ガイド</a></small>
         wifiPortal.send(200, "text/html; charset=utf-8",
                         "<!doctype html><meta charset=\"utf-8\">"
                         "<p>トークンを保存しました。ToiCamera を再起動します。</p>");
-        showStatus("保存しました\n再起動します...", TFT_CYAN);
+        showStatus(tr("保存しました\n再起動します...", "Saved\nRestarting...",
+                      "已保存\n正在重启..."),
+                   TFT_CYAN);
         delay(1500);
         ESP.restart();
         return;
@@ -2116,7 +2203,9 @@ target="_blank" rel="noopener">Worker 構築ガイド</a></small>
     loggedSsid.replace("\r", " ");
     loggedSsid.replace("\n", " ");
     Serial.printf("[toi] wifi portal: saved ssid=%s\n", loggedSsid.c_str());
-    showStatus("保存しました\n再起動します...", TFT_CYAN);
+    showStatus(tr("保存しました\n再起動します...", "Saved\nRestarting...",
+                  "已保存\n正在重启..."),
+               TFT_CYAN);
     delay(1500);
     ESP.restart();
   });
@@ -2139,7 +2228,8 @@ static void enterIdle() {
   state = AppState::Idle;
   if (!cameraDiscoveryDone) {
     cameraDiscoveryDone = true;
-    showStatus("カメラ探索中...");
+    showStatus(tr("カメラ探索中...", "Searching camera...",
+                  "正在寻找相机..."));
     gCamOk = cameraReachable();
     if (!gCamOk) gCamOk = pairCamera();
     if (gCamOk) configureCamera();
@@ -2149,7 +2239,8 @@ static void enterIdle() {
 
 static void rePairCamera() {
   streamStop();
-  showStatus("カメラ探索中...");
+  showStatus(tr("カメラ探索中...", "Searching camera...",
+                "正在寻找相机..."));
   gCamOk = cameraReachable() || pairCamera();
   if (gCamOk) configureCamera();
   showIdleWithWarnings(WiFi.status() == WL_CONNECTED, gCamOk);
@@ -2430,7 +2521,7 @@ static void sleepingTick() {
   M5.Display.setBrightness(200);
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
-  showStatus("WiFi接続中...");
+  showStatus(tr("WiFi接続中...", "Connecting WiFi...", "正在连接WiFi..."));
   gNetOk = connectWifi();
   startSoftAp();
   Serial.printf("[toi] wake: light sleep result=%d STA=%s\n", sleepResult,
@@ -2442,9 +2533,12 @@ static void sleepingTick() {
 static void enterError(const String &msg) {
   lastError = msg;
   state = AppState::Error;
-  showStatus(("エラー: " + msg).c_str(), TFT_RED);
+  showStatus((String(tr("エラー: ", "Error: ", "错误: ")) + msg).c_str(),
+             TFT_RED);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("黄:再試行 青:戻る", M5.Display.width() / 2, 320);
+  M5.Display.drawString(tr("黄:再試行 青:戻る", "Y: retry  B: back",
+                           "黄:重试 蓝:返回"),
+                        M5.Display.width() / 2, 320);
 }
 
 // Blocking flows (capture cycle, state switches) run for seconds without
@@ -2464,7 +2558,8 @@ static void runCaptureCycle() {
   stopAnimalese();
   sfxShutter();
 
-  drawBusy("カメラ通信中", TFT_YELLOW);
+  drawBusy(tr("カメラ通信中", "Talking to camera", "与相机通信中"),
+           TFT_YELLOW);
   bool captureOk = false;
   if (captureQuality == 1) {
     streamStop();
@@ -2481,7 +2576,10 @@ static void runCaptureCycle() {
   }
   if (!captureOk) {
     sfxError();
-    enterError(lastError.length() ? lastError : "カメラに接続できません");
+    enterError(lastError.length()
+                   ? lastError
+                   : String(tr("カメラに接続できません", "Cannot reach camera",
+                               "无法连接相机")));
     return;
   }
   {
@@ -2491,10 +2589,13 @@ static void runCaptureCycle() {
   }
 
   state = AppState::Analyzing;
-  drawBusy("AI解析中...", TFT_CYAN);
+  drawBusy(tr("AI解析中...", "AI analyzing...", "AI解析中..."), TFT_CYAN);
   if (!analyzePhoto()) {
     sfxError();
-    enterError(lastError.length() ? lastError : "解析に失敗しました");
+    enterError(lastError.length()
+                   ? lastError
+                   : String(tr("解析に失敗しました", "Analysis failed",
+                               "解析失败")));
     return;
   }
 
@@ -2502,11 +2603,14 @@ static void runCaptureCycle() {
 
   buildResultCanvas();
   drawResult(true);
-  M5.Display.setFont(&fonts::efontJA_16);
+  M5.Display.setFont(contentFont());
   M5.Display.setTextSize(1);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  M5.Display.drawString("黄長押し:質問 黄:撮影 青:戻る", M5.Display.width() / 2, 442);
+  M5.Display.drawString(
+      tr("黄長押し:質問 黄:撮影 青:戻る",
+         "Hold Y: ask  Y: shoot  B: back", "长按黄:提问 黄:拍摄 蓝:返回"),
+      M5.Display.width() / 2, 442);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
   speakAnimalese(caption + "。" + detailText);
@@ -2567,7 +2671,7 @@ void setup() {
   // relative to speech onset, so first words are less likely to be lost.
   M5.BtnA.setHoldThresh(350);
 
-  showStatus("WiFi接続中...");
+  showStatus(tr("WiFi接続中...", "Connecting WiFi...", "正在连接WiFi..."));
   state = AppState::WifiConnecting;
   // Unit GPS v1.1 (AT6668) streams NMEA at 115200 — verified by raw dump
   // 2026-08-05 (9600 yielded framing garbage, sats never valid). RX/TX is
@@ -2796,10 +2900,12 @@ void loop() {
       }
       if (M5.BtnA.wasPressed()) {
         if (WiFi.status() != WL_CONNECTED) {
-          showStatus("WiFi接続中...");
+          showStatus(
+              tr("WiFi接続中...", "Connecting WiFi...", "正在连接WiFi..."));
           gNetOk = connectWifi();
           if (!gNetOk) {
-            enterError("WiFiに接続できません");
+            enterError(tr("WiFiに接続できません", "Cannot connect WiFi",
+                          "无法连接WiFi"));
             break;
           }
         }
