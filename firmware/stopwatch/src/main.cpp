@@ -105,6 +105,12 @@ static bool wifiPortalRoutesRegistered = false;
 static String wifiOptionsHtml;
 static String nvsWifiSsid;
 static String nvsWifiPass;
+// Device token can be provisioned via the portal; NVS overrides the build-time
+// secret. Never print its value.
+static String nvsDeviceToken;
+static const char *deviceToken() {
+  return nvsDeviceToken.length() ? nvsDeviceToken.c_str() : DEVICE_TOKEN;
+}
 static uint32_t inquiryTotal = 0;
 static uint32_t inquiryToday = 0;
 static int32_t inquiryDateKey = -1;
@@ -1354,7 +1360,7 @@ static bool fetchHomePlace() {
   int code = -1;
   bool ok = false;
   if (placeHttp.begin(placeClient, url)) {
-    placeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    placeHttp.addHeader("X-Device-Token", deviceToken());
     code = placeHttp.GET();
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1421,7 +1427,7 @@ static bool fetchDigest() {
   bool ok = false;
   if (digestHttp.begin(digestClient, String(WORKER_URL) + "/digest")) {
     digestHttp.addHeader("Content-Type", "application/json");
-    digestHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    digestHttp.addHeader("X-Device-Token", deviceToken());
     digestHttp.addHeader("X-Model", selectedModelName());
     digestHttp.addHeader("X-Lang", selectedLangCode());
     code = digestHttp.POST(body);
@@ -1473,7 +1479,7 @@ static bool analyzePhoto() {
   for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
     if (!analyzeHttp.begin(analyzeClient, url)) continue;
     analyzeHttp.addHeader("Content-Type", "image/jpeg");
-    analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+    analyzeHttp.addHeader("X-Device-Token", deviceToken());
     analyzeHttp.addHeader("X-Model", selectedModelName());
     analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
     analyzeHttp.addHeader("X-Lang", selectedLangCode());
@@ -1786,7 +1792,7 @@ static void voiceQuestionFlow() {
                        "&detail=" + urlenc(detailText);
     if (analyzeHttp.begin(analyzeClient, url)) {
       analyzeHttp.addHeader("Content-Type", "audio/wav");
-      analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
+      analyzeHttp.addHeader("X-Device-Token", deviceToken());
       analyzeHttp.addHeader("X-Model", selectedModelName());
       analyzeHttp.addHeader("X-Lang", selectedLangCode());
       const int code = analyzeHttp.POST(wav, 44 + dataLen);
@@ -1987,7 +1993,7 @@ static void drawWifiSetup() {
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString("WiFi設定", M5.Display.width() / 2, 40);
+  M5.Display.drawString("WiFi・トークン設定", M5.Display.width() / 2, 40);
 
   static constexpr const char *kWifiQr =
       "WIFI:T:WPA;S:ToiCamera;P:toi-cam-2026;;";
@@ -2039,7 +2045,7 @@ static void registerWifiPortalRoutes() {
     String html = R"HTML(<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ToiCamera WiFi設定</title>
+<title>ToiCamera 設定</title>
 <style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 main{max-width:34rem;margin:auto;padding:2rem 1.25rem}
@@ -2047,7 +2053,8 @@ h1{color:#41d9ff;font-size:1.6rem}label{display:block;margin-top:1.2rem}
 select,input,button{box-sizing:border-box;width:100%;margin-top:.45rem;padding:.8rem;
 border:1px solid #555;border-radius:.5rem;background:#222;color:#fff;font-size:1rem}
 button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bold}
-</style></head><body><main><h1>ToiCamera WiFi設定</h1>
+</style></head><body><main><h1>ToiCamera 設定</h1>
+<p style="color:#9aa">WiFi とデバイストークンを設定できます。変更したい項目だけ入力してください。</p>
 <form method="post" action="/save">
 <label for="ssid">周辺のWiFi</label><select id="ssid" name="ssid">
 <option value="">選択してください</option>)HTML";
@@ -2057,6 +2064,8 @@ button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bol
 <input id="other_ssid" name="other_ssid" maxlength="32" autocomplete="off">
 <label for="pass">パスワード</label>
 <input id="pass" name="pass" type="password" maxlength="63" autocomplete="new-password">
+<label for="token">デバイストークン(未入力なら変更しない)</label>
+<input id="token" name="token" type="password" maxlength="128" autocomplete="off">
 <button type="submit">保存</button></form></main></body></html>)HTML";
     wifiPortal.sendHeader("Cache-Control", "no-store");
     wifiPortal.send(200, "text/html; charset=utf-8", html);
@@ -2067,12 +2076,29 @@ button{margin-top:1.5rem;background:#087f9c;border-color:#41d9ff;font-weight:bol
     const String otherSsid = wifiPortal.arg("other_ssid");
     if (otherSsid.length()) ssid = otherSsid;
     const String pass = wifiPortal.arg("pass");
-    if (!ssid.length()) {
+    const String token = wifiPortal.arg("token");
+    if (!ssid.length() && !token.length()) {
       wifiPortal.send(400, "text/html; charset=utf-8",
                       "<!doctype html><meta charset=\"utf-8\">"
-                      "<p>SSIDを選択または入力してください。</p>"
+                      "<p>SSID かデバイストークンを入力してください。</p>"
                       "<p><a href=\"/\">戻る</a></p>");
       return;
+    }
+    if (token.length()) {
+      if (toiPrefsReady && token != nvsDeviceToken &&
+          toiPrefs.putString("dev_token", token) == token.length()) {
+        nvsDeviceToken = token;
+        Serial.println("[toi] portal: device token updated");  // value never logged
+      }
+      if (!ssid.length()) {
+        wifiPortal.send(200, "text/html; charset=utf-8",
+                        "<!doctype html><meta charset=\"utf-8\">"
+                        "<p>トークンを保存しました。ToiCamera を再起動します。</p>");
+        showStatus("保存しました\n再起動します...", TFT_CYAN);
+        delay(1500);
+        ESP.restart();
+        return;
+      }
     }
     if (!saveWifiCredentials(ssid, pass)) {
       wifiPortal.send(500, "text/html; charset=utf-8",
@@ -2500,6 +2526,7 @@ void setup() {
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");
+    nvsDeviceToken = toiPrefs.getString("dev_token", "");
     Serial.printf("[toi] inquiries: loaded today=%lu total=%lu hist=%u bytes\n",
                   (unsigned long)inquiryToday, (unsigned long)inquiryTotal,
                   (unsigned)inquiryHistory.length());
