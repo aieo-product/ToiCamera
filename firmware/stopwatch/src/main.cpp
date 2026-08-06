@@ -79,13 +79,14 @@ static int historyDetailIndex = -1;
 // the action fires on finger-up inside the same row.
 static int settingsPressedRow = -1;
 
-// Maps a touch Y to a settings row index (row 1 = volume slider, handled
-// separately). Bands mirror drawPageSettings().
+// Maps a touch Y to a tappable settings row (row 1 is the volume slider and
+// handled separately). Bands mirror drawPageSettings().
 static int settingsRowForY(int y) {
-  if (y >= 66 && y <= 130) return 0;   // model
-  if (y >= 198 && y <= 274) return 2;  // capture quality
-  if (y >= 276 && y <= 352) return 3;  // AI detail
-  if (y >= 354 && y <= 430) return 4;  // WiFi
+  if (y >= 60 && y < 108) return 0;    // model
+  if (y >= 156 && y < 204) return 2;   // capture quality
+  if (y >= 204 && y < 252) return 3;   // AI detail
+  if (y >= 252 && y < 300) return 4;   // WiFi
+  if (y >= 300 && y <= 348) return 5;  // language
   return -1;
 }
 static bool homeTouchActive = false;
@@ -120,6 +121,7 @@ static uint8_t paBoostPulses = 0;
 static bool es8311DacBoost = true;
 static uint8_t captureQuality = 0;
 static uint8_t selectedModel = 2;
+static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
 
 static TinyGPSPlus gps;
@@ -170,6 +172,15 @@ static constexpr int kTextWidth = 320;  // inscribed square of the 466px round A
 static const char *selectedModelName() {
   static constexpr const char *kModels[] = {"gpt-5.6-terra", "gpt-5.6-luna"};
   return kModels[selectedModel < 2 ? selectedModel : 1];
+}
+
+static const char *selectedLangCode() {
+  static constexpr const char *kLangs[] = {"ja", "en", "zh"};
+  return kLangs[selectedLang < 3 ? selectedLang : 0];
+}
+
+static const lgfx::IFont *contentFont() {
+  return selectedLang == 2 ? &fonts::efontCN_16 : &fonts::efontJA_16;
 }
 
 // On-screen banner + a long 3-note melody, so speaker A/B tests can be
@@ -549,6 +560,7 @@ static void drawPageDashboard() {
   drawStatTile(354, "累計", String(inquiryTotal), TFT_WHITE);
 
   if (inquiryDigest.length()) {
+    homeCanvas.setFont(contentFont());
     homeCanvas.setTextSize(1);
     homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
     drawHomeDigest(inquiryDigest);
@@ -556,6 +568,7 @@ static void drawPageDashboard() {
 
   // GPS status is always visible; with a fix the label is the postcode-level
   // reverse-geocode result (plain OSM lookup — no AI inference involved).
+  homeCanvas.setFont(&fonts::efontJA_16);
   homeCanvas.setTextSize(1);
   const bool gpsLive = hasFreshGpsFix();
   String locationText = homeShort.length() ? homeShort : homePlace;
@@ -613,6 +626,7 @@ static void drawPageHistoryDetail() {
   homeCanvas.drawString(timeText, 73, 44);
 
   int32_t y = 74;
+  homeCanvas.setFont(contentFont());
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_YELLOW, TFT_BLACK);
   appendHomeWrapped(captionText, 73, y, 36, kTextWidth);
@@ -621,6 +635,7 @@ static void drawPageHistoryDetail() {
   appendHomeWrapped(detailValue, 73, y, 38, kTextWidth);
   homeCanvas.clearClipRect();
 
+  homeCanvas.setFont(&fonts::efontJA_16);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
@@ -667,10 +682,12 @@ static void drawPageHistory() {
               ? line.substring(timeEnd + 1,
                                captionEnd >= 0 ? captionEnd : line.length())
               : line;
+      homeCanvas.setFont(&fonts::efontJA_16);
       homeCanvas.setTextSize(1);
       homeCanvas.setTextDatum(middle_right);
       homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
       homeCanvas.drawString(timeText, 90, rowY + 27);
+      homeCanvas.setFont(contentFont());
       homeCanvas.setTextSize(2);
       homeCanvas.setTextDatum(middle_left);
       homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -684,21 +701,22 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
-// Five rows: model / volume / quality / AI detail / WiFi. Touch zones mirror
-// the layout: model 66-130, slider 132-196 (x 126-404), quality 198-274,
-// AI detail 276-352, and WiFi 354-430.
+// Six compact rows: model / volume / quality / AI detail / WiFi / language.
+// Each tappable row uses its center +/- 24px; the slider captures y=108-156.
 static void drawPageSettings() {
+  homeCanvas.setFont(&fonts::efontJA_16);
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
   homeCanvas.setTextDatum(middle_center);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("設定", M5.Display.width() / 2, 44);
+  homeCanvas.drawString("設定", M5.Display.width() / 2, 40);
 
   // Pressed-row highlight: filled band behind the held row (finger-down
   // feedback; the action itself fires on release).
-  static constexpr int kRowBands[5][2] = {
-      {66, 130}, {132, 196}, {198, 274}, {276, 352}, {354, 430}};
-  if (settingsPressedRow >= 0 && settingsPressedRow < 5 &&
+  static constexpr int kRowBands[6][2] = {
+      {60, 108}, {108, 156}, {156, 204},
+      {204, 252}, {252, 300}, {300, 348}};
+  if (settingsPressedRow >= 0 && settingsPressedRow < 6 &&
       settingsPressedRow != 1) {
     homeCanvas.fillRect(36, kRowBands[settingsPressedRow][0], 394,
                         kRowBands[settingsPressedRow][1] -
@@ -712,48 +730,68 @@ static void drawPageSettings() {
   homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, rowBg(0));
-  homeCanvas.drawString("モデル", 90, 84);
+  homeCanvas.drawString("モデル", 60, 84);
+  homeCanvas.setTextDatum(middle_right);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, rowBg(0));
-  homeCanvas.drawString(selectedModelName(), 90, 110);
-  homeCanvas.drawFastHLine(40, 130, 386, 0x2124);
+  homeCanvas.drawString(selectedModelName(), 406, 84);
+  homeCanvas.drawFastHLine(40, 108, 386, 0x2124);
 
+  homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
-  homeCanvas.drawString("音量", 90, 162);
-  homeCanvas.fillRoundRect(150, 159, 230, 6, 3, TFT_DARKGREY);
+  homeCanvas.drawString("音量", 60, 132);
+  homeCanvas.fillRoundRect(150, 129, 230, 6, 3, TFT_DARKGREY);
   const int volumeX = 150 + (static_cast<int>(speakerVolume) * 230 + 127) / 255;
-  homeCanvas.fillCircle(volumeX, 162, 14, TFT_CYAN);
-  homeCanvas.drawFastHLine(40, 196, 386, 0x2124);
+  homeCanvas.fillCircle(volumeX, 132, 14, TFT_CYAN);
+  homeCanvas.drawFastHLine(40, 156, 386, 0x2124);
 
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, rowBg(2));
-  homeCanvas.drawString("画質", 90, 228);
+  homeCanvas.drawString("画質", 60, 180);
+  homeCanvas.setTextDatum(middle_right);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(2));
   homeCanvas.drawString(captureQuality == 1 ? "画質優先(VGA・+約2秒)"
                                             : "速度優先(QVGA)",
-                        90, 254);
-  homeCanvas.drawFastHLine(40, 274, 386, 0x2124);
+                        406, 180);
+  homeCanvas.drawFastHLine(40, 204, 386, 0x2124);
 
+  homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, rowBg(3));
-  homeCanvas.drawString("AI精度", 90, 306);
+  homeCanvas.drawString("AI精度", 60, 228);
+  homeCanvas.setTextDatum(middle_right);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(3));
   homeCanvas.drawString(aiDetailHigh ? "高(詳細に見る・消費大)"
                                      : "低(速い・省トークン)",
-                        90, 332);
-  homeCanvas.drawFastHLine(40, 352, 386, 0x2124);
+                        406, 228);
+  homeCanvas.drawFastHLine(40, 252, 386, 0x2124);
 
+  homeCanvas.setTextDatum(middle_left);
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_WHITE, rowBg(4));
-  homeCanvas.drawString("WiFi", 90, 384);
+  homeCanvas.drawString("WiFi", 60, 276);
+  homeCanvas.setTextDatum(middle_right);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, rowBg(4));
   const String currentWifi =
       WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("未接続");
-  homeCanvas.drawString(fitHomeText(currentWifi, 300), 90, 410);
+  homeCanvas.drawString(fitHomeText(currentWifi, 250), 406, 276);
+  homeCanvas.drawFastHLine(40, 300, 386, 0x2124);
+
+  homeCanvas.setTextDatum(middle_left);
+  homeCanvas.setTextSize(2);
+  homeCanvas.setTextColor(TFT_WHITE, rowBg(5));
+  homeCanvas.drawString("言語", 60, 324);
+  homeCanvas.setTextDatum(middle_right);
+  homeCanvas.setTextSize(1);
+  homeCanvas.setTextColor(TFT_CYAN, rowBg(5));
+  static constexpr const char *kLangLabels[] = {"日本語", "English", "中文"};
+  homeCanvas.drawString(kLangLabels[selectedLang < 3 ? selectedLang : 0], 406,
+                        324);
+  homeCanvas.drawFastHLine(40, 348, 386, 0x2124);
 }
 
 static void drawHomePageDots() {
@@ -944,7 +982,7 @@ static void buildResultCanvas() {
   textCanvas.setColorDepth(8);
   textCanvas.createSprite(kTextWidth, 1400);
   textCanvas.fillSprite(TFT_BLACK);
-  textCanvas.setFont(&fonts::efontJA_16);
+  textCanvas.setFont(contentFont());
 
   int32_t y = 0;
   textCanvas.setTextSize(2);
@@ -1385,6 +1423,7 @@ static bool fetchDigest() {
     digestHttp.addHeader("Content-Type", "application/json");
     digestHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
     digestHttp.addHeader("X-Model", selectedModelName());
+    digestHttp.addHeader("X-Lang", selectedLangCode());
     code = digestHttp.POST(body);
     if (code == HTTP_CODE_OK) {
       JsonDocument responseDoc;
@@ -1437,6 +1476,7 @@ static bool analyzePhoto() {
     analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
     analyzeHttp.addHeader("X-Model", selectedModelName());
     analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
+    analyzeHttp.addHeader("X-Lang", selectedLangCode());
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1748,6 +1788,7 @@ static void voiceQuestionFlow() {
       analyzeHttp.addHeader("Content-Type", "audio/wav");
       analyzeHttp.addHeader("X-Device-Token", DEVICE_TOKEN);
       analyzeHttp.addHeader("X-Model", selectedModelName());
+      analyzeHttp.addHeader("X-Lang", selectedLangCode());
       const int code = analyzeHttp.POST(wav, 44 + dataLen);
       if (code == HTTP_CODE_OK) {
         JsonDocument doc;
@@ -2190,7 +2231,7 @@ static void homeTouchTick() {
       homeHistoryScrolled = false;
       // Slider gestures are captured so the full 0-255 range is reachable.
       homeVolumeDragging = homePage == 2 && t.x >= 126 && t.x <= 404 &&
-                           t.y >= 132 && t.y <= 196;
+                           t.y >= 108 && t.y <= 156;
       if (homeVolumeDragging) setSpeakerVolumeFromTouch(t.x);
       if (homePage == 2 && !homeVolumeDragging) {
         settingsPressedRow = settingsRowForY(t.y);
@@ -2287,6 +2328,15 @@ static void homeTouchTick() {
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
       } else if (releasedRow == 4) {
         enterWifiSetup();
+      } else if (releasedRow == 5) {
+        selectedLang = (selectedLang + 1) % 3;
+        if (toiPrefsReady) {
+          toiPrefs.putUChar("lang", selectedLang);
+          if (inquiryDigestCount != -1) toiPrefs.putInt("digN", -1);
+        }
+        inquiryDigestCount = -1;
+        digestLookupPending = true;
+        Serial.printf("[toi] language: %s\n", selectedLangCode());
       }
     }
   }
@@ -2445,6 +2495,8 @@ void setup() {
     if (captureQuality > 1) captureQuality = 0;
     selectedModel = toiPrefs.getUChar("model", 1);
     if (selectedModel > 1) selectedModel = 1;  // old sol/luna indices clamp to luna
+    selectedLang = toiPrefs.getUChar("lang", 0);
+    if (selectedLang > 2) selectedLang = 0;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");

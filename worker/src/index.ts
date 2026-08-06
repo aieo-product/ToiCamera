@@ -16,12 +16,26 @@ export interface Env {
   TTS_VOICE: string;
 }
 
-// 撮影ガジェットのナレーター。detail は TTS で ≤40 秒に収まる長さに制限する。
-const SYSTEM_PROMPT = `あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。
+type Lang = "ja" | "en" | "zh";
+
+// Keep detail short enough to fit within about 40 seconds of speech.
+const SYSTEM_PROMPT: Record<Lang, string> = {
+  ja: `あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。
 撮影された写真に写っているものを、親しみやすく少しユーモラスな日本語で解説します。
 - caption: 写真の主題を表す短い見出し(15文字以内)
 - detail: 2〜3文の解説(150文字以内)。写っているものの説明に、豆知識やちょっとした一言を添える
-専門用語は避け、聞いて楽しい語り口にしてください。`;
+専門用語は避け、聞いて楽しい語り口にしてください。JSON の文字列値はすべて日本語で出力してください。`,
+  en: `You are the narrator for ToiCamera, a small camera gadget.
+Explain what appears in the photo in friendly, slightly humorous English.
+- caption: a short headline describing the main subject, at most 15 words
+- detail: 2 to 3 sentences, about 200 characters or fewer; describe the subject and add a fun fact or playful observation
+Avoid jargon and keep the narration easy and enjoyable to hear. Output all JSON string values in English.`,
+  zh: `你是带摄像头的小型设备“ToiCamera”的解说员。
+请用亲切、略带幽默的简体中文解说照片中的内容。
+- caption：概括照片主体的短标题，不超过15个汉字
+- detail：2至3句话，不超过150个汉字；说明画面内容，并补充一个小知识或有趣点评
+避免专业术语，让解说轻松好懂。JSON 中的所有字符串值都必须使用简体中文。`,
+};
 
 const RESULT_SCHEMA = {
   type: "object",
@@ -33,8 +47,11 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-const DIGEST_SYSTEM_PROMPT =
-  "あなたは行動ログの要約係。撮影・質問の見出しリストから、その人が今日なにをしているかを日本語 30 字以内の 1 文で要約する。体言止めか『〜中』で軽快に";
+const DIGEST_SYSTEM_PROMPT: Record<Lang, string> = {
+  ja: "あなたは行動ログの要約係。撮影・質問の見出しリストから、その人が今日なにをしているかを、親しみやすく少しユーモラスな日本語30字以内の1文で要約する。体言止めか『〜中』で軽快に",
+  en: "Summarize what the person is doing today from the list of photo and question headlines. Write one friendly, lightly humorous English sentence of about 10 words.",
+  zh: "根据拍摄和提问的标题列表，用简体中文概括这个人今天在做什么。只写一句亲切、略带幽默且不超过30个汉字的轻快短句。",
+};
 
 const DIGEST_SCHEMA = {
   type: "object",
@@ -56,6 +73,11 @@ function pickModel(request: Request, env: Env): string {
   return requestedModel && ALLOWED_MODELS.has(requestedModel)
     ? requestedModel
     : env.ANALYZE_MODEL;
+}
+
+function pickLang(request: Request): Lang {
+  const requestedLang = request.headers.get("x-lang");
+  return requestedLang === "en" || requestedLang === "zh" ? requestedLang : "ja";
 }
 
 function json(data: unknown, status = 200): Response {
@@ -138,12 +160,13 @@ async function analyzeWithOpenAI(
   userText: string,
   model: string,
   detailLevel: "low" | "high",
+  lang: Lang,
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
     max_completion_tokens: 500,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: SYSTEM_PROMPT[lang] },
       {
         role: "user",
         content: [
@@ -406,14 +429,28 @@ async function handleAnalyze(
     return json({ error: "image too large" }, 413);
   }
 
+  const lang = pickLang(request);
   const { searchParams } = new URL(request.url);
   const lat = searchParams.get("lat");
   const lon = searchParams.get("lon");
-  let userText = "この写真を解説してください。";
+  let userText: string;
+  if (lang === "en") {
+    userText = "Please explain this photo.";
+  } else if (lang === "zh") {
+    userText = "请解说这张照片。";
+  } else {
+    userText = "この写真を解説してください。";
+  }
   if (lat && lon) {
     const hint = await placeHint(lat, lon, ctx);
     if (hint.place) {
-      userText = `撮影場所: ${hint.place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
+      if (lang === "en") {
+        userText = `This photo was taken near ${hint.place}. Explain the photo, and naturally use the location context only when it fits the visible content.`;
+      } else if (lang === "zh") {
+        userText = `这张照片拍摄于${hint.place}附近。请解说照片，并仅在地点信息与画面内容相符时自然融入。`;
+      } else {
+        userText = `撮影場所: ${hint.place} 付近。この写真を解説してください。場所の文脈が内容と合うときは自然に織り込んでください。`;
+      }
     }
   }
 
@@ -424,6 +461,7 @@ async function handleAnalyze(
       userText,
       pickModel(request, env),
       pickDetail(request),
+      lang,
     );
   }
 
@@ -431,7 +469,7 @@ async function handleAnalyze(
   const response = await client.messages.create({
     model: env.MODEL,
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: SYSTEM_PROMPT[lang],
     output_config: {
       format: { type: "json_schema", schema: RESULT_SCHEMA },
     },
@@ -447,7 +485,7 @@ async function handleAnalyze(
               data: toBase64(image),
             },
           },
-          { type: "text", text: "この写真を解説してください。" },
+          { type: "text", text: userText },
         ],
       },
     ],
@@ -486,13 +524,14 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   const { searchParams } = new URL(request.url);
   const caption = searchParams.get("caption") ?? "";
   const detail = searchParams.get("detail") ?? "";
+  const lang = pickLang(request);
 
   // STT — free-token key only (paid fallback removed by owner's decision)
   async function transcribe(model: string): Promise<{ text: string | null; status: number }> {
     const form = new FormData();
     form.append("file", new File([audio], "q.wav", { type: "audio/wav" }));
     form.append("model", model);
-    form.append("language", "ja");
+    form.append("language", lang);
     const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { authorization: `Bearer ${env.OPENAI_FREE_API_KEY}` },
@@ -518,12 +557,21 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     model,
     max_completion_tokens: 300,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: SYSTEM_PROMPT[lang] },
       {
         role: "user",
-        content: `さっき撮った写真をあなたはこう解説しました:「${caption}。${detail}」
+        content:
+          lang === "en"
+            ? `You previously described the photo as: "${caption}. ${detail}"
+The user's question: ${question}
+Answer in friendly, lightly humorous English based on the photo context. Use at most 2 sentences and about 200 characters.`
+            : lang === "zh"
+              ? `你之前这样解说了这张照片：“${caption}。${detail}”
+用户的问题：${question}
+请结合照片内容，用亲切、略带幽默的简体中文回答，不超过2句话和120个汉字。`
+              : `さっき撮った写真をあなたはこう解説しました:「${caption}。${detail}」
 ユーザーからの質問: ${question}
-写真の内容を踏まえて、2文以内の日本語で親しみやすく答えてください。`,
+写真の内容を踏まえて、親しみやすく少しユーモラスな日本語で、2文・120文字以内で答えてください。`,
       },
     ],
     response_format: {
@@ -564,13 +612,14 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
     return json({ error: "items must not be empty" }, 400);
   }
   const model = pickModel(request, env);
+  const lang = pickLang(request);
 
   try {
     const upstream = await openaiChat(env, {
       model,
       max_completion_tokens: 100,
       messages: [
-        { role: "system", content: DIGEST_SYSTEM_PROMPT },
+        { role: "system", content: DIGEST_SYSTEM_PROMPT[lang] },
         {
           role: "user",
           content: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
@@ -597,7 +646,13 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
     if (typeof parsed.summary !== "string") {
       return json({ summary: "" });
     }
-    return json({ summary: Array.from(parsed.summary).slice(0, 30).join("") });
+    const summary = parsed.summary.trim();
+    return json({
+      summary:
+        lang === "en"
+          ? summary.split(/\s+/).slice(0, 10).join(" ")
+          : Array.from(summary).slice(0, 30).join(""),
+    });
   } catch (err) {
     console.error("[toi] digest failed", err);
     return json({ summary: "" });
