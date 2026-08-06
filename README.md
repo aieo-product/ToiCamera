@@ -49,12 +49,15 @@ No router or PC on the camera path — the watch hosts a private AP for the came
 
 ## Getting started
 
-1. **Camera firmware** — `firmware/cams3/build.sh` (ESP-IDF v5.1.4). Flash with `erase-flash` first; see `firmware/cams3/README.md` for the sensor's quirks (the 5 MP PY260 ignores its quality register — verified on hardware).
-2. **Secrets** — `cp firmware/stopwatch/secrets.ini.example firmware/stopwatch/secrets.ini` and fill in Wi-Fi credentials, your Worker URL and a device token (`gen-secrets.sh` automates this). `secrets.ini` is gitignored; real values never enter the repo.
-3. **Watch firmware** — `cd firmware/stopwatch && pio run -t upload`.
-4. **Worker** — `cd worker && npx wrangler deploy`, then `wrangler secret put` the keys listed in `wrangler.jsonc` comments.
+Everything here runs against **your own Cloudflare Worker** — this repo contains no
+live backend. Deploying one takes about 10 minutes: **[Worker setup guide](docs/worker-setup.md)**.
+
+1. **Worker** — deploy your own AI relay first: `cd worker && npx wrangler deploy`, then `wrangler secret put` the keys listed in `wrangler.jsonc` comments (OpenAI API key, a device token you make up). Full walkthrough: [docs/worker-setup.md](docs/worker-setup.md).
+2. **Camera firmware** — `firmware/cams3/build.sh` (ESP-IDF v5.1.4). Flash with `erase-flash` first; see `firmware/cams3/README.md` for the sensor's quirks (the 5 MP PY260 ignores its quality register — verified on hardware).
+3. **Secrets** — `cp firmware/stopwatch/secrets.ini.example firmware/stopwatch/secrets.ini` and fill in Wi-Fi credentials, your Worker URL from step 1 and the same device token (`gen-secrets.sh` automates this). `secrets.ini` is gitignored; real values never enter the repo.
+4. **Watch firmware** — `cd firmware/stopwatch && pio run -t upload`.
 5. **First boot** — the watch auto-provisions the camera onto its own AP (one-time, no PC involved). Wi-Fi and the device token can later be changed from the watch itself: Settings → WiFi → scan the QR → `http://192.168.4.1`.
-6. **Back plate** — print `case/blender/out/toicamera_grid3.stl` (fits inside the 52 mm watch silhouette) or `toicamera.stl` (taller 12-hole rack), swap the two rear M2 screws for ~3 mm longer ones, and clip the units on with M5Stack CLIP-A/B.
+6. **Back plate** — print `case/blender/out/toicamera_duo.stl` for simultaneous CamS3 + GPS mounting (camera upper row, GPS lower-left or lower-right), `toicamera_grid3.stl` for the watch-outline 3-column plate, or `toicamera.stl` for the taller 12-hole rack. Swap the two rear M2 screws for ~3 mm longer ones and attach the units with M5Stack CLIP-A/B or pin brackets; see [`case/README.md`](case/README.md).
 
 ## Security notes
 
