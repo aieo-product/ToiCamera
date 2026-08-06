@@ -12,19 +12,24 @@
 - **Hackster 記事 EN ドラフト**: `userInput/hackster-article-draft.md`(動画URL・記事URLのプレースホルダあり)
 - **ケース STL 3 種**(`case/blender/out/`、全て検証PASS・印刷向き=レール面上の平置き):
   - `toicamera.stl` 2列12穴 / `toicamera_grid3.stl` 3列11穴・円内 / **`toicamera_duo.stl` v4 = 方位確定版**(N=ボタン/スピーカー側・ネジ左右±20・中央横ペア±8=カメラ縦置き・下段横ペア×2 z=-12=カメラ+GPS並列。**ジョイントは16mmスパン実測確定**)
-  - **ネジ実測確定(2026-08-06): 元ネジ = M2×8mm** → プレート共締めは **M2×10 タッピング推奨**(11 は入手性低、12 は奥突きリスク)。頭形状は元ネジに合わせる(皿なら皿もみに収まる/なべなら次セッションで座ぐり変更可)
+  - **ネジ実測確定(2026-08-06): 元ネジ = M2×8mm** → プレート共締めは **M2×12 タッピングで確定(実機確認済 2026-08-06)**。頭形状は元ネジに合わせる(皿なら皿もみに収まる/なべなら次セッションで座ぐり変更可)
   - duo は印刷前確認待ち(レンダ送付済み)。生成: `/Applications/Blender.app/Contents/MacOS/Blender -b --python case/blender/build_case.py -- --part all --out case/blender/out/toicamera.stl`
 
-## 未対応 issue(次セッションの実装対象・issue駆動で)
+## issue 状況(2026-08-06 午後 — 方針転換後・全 PR 済み)
 
-1. **#30 設定画面のラベルと値の行ズレ**(6行レイアウトで値が1行上に描画。タップ帯もズレ→#31の原因の可能性)
-2. **#31 言語設定が効かない**(まず#30修正後に再確認。X-Lang は Worker 側 curl 検証済み)
-3. **#32 ポータルのトークン欄を「OpenAI API トークン」明記+リンク https://platform.openai.com/api-keys**(注意: 現在の実体は Worker 認証用 X-Device-Token。A案=表記改善 / B案=OpenAIキー転送に設計変更 — issue 本文参照、ユーザーに要確認)
+1. **#30 行ズレ → 再現せず・close 済み**(90°回転写真の誤読。画素解析エビデンスは issue コメント+evidence ブランチ)
+2. **#31 言語が効かない → Worker(/analyze x-lang:en curl 検証済・英語応答)・ファームコードとも異常なし**。最有力仮説=実機が言語対応ファーム反映前。**次回 Stopwatch(SER=44:1B:F6)接続時: PR マージ後の main を再フラッシュ → 言語タップで `[toi] language: en` → wrangler tail で x-lang 到達 → 英語解説確認で close**
+3. **ユーザー方針転換(2026-08-06 昼)による新規 3 PR(いずれもレビュー済・マージはユーザー判断)**:
+   - **PR #39**(#34): 設定画面を旧レイアウト(ラベル+下段値・78px ピッチ)+縦スクロールに再設計、アーク回避。Codex 実装+親レビュー+pio SUCCESS。**実機確認が残**
+   - **PR #37**(#35+#36): 稼働 Worker 情報除去(gen-secrets.sh は `WORKER_URL=... ./gen-secrets.sh` 形式必須に変更)+ Worker 構築ガイド docs/worker-setup.md + Pages index
+   - **PR #38**(#32): ポータルのトークン欄を「Worker 認証用」明記+ガイドリンク。pio SUCCESS
+4. **GitHub Pages 有効化済み**: https://aieo-product.github.io/ToiCamera/ (main /docs 配信。**#37 マージまでルートは 404**、マージ後 1〜2 分でビルド)
+5. マージ順の推奨: #37 → #38 → #39(#38 のリンクは #37 マージ後に有効化)。マージ後に Stopwatch 再フラッシュで #31/#34/#32 の実機確認を一括実施
 
 ## 次アクション(新セッション最初のコマンド)
 
 1. `bash /Volumes/AIWorkSSD/AIWorkSpace/Skills/session-handover/scripts/state-dump.sh /Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/ToiCamera`
-2. #30 → #31 → #32 の順に issue 駆動で修正(**ファーム作業は worktree `/Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/ToiCamera-wt11` を再利用可**。ブランチは main から切り直すこと。secrets.ini コピー済み・worker/node_modules は本体への symlink)
+2. ユーザーのマージ判断確認 → PR #37/#38/#39 マージ → Stopwatch 接続時に再フラッシュ+実機確認(#31 言語 / #34 スクロール / #32 ポータル表示)(**ファーム作業は worktree `/Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/ToiCamera-wt11` を再利用可**。ブランチは main から切り直すこと。secrets.ini コピー済み・worker/node_modules は本体への symlink)
 3. フラッシュ: `PORT=$(pio device list | grep -B3 "44:1B:F6" | grep "^/dev" | head -1)` → `pio run -t upload --upload-port $PORT`(Stopwatch SER=44:1B:F6 / CamS3=3C:DC:75。**繋ぎ直しでポート番号が変わる**)
 4. Worker デプロイ: `cd worker && npx wrangler deploy`(伝播に十数秒〜、curl 検証は akc 経由: `export TOICAMERA_DEVICE_TOKEN=keychain://TOICAMERA_DEVICE_TOKEN && akc run -- sh -c 'curl -H "x-device-token: $TOICAMERA_DEVICE_TOKEN" ...'`)
 5. 提出フロー: 動画セッションで最終書き出し → ユーザーが YouTube へ → 記事/README のリンク差し替え → Hackster 投稿 → **Google Form 提出(8/8 15:59 JSTまで)+受付スクショ**
