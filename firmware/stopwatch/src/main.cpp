@@ -75,6 +75,8 @@ static int32_t homeLastMinute = -1;
 static int homePage = 0;
 static int homeHistoryScrollY = 0;
 static int historyDetailIndex = -1;
+static int historyDetailScrollY = 0;
+static int historyDetailMaxScroll = 0;
 static int settingsScrollY = 0;
 // Settings item currently held down (-1 = none) — highlighted while pressed,
 // the action fires on finger-up inside the same item.
@@ -663,9 +665,9 @@ static void drawPageHistoryDetail() {
   homeCanvas.setTextDatum(top_left);
   homeCanvas.setTextSize(1);
   homeCanvas.setTextColor(TFT_CYAN, TFT_BLACK);
-  homeCanvas.drawString(timeText, 73, 44);
+  homeCanvas.drawString(timeText, 73, 44 - historyDetailScrollY);
 
-  int32_t y = 74;
+  int32_t y = 74 - historyDetailScrollY;
   homeCanvas.setFont(contentFont());
   homeCanvas.setTextSize(2);
   homeCanvas.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -674,6 +676,10 @@ static void drawPageHistoryDetail() {
   homeCanvas.setTextColor(TFT_WHITE, TFT_BLACK);
   appendHomeWrapped(detailValue, 73, y, 38, kTextWidth);
   homeCanvas.clearClipRect();
+  // Content bottom in unscrolled space; +20px pad keeps the last line clear
+  // of the bottom hint even at max scroll.
+  historyDetailMaxScroll =
+      max(0, (int)(y + historyDetailScrollY) - (35 + 370) + 20);
 
   homeCanvas.setFont(contentFont());
   homeCanvas.setTextDatum(middle_center);
@@ -1056,7 +1062,20 @@ static void buildResultCanvas() {
 }
 
 static void drawResult(bool full = false) {
-  if (full) M5.Display.fillScreen(TFT_BLACK);
+  if (full) {
+    M5.Display.fillScreen(TFT_BLACK);
+    // Bottom hint lives here so every full redraw (including the post-Q&A
+    // restore) brings it back. y=424: the round display's chord there is
+    // ±133px — the widest (EN) hint at ±120px still fits; y=442 clipped it.
+    M5.Display.setFont(contentFont());
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    M5.Display.drawString(
+        tr("黄長押し:質問 黄:撮影 青:戻る",
+           "Hold Y: ask  Y: shoot  B: back", "长按黄:提问 黄:拍摄 蓝:返回"),
+        M5.Display.width() / 2, 424);
+  }
   const int x = (M5.Display.width() - kTextWidth) / 2;
   const int viewTop = 90;
   const int viewH = M5.Display.height() - viewTop - 60;
@@ -2391,6 +2410,16 @@ static void homeTouchTick() {
           homeDirty = true;
         }
       }
+    } else if (homePage == 1 && historyDetailIndex >= 0) {
+      if (homeTouchLastY != previousY) {
+        const int nextScroll = constrain(
+            historyDetailScrollY - (homeTouchLastY - previousY), 0,
+            historyDetailMaxScroll);
+        if (nextScroll != historyDetailScrollY) {
+          historyDetailScrollY = nextScroll;
+          homeDirty = true;
+        }
+      }
     } else if (homePage == 2) {
       const int dx = homeTouchLastX - homeTouchStartX;
       const int dy = homeTouchLastY - homeTouchStartY;
@@ -2451,6 +2480,7 @@ static void homeTouchTick() {
             (homeHistoryScrollY + homeTouchLastY - 100) / 56;
         if (tappedIndex >= 0 && tappedIndex < inquiryHistoryLineCount()) {
           historyDetailIndex = tappedIndex;
+          historyDetailScrollY = 0;
           homeDirty = true;
         }
       }
@@ -2605,14 +2635,6 @@ static void runCaptureCycle() {
 
   buildResultCanvas();
   drawResult(true);
-  M5.Display.setFont(contentFont());
-  M5.Display.setTextSize(1);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  M5.Display.drawString(
-      tr("黄長押し:質問 黄:撮影 青:戻る",
-         "Hold Y: ask  Y: shoot  B: back", "长按黄:提问 黄:拍摄 蓝:返回"),
-      M5.Display.width() / 2, 442);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
   speakAnimalese(caption + "。" + detailText);
@@ -2874,7 +2896,8 @@ void loop() {
       static int lastTouchY = -1;
       auto t = M5.Touch.getDetail();
       const int viewH = M5.Display.height() - 150;
-      const int maxScroll = max(0, textCanvasHeight - viewH);
+      // +20px pad so the last line always scrolls clear of the bottom hint.
+      const int maxScroll = max(0, textCanvasHeight - viewH + 20);
       if (t.isPressed()) {
         if (lastTouchY >= 0 && t.y != lastTouchY) {
           scrollY = constrain(scrollY - (t.y - lastTouchY), 0, maxScroll);
