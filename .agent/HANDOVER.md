@@ -1,59 +1,43 @@
-# ToiCamera 引き継ぎ(2026-07-29 夜 セッション時点)
+# ToiCamera 引き継ぎ(2026-08-06 昼 — 提出前日/最終調整セッションの店じまい)
 
-> M5Stack Global Innovation Contest 2026 応募作品。**締切 2026-08-07 23:59 PST**
-> (Hackster.io 英語記事 + Google Form、両方必須)。残り約 9 日。
-> 正典: 設計=`docs/DESIGN.md` / カメラ制約=`firmware/cams3/README.md` / issue=#1〜#11(親 #9)
+> **締切: 2026-08-07 23:59 PST = 日本時間 8/8 15:59**。
+> リポジトリは **public 化済み**(機密監査済・MIT LICENSE・README 刷新済)。
+> 正典: `docs/DESIGN.md` / `firmware/cams3/README.md` / `case/README.md`
 
-## ゴール
+## いまの到達点
 
-#10 ホーム画面 → #11 設定画面 → GPS 実証(#6) → ケース(#5) → エビデンス(#3/#4) → 提出物(#8)
+- **全機能実機動作**: 撮影→AI解説→アニマルエーズ / 音声Q&A(頭切れ修正済) / GPS測位(115200修正済・千代田区で実証) / ダッシュボード(問い数・歩数・要約・位置は都道府県+市区町村・最終測位保持) / スワイプ3ページ / 設定(モデル terra/luna・音量+10dBブースト・画質QVGA/VGA・AI精度low/high・WiFi/トークンQRポータル・言語ja/en/zh) / スリープ
+- **main に全マージ済み**(PR #12,#15,#18,#21,#23,#26,#27,#28,#29,#33)。open PR: **#17(たまごっち・別セッション成果物。提出後にマージ判断、コンフリクト解消必要)**
+- **デモ動画ドラフト1完成**: `userInput/ToiCamera_demo_EN_draft1.mp4`(2:12・英語キャプション)。動画最終化は**専用セッション**(`userInput/VIDEO_SESSION_PROMPT.md` を新セッションに貼る)
+- **Hackster 記事 EN ドラフト**: `userInput/hackster-article-draft.md`(動画URL・記事URLのプレースホルダあり)
+- **ケース STL 3 種**(`case/blender/out/`、全て検証PASS・印刷向き=レール面上の平置き):
+  - `toicamera.stl` 2列12穴 / `toicamera_grid3.stl` 3列11穴・円内 / **`toicamera_duo.stl` v4 = 方位確定版**(N=ボタン/スピーカー側・ネジ左右±20・中央横ペア±8=カメラ縦置き・下段横ペア×2 z=-12=カメラ+GPS並列。**ジョイントは16mmスパン実測確定**)
+  - duo は印刷前確認待ち(レンダ送付済み)。生成: `/Applications/Blender.app/Contents/MacOS/Blender -b --python case/blender/build_case.py -- --part all --out case/blender/out/toicamera.stl`
 
-## 完了(このセッション)
+## 未対応 issue(次セッションの実装対象・issue駆動で)
 
-- **#10 実装完了 → PR #12**(ブランチ `feature/issue-10-home-screen`、未マージ)
-  - コミット: `1127156`(本体・Codex 実装+親 Claude レビュー)+ `6eeb888`(レビュー指摘 2 件修正)
-  - 内容: Home/Sleeping 状態、カメラ探索の初回ファインダー進入時への遅延、
-    ストリーム停止ログ(`[toi] finder: stream stopped (home|sleep)`)、
-    NTP(SNTP コールバックでゲート)→RX8130 RTC 同期、light sleep(GPIO G1/G2 wakeup)、
-    SW 歩数(加速度ピーク検出。BMI270 HW step counter は M5Unified 非対応で見送り=検証記録済)、
-    Worker `GET /place`(Nominatim+HeartRails 最寄り駅+徒歩分、edge cache 7日)
-  - ボタン変更: Idle 青クリック=ホームへ / **再ペアリングは青長押しに移設**
-  - 検証: `pio run` ✅ / `npm run typecheck` ✅ / Codex+Claude レビュー ✅ LGTM(PR コメント参照)
-
-## 進行中・ブロッカー
-
-- **Worker デプロイ未実施**(`npx wrangler deploy` が権限クラシファイアにブロック)。
-  `/place` はデプロイまで実機で 404。変更は追加のみで後方互換
-- **実機 E2E(/issue-test)未実施**: フラッシュ+ホーム→カメラ→スリープ→復帰の動画、
-  ストリーム停止のシリアルログ、1 時間放置の電池比較 → PR #12 の LGTM 後にマージ依頼
-
-## 未着手
-
-- #11 設定画面 / #6 GPS 屋外実証(シリアル無音の配線確認から) / #5 ケース CAD(7/30-8/1 必須) / #7 / #8
+1. **#30 設定画面のラベルと値の行ズレ**(6行レイアウトで値が1行上に描画。タップ帯もズレ→#31の原因の可能性)
+2. **#31 言語設定が効かない**(まず#30修正後に再確認。X-Lang は Worker 側 curl 検証済み)
+3. **#32 ポータルのトークン欄を「OpenAI API トークン」明記+リンク https://platform.openai.com/api-keys**(注意: 現在の実体は Worker 認証用 X-Device-Token。A案=表記改善 / B案=OpenAIキー転送に設計変更 — issue 本文参照、ユーザーに要確認)
 
 ## 次アクション(新セッション最初のコマンド)
 
-1. `cd worker && npx wrangler deploy`(ユーザー承認つきで実行)
-2. 実機フラッシュ: `cd firmware/stopwatch && pio run -t upload --upload-port /dev/cu.usbmodem83101`
-3. `/issue-test https://github.com/aieo-product/ToiCamera/pull/12`(実機 E2E+エビデンス)
-4. LGTM → 人間マージ → `/post-merge-test` → #11 へ
+1. `bash /Volumes/AIWorkSSD/AIWorkSpace/Skills/session-handover/scripts/state-dump.sh /Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/ToiCamera`
+2. #30 → #31 → #32 の順に issue 駆動で修正(**ファーム作業は worktree `/Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/ToiCamera-wt11` を再利用可**。ブランチは main から切り直すこと。secrets.ini コピー済み・worker/node_modules は本体への symlink)
+3. フラッシュ: `PORT=$(pio device list | grep -B3 "44:1B:F6" | grep "^/dev" | head -1)` → `pio run -t upload --upload-port $PORT`(Stopwatch SER=44:1B:F6 / CamS3=3C:DC:75。**繋ぎ直しでポート番号が変わる**)
+4. Worker デプロイ: `cd worker && npx wrangler deploy`(伝播に十数秒〜、curl 検証は akc 経由: `export TOICAMERA_DEVICE_TOKEN=keychain://TOICAMERA_DEVICE_TOKEN && akc run -- sh -c 'curl -H "x-device-token: $TOICAMERA_DEVICE_TOKEN" ...'`)
+5. 提出フロー: 動画セッションで最終書き出し → ユーザーが YouTube へ → 記事/README のリンク差し替え → Hackster 投稿 → **Google Form 提出(8/8 15:59 JSTまで)+受付スクショ**
 
-## 検証状態
+## 検証状態・ハマりどころ(新規分のみ — 過去分は git log と各 README)
 
-- ビルド: firmware ✅(RAM 15.5%/Flash 25.0%)、worker typecheck ✅
-- 実機: 未(light sleep 復帰後のカメラ再接続、SW 歩数精度、SoftAP 復帰が要確認ポイント)
-- light sleep 中は USB CDC 切断(シリアルデバッグ時は注意)
+- 設定6行レイアウトは #30 のとおり描画ズレあり(言語・トークンポータル自体は動作確認済み。トークン保存→再起動→NVS優先も動作)
+- Codex 委譲: `node ~/.claude/plugins/cache/openai-codex/codex/1.0.1/scripts/codex-companion.mjs task --background --write --fresh "<仕様>"`(**リポジトリ cwd で実行**。state は `~/.claude/plugins/data/codex-openai-codex/state/<dir名-hash>/jobs/`。監視は job json の status をポーリング)。実装後は必ず親レビュー+ビルド
+- Blender 検証で duo のみシーン内に 0.1mm スライバ警告が出るが **エクスポート STL は非多様体 0 で PASS**(仕様: strict_mesh=False)
+- ffmpeg: drawtext 無し→PNG オーバーレイ / ループ内 `-nostdin` 必須 / concat は再エンコード(詳細 `userInput/VIDEO_SESSION_PROMPT.md`)
+- 無料枠(OPENAI_FREE_API_KEY)は 16:00 JST リセット。枯渇時はデバイスに「AI無料枠が上限(16:00頃リセット)」表示(有料フォールバックは撤去済み・ユーザー方針)
+- akc: `TOICAMERA_DEVICE_TOKEN`。シークレット値は絶対にログ・コミットしない
 
-## 申し送り(#10 実装の要注意点)
+## 運用
 
-- MJPEG デチャンク・JPEG 再構成(`previewTick`/`feedJpeg`)は今回未変更(触るの禁止レベルで壊れやすい)
-- NTP 同期は `sntp_set_time_sync_notification_cb` の `sntpSynced` フラグでゲート
-  (`getLocalTime` だけだと RTC 復元済み起動で誤判定する — Codex P2 指摘対応済み)
-- ホーム描画は 466x466 8bit M5Canvas(PSRAM)。efontJA_16 に絵文字グリフ無し
-
-## 運用メモ(変更なし)
-
-- ハードウェア既知事実・ビルドコマンド・ペアリング挙動は前回記載どおり
-  (CamS3=PY260/QVGA 固定、Grove 5V ALWAYS_ON、KEYA=G2/KEYB=G1、GPS=Grove G10/G11 で現在無音)
-- dev-workflow 運用中 / Codex ログイン済み / Anthropic API クレジット切れ
-- デバイストークン: akc `TOICAMERA_DEVICE_TOKEN` / メモリ: `~/.claude/.../memory/toicamera-project.md`
+- dev-workflow 運用(issue コメントに判断トレース)。マージはユーザー指示ベース(今セッションは明示指示により実施)
+- メモリ: `~/.claude/projects/.../memory/toicamera-project.md` も参照
