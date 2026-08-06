@@ -1,61 +1,72 @@
-# ToiCamera — AI Explainer Camera
+# ToiCamera — a watch that tells you about what it sees
 
-> **Toi** (問い) is Japanese for "a question" — and it sounds like *toy*.
-> ToiCamera is a toy-like camera you ask questions with: shoot something,
-> and the AI tells you what you're looking at.
+> **Toi** (問い) is Japanese for *a question* — and it sounds like *toy*.
+> ToiCamera is a wrist-worn AI camera you ask questions with: point, shoot,
+> and it explains the world — on screen and out loud.
 
-A pocket AI camera built from the **M5Stack Stopwatch Dev Kit (ESP32-S3, SKU C152)** and the **M5Stack Unit CamS3**. Press the yellow shutter button, and the device captures a photo, shows it on the 1.75" round AMOLED, and an AI narrator explains what it sees — on screen and out loud through the built-in speaker (Japanese TTS).
+Built on the **M5Stack StopWatch Dev Kit (ESP32-S3, C152)** + **Unit CamS3 5MP** + **Unit GPS v1.1**, with a **Cloudflare Worker** as the AI relay.
+Entry for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/global-innovation-contest-2026).
 
-Built for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/global-innovation-contest-2026).
+| | |
+|---|---|
+| 📷 | **Zero-lag shutter** — the live finder frame *is* the photo |
+| 🗣 | **AI explanations** spoken in on-device Animal-Crossing-style chirps (no cloud TTS) |
+| 🎤 | **Hold-to-talk Q&A** about the photo (STT → context-aware answer) |
+| 📍 | **Location-aware** — reverse-geocoded town, nearest station, place-flavored explanations |
+| ⌚ | **A real watch** — clock (NTP→RX8130), battery ring, steps, daily AI one-liner |
+| 🌐 | **Multilingual** — AI content in 日本語 / English / 中文, switchable on the watch |
+| 🧱 | **LEGO-compatible expansion plate** — 3D-printed backpack, camera & GPS clip anywhere |
 
-## How it works
+## Architecture
 
 ```
-┌─────────────┐   Grove (5V power only)   ┌──────────┐
-│  Stopwatch  │═════════════════════════│  CamS3   │
-│ SoftAP+STA  │◀── WiFi: its own AP ───── │(custom FW)│
-│ AMOLED/SPK  │    "ToiCamera"            └──────────┘
-└──────┬──────┘    GET /api/v1/capture (JPEG)
-       │  WiFi STA (home LAN or phone hotspot — internet only)
-       └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ AI vision
-          HTTPS POST /tts ─────▶ Cloudflare Worker ─▶ TTS (WAV stream)
+Unit CamS3 (custom firmware)
+   │  Wi-Fi: joins the watch's own SoftAP "ToiCamera" (192.168.4.1)
+   │  Grove: 5 V power only
+   ▼
+M5Stack StopWatch (Arduino + M5Unified, single-file app)
+   │  Wi-Fi STA: home LAN or phone hotspot (internet only)
+   ▼
+Cloudflare Worker (TypeScript — holds every API key; device sends a token)
+   ├─ POST /analyze  vision LLM, strict JSON schema, location-hint injection
+   ├─ POST /ask      STT + answer in the photo's context
+   ├─ POST /digest   one-line "what am I doing today" summary
+   └─ GET  /place    OSM Nominatim reverse geocode + nearest station (edge-cached)
 ```
 
-No router or PC on the camera path: the Stopwatch hosts a private AP for the
-camera (ESP32 SoftAP+STA), so the whole rig works outdoors on a phone hotspot.
-
-- **Stopwatch** (host/UI): captures via HTTP from the CamS3, displays the JPEG, calls the AI relay, renders Japanese text (M5GFX efontJA) and plays the TTS WAV through its 1W speaker.
-- **Unit CamS3** (camera): custom firmware (factory OSS + STA-server patch) joins the Stopwatch's private AP and serves the factory REST API (`/api/v1/capture`). Powered from the Stopwatch's Grove 5V — no battery needed.
-- **Cloudflare Worker** (AI relay): holds all API keys as secrets, calls the Claude vision API for a structured `{caption, detail}` explanation, and proxies TTS audio as WAV.
+No router or PC on the camera path — the watch hosts a private AP for the camera
+(SoftAP+STA simultaneously), so the whole rig works outdoors on a phone hotspot.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `firmware/stopwatch/` | Main device firmware (PlatformIO + Arduino + M5Unified) |
-| `firmware/cams3/` | Camera unit firmware notes / build (variant-dependent, see its README) |
-| `worker/` | Cloudflare Worker AI relay (TypeScript + wrangler) |
-| `case/` | 3D-printed compact-camera-style case (Bambu Lab X2D) |
-| `docs/` | [Design doc (JA)](docs/DESIGN.md), [wiring](docs/wiring.md), photos, Hackster.io write-up draft |
+| `firmware/stopwatch/` | Watch firmware (PlatformIO / Arduino / M5Unified). State machine: Home dashboard / finder / capture / result / sleep / Wi-Fi + token portal |
+| `firmware/cams3/` | Build script + patches adding an "STA server" boot mode to the vendor UnitCamS3-5MP firmware (ESP-IDF 5.1) |
+| `worker/` | Cloudflare Worker: multilingual prompts (ja/en/zh), strict JSON schemas, free-quota handling with reset-time reporting |
+| `case/` | Parametric Blender→STL scripts for the LEGO-compatible back plates + a three.js assembly simulator (`case/simulator/`) |
+| `docs/` | Design doc (`DESIGN.md`, JA), wiring, photos, demo script |
 
 ## Getting started
 
-1. **Camera firmware** — identify your CamS3 sensor variant first, then follow
-   [`firmware/cams3/README.md`](firmware/cams3/README.md)
-2. **Worker** — deploy the AI relay per [`worker/README.md`](worker/README.md)
-3. **Stopwatch secrets** — `./firmware/stopwatch/gen-secrets.sh <ssid> <pass>`
-   (WiFi from args, device token pulled from the macOS Keychain via akc)
-4. **Stopwatch firmware** — `pio run -t upload` in `firmware/stopwatch/`
-   (see [`platformio.ini`](firmware/stopwatch/platformio.ini))
-
-Architecture decisions and the full schedule live in
-[`docs/DESIGN.md`](docs/DESIGN.md) (Japanese).
+1. **Camera firmware** — `firmware/cams3/build.sh` (ESP-IDF v5.1.4). Flash with `erase-flash` first; see `firmware/cams3/README.md` for the sensor's quirks (the 5 MP PY260 ignores its quality register — verified on hardware).
+2. **Secrets** — `cp firmware/stopwatch/secrets.ini.example firmware/stopwatch/secrets.ini` and fill in Wi-Fi credentials, your Worker URL and a device token (`gen-secrets.sh` automates this). `secrets.ini` is gitignored; real values never enter the repo.
+3. **Watch firmware** — `cd firmware/stopwatch && pio run -t upload`.
+4. **Worker** — `cd worker && npx wrangler deploy`, then `wrangler secret put` the keys listed in `wrangler.jsonc` comments.
+5. **First boot** — the watch auto-provisions the camera onto its own AP (one-time, no PC involved). Wi-Fi and the device token can later be changed from the watch itself: Settings → WiFi → scan the QR → `http://192.168.4.1`.
+6. **Back plate** — print `case/blender/out/toicamera_grid3.stl` (fits inside the 52 mm watch silhouette) or `toicamera.stl` (taller 12-hole rack), swap the two rear M2 screws for ~3 mm longer ones, and clip the units on with M5Stack CLIP-A/B.
 
 ## Security notes
 
-- No API keys live on the device. The Worker holds `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` as wrangler secrets and authenticates the device with an `X-Device-Token` header.
-- The device uses `WiFiClientSecure::setInsecure()` for the Worker TLS connection. This skips certificate validation — acceptable here because the device only ever talks to our own Worker and sends no secrets beyond the device token, but pin the root CAs before reusing this in anything sensitive.
+- **No secrets in this repo** — API keys live only as Worker secrets; the device authenticates with a device token from `secrets.ini` (or provisioned at runtime via the portal, stored in NVS, never logged).
+- The watch's AP password defaults to the value in `firmware/stopwatch/src/main.cpp` (`TOI_AP_PASS`). **Override it via build flag before deploying your own** — anyone who joins that AP can reach the setup portal.
+- Device→Worker TLS uses `setInsecure()` — acceptable here because the device only talks to its own Worker and sends nothing beyond the device token; pin the root CA if you fork this for anything serious.
 
-## Status
+## Demo
 
-Work in progress — targeting the 2026-08-07 contest deadline. See `docs/` for build progress.
+- 2-minute demo video: *[YouTube link — see the Hackster article]*
+- Hackster article: *[link once published]*
+
+## License
+
+MIT — see [LICENSE](LICENSE). The CamS3 patches apply on top of M5Stack's open-source UnitCamS3 firmware (see `firmware/cams3/README.md` for provenance).

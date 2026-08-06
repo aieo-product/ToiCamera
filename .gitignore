@@ -19,3 +19,6 @@ dist/
 .agent/logs/
 .claude/handoff/
 firmware/cams3/build-tree/
+
+# Local media / working files (demo videos, drafts)
+userInput/
