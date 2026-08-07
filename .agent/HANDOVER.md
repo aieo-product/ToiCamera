@@ -1,4 +1,12 @@
-# ToiCamera 引き継ぎ(2026-08-06 昼 — 提出前日/最終調整セッションの店じまい)
+# ToiCamera 引き継ぎ(2026-08-07 午後 更新 — 提出日)
+
+> **8/7 追加分(全完了)**: #30/#31/#41/#44/#43/#36/#32/#34/#35 すべて close・全 PR(#37〜#48)マージ済み。
+> Worker 拡張(/config・MODELS・OPENAI_BASE_URL・音声は OPENAI_AUDIO_BASE_URL 分離)本番デプロイ済。
+> **Pages リッチ化公開済み** https://aieo-product.github.io/ToiCamera/ (AI セットアップ用プロンプト+CF 実スクショ入り worker-setup.html が目玉)。
+> 実機 = マージ後 main 相当をフラッシュ済み(UI 3言語・スクロール設定7項目・動的モデル・ボイス TTS)・ユーザー確認済み。
+> **残り = 提出フローのみ**: 動画最終化(専用セッション)→ YouTube → 記事リンク差し替え → Hackster 投稿 → Google Form(8/8 15:59 JST)+受付スクショ。
+
+# (以下 8/6 時点の記録)
 
 > **締切: 2026-08-07 23:59 PST = 日本時間 8/8 15:59**。
 > リポジトリは **public 化済み**(機密監査済・MIT LICENSE・README 刷新済)。
