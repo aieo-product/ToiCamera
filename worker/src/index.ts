@@ -21,6 +21,13 @@ export interface Env {
   /** Separate base for STT/TTS (default https://api.openai.com/v1) so voice
    *  keeps working when MAIN_API_BASE_URL points at a chat-only local LLM. */
   AUDIO_API_BASE_URL?: string;
+  /** Cap on /analyze reply tokens (default 500). */
+  ANALYZE_MAX_TOKENS?: string;
+  /** Style lines appended to the analyze system prompt depending on the
+   *  device's AI-detail toggle (X-Detail: low|high). Retune output depth and
+   *  length here — no firmware update needed. */
+  ANALYZE_STYLE_LOW?: string;
+  ANALYZE_STYLE_HIGH?: string;
 }
 
 type Lang = "ja" | "en" | "zh";
@@ -179,6 +186,19 @@ function pickDetail(request: Request): "low" | "high" {
   return request.headers.get("x-detail") === "high" ? "high" : "low";
 }
 
+// The device only ever sends X-Detail low|high; what that MEANS is decided
+// here, so the owner can retune output depth without touching firmware.
+function analyzeStyle(env: Env, detailLevel: "low" | "high"): string {
+  const extra =
+    detailLevel === "high" ? env.ANALYZE_STYLE_HIGH : env.ANALYZE_STYLE_LOW;
+  return extra && extra.trim() ? "\n" + extra.trim() : "";
+}
+
+function analyzeMaxTokens(env: Env): number {
+  const n = Number(env.ANALYZE_MAX_TOKENS);
+  return Number.isFinite(n) && n >= 100 && n <= 4000 ? Math.floor(n) : 500;
+}
+
 async function analyzeWithOpenAI(
   env: Env,
   imageB64: string,
@@ -189,9 +209,9 @@ async function analyzeWithOpenAI(
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
-    max_completion_tokens: 500,
+    max_completion_tokens: analyzeMaxTokens(env),
     messages: [
-      { role: "system", content: SYSTEM_PROMPT[lang] },
+      { role: "system", content: SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) },
       {
         role: "user",
         content: [
@@ -493,8 +513,8 @@ async function handleAnalyze(
   const client = new Anthropic({ apiKey: env.TOICAMERA_MAIN_API_KEY });
   const response = await client.messages.create({
     model: env.MODEL,
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT[lang],
+    max_tokens: Math.max(analyzeMaxTokens(env), 1024),
+    system: SYSTEM_PROMPT[lang] + analyzeStyle(env, pickDetail(request)),
     output_config: {
       format: { type: "json_schema", schema: RESULT_SCHEMA },
     },

@@ -21,13 +21,21 @@
     // Model menu the device shows in Settings (comma-separated). The device
     // fetches this via GET /config and echoes one entry back as X-Model.
     "MODELS": "gpt-5.6-terra,gpt-5.6-luna",
-    // OpenAI-compatible API base. Point at a Cloudflare Tunnel to use a local
-    // LLM (e.g. Ollama: https://<tunnel-host>/v1) — see docs/worker-setup.md.
-    "OPENAI_BASE_URL": "https://api.openai.com/v1"
+    // OpenAI-compatible base URL of the main chat/vision backend. Point at a
+    // Cloudflare Tunnel to use a local LLM (e.g. Ollama: https://<host>/v1).
+    "MAIN_API_BASE_URL": "https://api.openai.com/v1",
+    // Output shaping — what ToiCamera's AI-detail (AI精度) low/high toggle
+    // MEANS is decided here, so depth/length are tunable without a firmware
+    // update. Style lines are appended to the analyze system prompt.
+    "ANALYZE_MAX_TOKENS": "500",
+    "ANALYZE_STYLE_LOW": "",
+    "ANALYZE_STYLE_HIGH": "Look closely at fine details in the image. Make `detail` 4-5 sentences with deeper observations (up to ~250 characters in ja/zh)."
   }
-  // Secrets (set via `akc get <NAME> --reveal | wrangler secret put <NAME>`):
-  //   ANTHROPIC_API_KEY    — Claude vision (when ANALYZE_PROVIDER=anthropic)
-  //   OPENAI_API_KEY       — TTS
-  //   OPENAI_FREE_API_KEY  — /analyze free daily-token key (data-sharing program)
-  //   DEVICE_TOKEN         — shared token the Stopwatch sends as X-Device-Token
+  // Secrets (set via `npx wrangler secret put <NAME>`):
+  //   TOICAMERA_MAIN_API_KEY — API key of YOUR chat/vision backend (OpenAI,
+  //                            Anthropic, or whatever MAIN_API_BASE_URL points at)
+  //   TOICAMERA_TTS_API_KEY  — key for voice STT/TTS (AUDIO_API_BASE_URL,
+  //                            default api.openai.com; optional — chirps otherwise)
+  //   DEVICE_TOKEN           — shared token ToiCamera sends as X-Device-Token
+  //                            (the value typed into ToiCamera's WiFi portal)
 }
