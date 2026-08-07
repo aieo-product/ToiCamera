@@ -58,7 +58,7 @@ Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(A
 | 画像の受け渡し | Stopwatch の SoftAP に カメラを収容(WiFi HTTP) | 当初の「同一 LAN」案はルーター依存と初回設定の煩雑さで棄却(ユーザー要望)。UART 化は両側カスタム FW + USB ピン転用のリスクがあるため Phase 2 のストレッチ。SoftAP は **stock サブネット(192.168.4.1)必須** — softAPConfig で変更すると DHCP プールが追従せずクライアントが IP を取れない(実測) |
 | カメラファームウェア | 公式 UserDemo への **STA サーバーパッチ**(`firmware/cams3/patches/0001`、101 行) | 工場ファームは STA モードで REST サーバーを起動しない(TCP 診断で port 80/81 拒否を確認)。接続失敗 30 秒で工場 AP モードへフォールバック(ロックアウト防止) |
 | AI 呼び出し | Cloudflare Worker 中継 | API キーをデバイスに置かない。プロンプト・モデル切替・TTS 差し替えを再書き込みなしで実施可能。ESP32 側の TLS/JSON 実装が単純化 |
-| 解析モデル | 暫定: OpenAI `gpt-4o-mini`(学習用無料トークン、env `ANALYZE_MODEL`)。`ANALYZE_PROVIDER=anthropic` で `claude-haiku-4-5` に切替可 | Anthropic アカウントのクレジット補充までの暫定運用。切替は Worker 再デプロイのみでデバイス無関係 |
+| 解析モデル | OpenAI 互換 API(vars `MAIN_API_BASE_URL`、既定 api.openai.com)。モデルメニューは vars `MODELS`(既定 `gpt-5.6-terra,gpt-5.6-luna`)で Worker が配信し、デバイスは `GET /config` で取得して `X-Model` で選択を返す | base URL を Cloudflare Tunnel 経由のローカル LLM(Ollama 等)に向け替え可能。モデル追加・切替は Worker 再デプロイのみでデバイス無関係 |
 | TTS | OpenAI `gpt-4o-mini-tts` → WAV 24kHz mono | M5Unified Speaker は WAV/RAW のみ(MP3 デコーダ非搭載)。品質不満時は Google TTS `ja-JP-Neural2`(LINEAR16)へ Worker 側のみで差替 |
 | 日本語表示 | M5GFX 内蔵 `efontJA_16` | 追加フォント資材なしで UTF-8 日本語描画。品質を上げたければ VLW 変換が後続手段 |
 | デバイス→Worker TLS | `setInsecure()` | 自前 Worker のみに接続・送信物は画像+デバイストークンのみ。トレードオフを README に明記。将来はルート CA ピン留め |
@@ -134,12 +134,21 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | Endpoint | 認証 | 入力 | 出力 |
 |---|---|---|---|
 | `GET /health` | なし | — | `{ok, model}` |
-| `POST /analyze` | `X-Device-Token` | raw `image/jpeg` | `{caption(≤15字), detail(≤150字)}` — Claude structured outputs でスキーマ強制 |
+| `GET /config` | `X-Device-Token` | — | `{models, voice, tts}` — Worker が提供するモデルメニューと TTS 声名(ファームは NVS にキャッシュ) |
+| `POST /analyze` | `X-Device-Token` | raw `image/jpeg` | `{caption(≤15字), detail(≤150字)}` — structured outputs(json_schema)でスキーマ強制 |
+| `POST /ask` | `X-Device-Token` | raw `audio/wav` + query `caption`, `detail` | `{question, answer}` — STT で文字起こし後、写真の文脈で回答 |
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` — 地名 + 最寄駅/徒歩分(取得失敗時は駅情報を空で返す) |
+| `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
 | `POST /tts` | `X-Device-Token` | `{text}` | `audio/wav`(パススルーストリーム) |
 
-シークレット(`wrangler secret`): `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEVICE_TOKEN`。
-vars: `MODEL` / `TTS_VOICE`。
+シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
+バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
+キーが必要)/ `TOICAMERA_TTS_API_KEY`(TTS 用。未設定ならチャープ音フォールバック)/
+`DEVICE_TOKEN`。
+vars: `MODELS` / `TTS_VOICE` / `TTS_MODEL` / `MAIN_API_BASE_URL`(チャット系の
+接続先。ローカル LLM に向けても STT/TTS は `AUDIO_API_BASE_URL`(既定
+api.openai.com)に接続する)/ `ANALYZE_MAX_TOKENS` / `ANALYZE_STYLE_LOW` /
+`ANALYZE_STYLE_HIGH`。
 
 ### 4.4 ケース(`case/`)
 
@@ -149,7 +158,7 @@ vars: `MODEL` / `TTS_VOICE`。
 ## 5. 性能・容量見積り
 
 - E2E レイテンシ目標 4〜8 秒: 撮影 0.3s + アップロード 0.5〜1s(SVGA ~100KB)+
-  Claude 1.5〜3s + TTS 1〜3s + 音声 DL 0.5〜1s
+  LLM 解析 1.5〜3s + TTS 1〜3s + 音声 DL 0.5〜1s
 - PSRAM ピーク <5MB / 8MB(JPEG 0.5MB + フレームバッファ 0.43MB + キャンバス
   0.45MB + WAV ≤3MB)
 - CamS3 消費電流: 撮影/WiFi ピーク 200〜400mA(Stopwatch 5V レールから供給、
