@@ -216,7 +216,7 @@ npx wrangler secret put DEVICE_TOKEN            <span class="cmt"># a password Y
 <em>Worker → Settings → Variables and Secrets → Add</em>,类型选 <strong>Secret</strong>:</span></p>
 <figure>
   <img src="images/worker/cf-secrets.jpg" alt="Cloudflare worker Settings tab, Variables and Secrets section with Add button">
-  <figcaption><span class="l-en">Dashboard alternative: add each secret by name here — the value is encrypted and never shown again.</span><span class="l-ja">ダッシュボード版: ここに名前ごとにシークレットを追加。値は暗号化され、二度と表示されません。</span><span class="l-zh">控制台方式:在这里按名称逐个添加密钥 — 值会被加密,之后不再显示。</span></figcaption>
+  <figcaption><span class="l-en">Dashboard alternative: add each secret by name here — values are encrypted and never shown again. Plaintext vars (model menu, tuning) are also editable here, but note <code>npx wrangler deploy</code> resets them to wrangler.jsonc.</span><span class="l-ja">ダッシュボード版: ここに名前ごとにシークレットを追加(値は暗号化され二度と表示されません)。モデルメニューやチューニング変数もここで編集できますが、<code>npx wrangler deploy</code> で wrangler.jsonc の値に戻る点に注意。</span><span class="l-zh">控制台方式:在这里按名称添加密钥(值会被加密,之后不再显示)。模型菜单、调优变量也可在此编辑,但注意 <code>npx wrangler deploy</code> 会把它们重置为 wrangler.jsonc 里的值。</span></figcaption>
 </figure>
 </div></div>
 
@@ -289,20 +289,40 @@ ToiCameraが選ぶのは<em>ピコピコか TTS か</em>だけ。TTS が話す�
 <span class="l-zh">改完执行 <code>npx wrangler deploy</code>,重启ToiCamera即生效。语音同理:
 ToiCamera只选<em>哔哔声还是 TTS</em>;TTS 用什么音色由 Worker 的 <code>TTS_VOICE</code> 变量决定。</span></p>
 
+<h2 id="tuning">🎚 <span class="l-en">Output tuning — what “AI detail” means is up to you</span><span class="l-ja">出力チューニング — 「AI精度」の意味は Worker が決める</span><span class="l-zh">输出调优 — 「AI 精度」的含义由 Worker 决定</span></h2>
+<p><span class="l-en">ToiCamera's Settings has an <em>AI detail</em> low/high toggle. The device only sends
+<code>X-Detail: low|high</code> — what that actually does is defined by three Worker vars, so you can
+retune answer depth and length <strong>without a firmware update</strong>:</span>
+<span class="l-ja">ToiCamera の設定には「AI精度」低/高のトグルがあります。デバイスが送るのは
+<code>X-Detail: low|high</code> だけで、その意味は Worker の変数 3 つで決まります。つまり
+<strong>ファーム更新なしで</strong>解説の深さ・長さを調整できます:</span>
+<span class="l-zh">ToiCamera 设置里有「AI 精度」低/高开关。设备只发送
+<code>X-Detail: low|high</code> — 它的实际含义由 Worker 的三个变量定义,因此
+<strong>无需更新固件</strong>即可调整解说的深度和长度:</span></p>
+<pre><code>"ANALYZE_MAX_TOKENS": "500",   <span class="cmt">// reply length cap</span>
+"ANALYZE_STYLE_LOW":  "",      <span class="cmt">// extra instruction for low (empty = base prompt as-is)</span>
+"ANALYZE_STYLE_HIGH": "Look closely at fine details in the image. Make `detail` 4-5 sentences ..."</code></pre>
+<p class="muted"><span class="l-en">The toggle also maps to the OpenAI image-<code>detail</code> parameter (how closely the model
+inspects the photo) — local LLMs mostly ignore that part, which is exactly why the style vars exist.</span>
+<span class="l-ja">このトグルは OpenAI の image <code>detail</code> パラメータ(写真をどれだけ細かく見るか)にも対応しますが、
+ローカル LLM はほぼ無視します — だからこそスタイル変数で意味を持たせられるようにしています。</span>
+<span class="l-zh">该开关也对应 OpenAI 的 image <code>detail</code> 参数(模型看照片的精细程度)— 本地 LLM 大多会忽略它,
+这正是引入风格变量的原因。</span></p>
+
 <div class="note">🎙
 <span class="l-en"><strong>Voice cost &amp; local voice:</strong> TTS speech uses the audio backend at
 <code>AUDIO_API_BASE_URL</code> (default OpenAI <code>gpt-4o-mini-tts</code> — roughly ~$0.015 per minute
 of audio; a one-shot explanation is a fraction of a cent). STT for questions is billed per audio
-minute as well. The var already accepts any OpenAI-compatible audio server, so a <strong>fully local
+minute as well. ToiCamera shows the configured voice right in Settings — <code>TTS(marin)</code>. The var already accepts any OpenAI-compatible audio server, so a <strong>fully local
 voice</strong> (e.g. Speaches / LocalAI) is possible — a verified local-voice recipe is
 <strong>coming soon</strong>.</span>
 <span class="l-ja"><strong>ボイスのコストとローカル音声:</strong> TTS は <code>AUDIO_API_BASE_URL</code> の音声バックエンド
 (既定 OpenAI <code>gpt-4o-mini-tts</code> — 音声 1 分あたりおよそ $0.015、1 回の解説なら 1 円未満)を使います。
-質問の音声認識(STT)も音声長に応じた課金です。この変数は OpenAI 互換の音声サーバーならどこでも指せるため、
+質問の音声認識(STT)も音声長に応じた課金です。設定した声名は ToiCamera の設定画面に <code>TTS(marin)</code> のように表示されます。この変数は OpenAI 互換の音声サーバーならどこでも指せるため、
 <strong>音声も完全ローカル</strong>(Speaches / LocalAI など)にすることが可能です — 検証済みのローカル音声手順は<strong>今後追加予定</strong>。</span>
 <span class="l-zh"><strong>语音成本与本地语音:</strong> TTS 使用 <code>AUDIO_API_BASE_URL</code> 的音频后端
 (默认 OpenAI <code>gpt-4o-mini-tts</code> — 每分钟音频约 $0.015,一次解说不到一分钱)。提问的语音识别(STT)同样按音频时长计费。
-该变量可指向任何 OpenAI 兼容的音频服务,因此<strong>语音也可以完全本地化</strong>(如 Speaches / LocalAI)— 经过验证的本地语音教程<strong>即将推出</strong>。</span>
+配置的音色名会直接显示在 ToiCamera 设置里(如 <code>TTS(marin)</code>)。该变量可指向任何 OpenAI 兼容的音频服务,因此<strong>语音也可以完全本地化</strong>(如 Speaches / LocalAI)— 经过验证的本地语音教程<strong>即将推出</strong>。</span>
 </div>
 
 <h2 id="local-llm">🏠 <span class="l-en">Local LLM (Ollama, LM Studio, …)</span><span class="l-ja">ローカル LLM(Ollama・LM Studio など)</span><span class="l-zh">本地 LLM(Ollama、LM Studio 等)</span></h2>
@@ -325,22 +345,21 @@ voice</strong> (e.g. Speaches / LocalAI) is possible — a verified local-voice 
   <line x1="475" y1="60" x2="595" y2="60" stroke="#57d993" stroke-width="2" marker-end="url(#ar3)"/>
   <rect x="600" y="36" width="150" height="48" rx="12" fill="#191d23" stroke="#232a33"/>
   <text x="675" y="58" fill="#e8eaed" text-anchor="middle">Ollama :11434</text>
-  <text x="675" y="76" fill="#9aa3ad" text-anchor="middle" font-size="11">gemma3 etc.</text>
+  <text x="675" y="76" fill="#9aa3ad" text-anchor="middle" font-size="11">gemma4 etc.</text>
 </svg>
 </div>
 <ol>
   <li><span class="l-en">Run a local server with an OpenAI-compatible API — e.g. <code>ollama serve</code> (endpoint <code>http://localhost:11434/v1</code>)</span>
       <span class="l-ja">OpenAI 互換 API のローカルサーバーを起動 — 例: <code>ollama serve</code>(エンドポイント <code>http://localhost:11434/v1</code>)</span>
       <span class="l-zh">运行一个 OpenAI 兼容 API 的本地服务 — 例如 <code>ollama serve</code>(端点 <code>http://localhost:11434/v1</code>)</span></li>
-  <li><span class="l-en">Expose it: <code>cloudflared tunnel --url http://localhost:11434</code> → you get a public <code>https://….trycloudflare.com</code> host (or use a named tunnel on your own domain)</span>
-      <span class="l-ja">公開する: <code>cloudflared tunnel --url http://localhost:11434</code> → 公開ホスト <code>https://….trycloudflare.com</code> が発行されます(独自ドメインの named tunnel でも可)</span>
-      <span class="l-zh">暴露到公网:<code>cloudflared tunnel --url http://localhost:11434</code> → 得到公开主机 <code>https://….trycloudflare.com</code>(也可用自有域名的命名隧道)</span></li>
+  <li><span class="l-en">Expose it: <code>cloudflared tunnel --url http://localhost:11434 --http-host-header "localhost:11434"</code> → you get a public <code>https://….trycloudflare.com</code> host (or use a named tunnel on your own domain)</span>
+      <span class="l-ja">公開する: <code>cloudflared tunnel --url http://localhost:11434 --http-host-header "localhost:11434"</code> → 公開ホスト <code>https://….trycloudflare.com</code> が発行されます(独自ドメインの named tunnel でも可)</span>
+      <span class="l-zh">暴露到公网:<code>cloudflared tunnel --url http://localhost:11434 --http-host-header "localhost:11434"</code> → 得到公开主机 <code>https://….trycloudflare.com</code>(也可用自有域名的命名隧道)</span></li>
   <li><span class="l-en">Point the Worker at it and redeploy:</span>
       <span class="l-ja">Worker をそこに向けて再デプロイ:</span>
       <span class="l-zh">把 Worker 指过去并重新部署:</span>
 <pre><code>"MAIN_API_BASE_URL": "https://&lt;tunnel-host&gt;/v1",
-"MODELS": "gemma3:12b",          <span class="cmt">// whatever `ollama list` shows</span>
-"ANALYZE_MODEL": "gemma3:12b"    <span class="cmt">// default when the device sends none</span></code></pre></li>
+"MODELS": "gemma4:12b"           <span class="cmt">// whatever `ollama list` shows; first = default</span></code></pre></li>
 </ol>
 <div class="tip"><span class="l-en">Voice STT/TTS intentionally use a <em>separate</em> base
 (<code>AUDIO_API_BASE_URL</code>, default api.openai.com) — speech keeps working
