@@ -8,6 +8,8 @@
 
 > **8/7 夕方**: Worker シークレット名変更(TOICAMERA_MAIN_API_KEY / TOICAMERA_TTS_API_KEY、本番投入済み・旧名は未削除)。**本番 Worker は母艦 gemma4:12b に切替中**: named tunnel `toicamera-llm`(toi-llm.teian.app → localhost:11434、config は ~/.cloudflared/toicamera-llm.yml、cloudflared はバックグラウンド実行中 — **再起動で止まる/LaunchAgent 未設定**)。/analyze 実測 ~29s(ファームの 30s タイムアウトすれすれ)。**OpenAI に戻すには wrangler.jsonc 既定のまま `npx wrangler deploy`**。Pages: y-cable 3言語化+CLIP-B/公式リンク、プロンプト A(API 非依存)/B(母艦 LLM)公開済み。
 
+> **8/8 朝**: 実機で analyze HTTP -1 → 原因=TLS ヒープ枯渇(config/tts クライアントの keep-alive)。**修正+TTS プリフェッチ(音声生成中表示)= PR #61(未マージ・実機検証待ち)**。検証手順は `userInput/TTS_VERIFY_SESSION_PROMPT.md`。Worker は OpenAI 構成に復帰済み(gemma/トンネルは停止中・戻し方は Pages ガイド)。ローカル TTS は issue #56(プロンプト: userInput/LOCAL_TTS_SESSION_PROMPT.md)。キービジュアル素材は issue #59。
+
 # (以下 8/6 時点の記録)
 
 > **締切: 2026-08-07 23:59 PST = 日本時間 8/8 15:59**。
