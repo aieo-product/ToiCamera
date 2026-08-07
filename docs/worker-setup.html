@@ -106,7 +106,11 @@ Deployed toicamera triggers (0.91 sec)
   <span class="y">https://toicamera.&lt;your-subdomain&gt;.workers.dev</span></code></pre>
 <figure>
   <img src="images/worker/cf-workers-overview.jpg" alt="Cloudflare dashboard, Workers and Pages list showing the deployed toicamera worker">
-  <figcaption>After deploying you can see the Worker in the dashboard: <em>Compute (Workers) → toicamera</em>. The <code>workers.dev</code> URL shown here is the one the watch calls.</figcaption>
+  <figcaption>After deploying, the Worker appears in the dashboard under <em>Compute (Workers) → Workers &amp; Pages</em>. The <code>workers.dev</code> URL shown on the card is the one the watch calls.</figcaption>
+</figure>
+<figure>
+  <img src="images/worker/cf-worker-url.jpg" alt="Worker overview page showing the workers.dev URL and the Enabled Workers Logs toggle">
+  <figcaption>Clicking the Worker opens its overview — your URL sits at the top, and <em>Workers Logs: Enabled</em> means requests show up in the Observability tab (handy in step 4).</figcaption>
 </figure>
 </div></div>
 
@@ -161,7 +165,13 @@ This field expects the <code>DEVICE_TOKEN</code> shared secret — <strong>not</
   <tr><td><code>429</code> + <code>reset_jst</code></td><td>OpenAI free daily quota exhausted; the watch shows the reset time</td></tr>
   <tr><td><code>400 empty or truncated image</code></td><td>(on /analyze) the test file is smaller than 128 bytes</td></tr>
 </table>
-<p>Watch live logs while testing from the device: <code>npx wrangler tail</code>.</p>
+<p>Watch live logs while testing from the device: <code>npx wrangler tail</code> —
+or in the dashboard, the Worker's <em>Observability</em> tab shows every request
+the watch makes:</p>
+<figure>
+  <img src="images/worker/cf-logs.jpg" alt="Worker Observability tab listing POST /analyze and /digest requests from the watch">
+  <figcaption>Every shutter press shows up as <code>POST /analyze</code> (and the daily summary as <code>/digest</code>). 0 errors = the watch and your Worker are talking.</figcaption>
+</figure>
 </div></div>
 
 <h2 id="models">🎛 Your Worker, your model menu</h2>
