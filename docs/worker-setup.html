@@ -71,34 +71,83 @@ title: Worker setup — bring your own AI relay | ToiCamera
   你的 OpenAI 密钥不会出现在屏幕上(wrangler 通过隐藏输入接收)。直接粘贴即可,助手会用中文回应。</span>
 </p>
 
+<h3><span class="l-en">Prompt A — cloud API (OpenAI / compatible / Anthropic)</span><span class="l-ja">プロンプト A — クラウド API(OpenAI / 互換 API / Anthropic)</span><span class="l-zh">提示词 A — 云端 API(OpenAI / 兼容 API / Anthropic)</span></h3>
 <pre><code>You are setting up the AI relay Worker for ToiCamera
 (https://github.com/aieo-product/ToiCamera) on MY Cloudflare account.
 
 Do this, asking me for input only when marked [ASK]:
+0. [ASK] Which AI backend do I want?
+   (a) OpenAI   (b) any OpenAI-compatible API (OpenRouter, Groq, DeepSeek,
+   a local server behind a tunnel, ...)   (c) Anthropic Claude for vision
 1. git clone https://github.com/aieo-product/ToiCamera && cd ToiCamera/worker
 2. npm install
-3. npx wrangler deploy
+3. Configure vars in wrangler.jsonc for my choice:
+   (a) leave the defaults
+   (b) "OPENAI_BASE_URL": "&lt;the API base, e.g. https://openrouter.ai/api/v1&gt;"
+       "MODELS": "&lt;comma-separated model ids to show on the watch&gt;"
+       "ANALYZE_MODEL": "&lt;default model id&gt;"
+   (c) "ANALYZE_PROVIDER": "anthropic", "MODEL": "&lt;claude model id&gt;"
+4. npx wrangler deploy
    - If wrangler is not logged in, run `npx wrangler login` first and tell me
      to approve it in the browser.
    - Record the printed Worker URL, e.g. https://toicamera.SUBDOMAIN.workers.dev
-4. Set the secrets with `npx wrangler secret put NAME` one by one:
-   - OPENAI_FREE_API_KEY  → [ASK] my OpenAI API key
-     (https://platform.openai.com/api-keys) — I will paste it into the hidden
-     prompt myself; do not echo it.
-   - OPENAI_API_KEY       → same key again (used for TTS)
-   - DEVICE_TOKEN         → generate one with `openssl rand -hex 16`, show it
-     to me, and tell me to keep it (the watch needs the same value).
-5. Verify:
+5. Set the secrets one by one with `npx wrangler secret put NAME`
+   (I paste values into the hidden prompt myself; never echo them):
+   - TOICAMERA_MAIN_API_KEY → [ASK] the API key of my chat/vision backend
+   - TOICAMERA_TTS_API_KEY  → [ASK] an OpenAI-compatible key for voice STT/TTS
+     (audio always uses OPENAI_AUDIO_BASE_URL, default api.openai.com — skip
+     if I don't need voice; the watch then falls back to chirps)
+   - ANTHROPIC_API_KEY      → only for choice (c)
+   - DEVICE_TOKEN           → generate with `openssl rand -hex 16`, show it to
+     me, and remind me THIS is the value I type into the watch's WiFi settings
+     portal (Settings → WiFi → scan QR → http://192.168.4.1).
+6. Verify:
    curl -s https://&lt;worker-url&gt;/config -H "x-device-token: &lt;token&gt;"
    → expect {"models":[...],"voice":"...","tts":true}
-6. Print a summary: Worker URL + device token + the two lines I must put in
+7. Print a summary: Worker URL + device token + the two lines for
    firmware/stopwatch/secrets.ini:
      -DWORKER_URL=\"https://&lt;worker-url&gt;\"
-     -DDEVICE_TOKEN=\"&lt;token&gt;\"
-   and remind me: the token can also be entered later from the watch
-   (Settings → WiFi → QR → http://192.168.4.1).
-Optional [ASK]: if I want a custom model menu, edit the MODELS var in
-worker/wrangler.jsonc (comma-separated) and redeploy.</code></pre>
+     -DDEVICE_TOKEN=\"&lt;token&gt;\"</code></pre>
+
+<h3><span class="l-en">Prompt B — wire a local LLM on your own machine</span><span class="l-ja">プロンプト B — 母艦のローカル LLM を紐づける</span><span class="l-zh">提示词 B — 接入你电脑上的本地 LLM</span></h3>
+<p>
+<span class="l-en">Run this one <strong>on the machine that hosts the LLM</strong>. It assumes Ollama
+with the vision-capable <code>gemma4</code> — swap in whatever local LLM you like and
+tie it to your Worker.</span>
+<span class="l-ja"><strong>LLM を動かしている母艦の上で</strong>実行します。ビジョン対応の
+<code>gemma4</code>(Ollama)を前提にしていますが、<strong>好きなローカル LLM に読み替えて
+Worker に紐づけてください</strong>。</span>
+<span class="l-zh">请<strong>在运行 LLM 的那台电脑上</strong>执行。示例以支持视觉的
+<code>gemma4</code>(Ollama)为前提 — 可以换成任何你喜欢的本地 LLM 并绑定到你的 Worker。</span>
+</p>
+<pre><code>You are wiring the LLM running on THIS machine into my ToiCamera Worker
+(repo: https://github.com/aieo-product/ToiCamera, worker already deployed).
+Assume Ollama with the vision-capable model gemma4:12b — if I name another
+local model or server, use that instead.
+
+1. Check the local server: `ollama list` has the model (else `ollama pull
+   gemma4:12b`) and `curl http://localhost:11434/v1/models` answers.
+2. Expose it with a Cloudflare Tunnel. Quick test:
+     cloudflared tunnel --url http://localhost:11434 --http-host-header "localhost:11434"
+   (--http-host-header matters — Ollama rejects foreign Host headers.)
+   For a permanent setup create a named tunnel instead:
+     cloudflared tunnel create toicamera-llm
+     cloudflared tunnel route dns toicamera-llm llm.&lt;my-domain&gt;
+     write a config with ingress → http://localhost:11434 and
+     originRequest.httpHostHeader "localhost:11434", then
+     cloudflared tunnel run toicamera-llm   (keep it running)
+3. Verify through the tunnel: curl https://&lt;tunnel-host&gt;/v1/models
+4. In ToiCamera/worker/wrangler.jsonc set:
+     "OPENAI_BASE_URL": "https://&lt;tunnel-host&gt;/v1"
+     "MODELS": "gemma4:12b"            // list only models this server has
+     "ANALYZE_MODEL": "gemma4:12b"
+   then `npx wrangler deploy`.
+5. E2E test: POST a small JPEG to &lt;worker-url&gt;/analyze with headers
+   x-device-token + X-Model: gemma4:12b → expect {"caption":...,"detail":...}
+   (the first call is slow while the model loads into memory).
+Notes: /analyze needs a VISION-capable model. Voice STT/TTS stays on
+OPENAI_AUDIO_BASE_URL (OpenAI) and keeps working unchanged. If the tunnel
+stops, redeploy with the OpenAI defaults to switch back.</code></pre>
 
 <h2 id="manual">🔧 <span class="l-en">Manual path, step by step</span><span class="l-ja">手動ルート: ステップごとに</span><span class="l-zh">手动路径:逐步进行</span></h2>
 
@@ -151,14 +200,14 @@ Deployed toicamera triggers (0.91 sec)
 command prompts on stdin, so keys never touch your shell history:</span>
 <span class="l-ja">Worker は 3 つのシークレット(+任意 1 つ)を読みます。ターミナルから — 各コマンドは非表示入力で受け取るので、キーがシェル履歴に残りません:</span>
 <span class="l-zh">Worker 读取 3 个密钥(外加 1 个可选)。在终端执行 — 每条命令都通过隐藏输入接收,密钥不会留在 shell 历史里:</span></p>
-<pre><code>npx wrangler secret put OPENAI_FREE_API_KEY   <span class="cmt"># paste your OpenAI key</span>
-npx wrangler secret put OPENAI_API_KEY        <span class="cmt"># same key again (TTS)</span>
-npx wrangler secret put DEVICE_TOKEN          <span class="cmt"># a password YOU make up, e.g. `openssl rand -hex 16`</span></code></pre>
+<pre><code>npx wrangler secret put TOICAMERA_MAIN_API_KEY  <span class="cmt"># your AI backend's API key</span>
+npx wrangler secret put TOICAMERA_TTS_API_KEY   <span class="cmt"># key for voice STT/TTS (OpenAI; often the same key)</span>
+npx wrangler secret put DEVICE_TOKEN            <span class="cmt"># a password YOU make up, e.g. `openssl rand -hex 16`</span></code></pre>
 <table>
   <tr><th>Secret</th><th><span class="l-en">What it is</span><span class="l-ja">説明</span><span class="l-zh">说明</span></th></tr>
-  <tr><td><code>OPENAI_FREE_API_KEY</code></td><td><span class="l-en">OpenAI key used for vision / Q&amp;A / digest. Any OpenAI key works — the name comes from the author's free daily-token program</span><span class="l-ja">画像解析 / Q&amp;A / 要約に使う OpenAI キー。どの OpenAI キーでも OK(名前は作者が無料トークン枠を使っていた名残)</span><span class="l-zh">用于视觉 / 问答 / 摘要的 OpenAI 密钥。任何 OpenAI 密钥都可以 — 名字源于作者曾使用的免费每日额度计划</span></td></tr>
-  <tr><td><code>OPENAI_API_KEY</code></td><td><span class="l-en">OpenAI key used for TTS. Usually the <strong>same key</strong> as above</span><span class="l-ja">TTS に使う OpenAI キー。通常は上と<strong>同じキー</strong>で OK</span><span class="l-zh">用于 TTS 的 OpenAI 密钥。通常与上面<strong>同一个</strong>即可</span></td></tr>
-  <tr><td><code>DEVICE_TOKEN</code></td><td><span class="l-en">A shared secret <strong>you invent</strong>. The watch sends it as <code>X-Device-Token</code>; the Worker rejects everything else</span><span class="l-ja"><strong>自分で決める</strong>合言葉。時計が <code>X-Device-Token</code> として送り、一致しないリクエストは Worker が拒否します</span><span class="l-zh"><strong>由你自己定</strong>的共享口令。手表以 <code>X-Device-Token</code> 发送,不匹配的请求会被 Worker 拒绝</span></td></tr>
+  <tr><td><code>TOICAMERA_MAIN_API_KEY</code></td><td><span class="l-en">API key of your main chat/vision backend (vision, Q&amp;A, digest). OpenAI by default — or the key of whatever OpenAI-compatible API <code>OPENAI_BASE_URL</code> points at</span><span class="l-ja">メインのチャット/ビジョン用 API キー(画像解析・Q&amp;A・要約)。既定は OpenAI — <code>OPENAI_BASE_URL</code> を別の互換 API に向けたときはそのキー</span><span class="l-zh">主要聊天/视觉后端的 API 密钥(视觉、问答、摘要)。默认是 OpenAI — 若 <code>OPENAI_BASE_URL</code> 指向其他兼容 API,则填那个 API 的密钥</span></td></tr>
+  <tr><td><code>TOICAMERA_TTS_API_KEY</code></td><td><span class="l-en">Key for voice STT/TTS (goes to <code>OPENAI_AUDIO_BASE_URL</code>, default OpenAI). Usually the <strong>same key</strong> as above; skip it if you don't need voice — the watch falls back to chirps</span><span class="l-ja">音声 STT/TTS 用キー(<code>OPENAI_AUDIO_BASE_URL</code>、既定 OpenAI へ)。通常は上と<strong>同じキー</strong>で OK。音声不要ならスキップ可 — 時計はピコピコにフォールバック</span><span class="l-zh">语音 STT/TTS 密钥(发往 <code>OPENAI_AUDIO_BASE_URL</code>,默认 OpenAI)。通常与上面<strong>同一个</strong>即可;不需要语音可跳过 — 手表会退回哔哔声</span></td></tr>
+  <tr><td><code>DEVICE_TOKEN</code></td><td><span class="l-en">A shared secret <strong>you invent</strong>. The watch sends it as <code>X-Device-Token</code>; the Worker rejects everything else. <strong>This is the value you type into the watch's WiFi settings portal</strong> (Settings → WiFi → scan QR → <code>http://192.168.4.1</code>)</span><span class="l-ja"><strong>自分で決める</strong>合言葉。時計が <code>X-Device-Token</code> として送り、一致しないリクエストは Worker が拒否します。<strong>時計の WiFi 設定画面(ポータル)の「デバイストークン」欄に入力するのがこの値</strong>です(設定 → WiFi → QR → <code>http://192.168.4.1</code>)</span><span class="l-zh"><strong>由你自己定</strong>的共享口令。手表以 <code>X-Device-Token</code> 发送,不匹配的请求会被 Worker 拒绝。<strong>在手表 WiFi 设置门户里填的就是这个值</strong>(设置 → WiFi → 扫码 → <code>http://192.168.4.1</code>)</span></td></tr>
   <tr><td><code>ANTHROPIC_API_KEY</code></td><td><span class="l-en">Optional — only if you flip <code>ANALYZE_PROVIDER</code> to <code>anthropic</code></span><span class="l-ja">任意 — <code>ANALYZE_PROVIDER</code> を <code>anthropic</code> に切り替える場合のみ</span><span class="l-zh">可选 — 仅当把 <code>ANALYZE_PROVIDER</code> 切到 <code>anthropic</code> 时需要</span></td></tr>
 </table>
 <p><span class="l-en">Prefer clicking? The dashboard does the same thing:

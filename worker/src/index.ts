@@ -2,10 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export interface Env {
   ANTHROPIC_API_KEY: string;
-  OPENAI_API_KEY: string;
+  TOICAMERA_TTS_API_KEY: string;
   /** Free daily-token key (data-sharing program) — used for /analyze while
    *  the Anthropic account has no credit. */
-  OPENAI_FREE_API_KEY: string;
+  TOICAMERA_MAIN_API_KEY: string;
   DEVICE_TOKEN: string;
   /** "openai" | "anthropic" — which vision backend /analyze uses */
   ANALYZE_PROVIDER: string;
@@ -134,7 +134,7 @@ async function openaiChat(env: Env, payload: unknown): Promise<Response> {
   return fetch(`${openaiBase(env)}/chat/completions`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
+      authorization: `Bearer ${env.TOICAMERA_MAIN_API_KEY}`,
       "content-type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -560,7 +560,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     form.append("language", lang);
     const res = await fetch(`${audioBase(env)}/audio/transcriptions`, {
       method: "POST",
-      headers: { authorization: `Bearer ${env.OPENAI_FREE_API_KEY}` },
+      headers: { authorization: `Bearer ${env.TOICAMERA_MAIN_API_KEY}` },
       body: form,
     });
     if (!res.ok) {
@@ -695,7 +695,7 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
   const upstream = await fetch(`${audioBase(env)}/audio/speech`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
