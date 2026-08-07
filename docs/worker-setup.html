@@ -7,16 +7,16 @@ title: Worker setup — bring your own AI relay | ToiCamera
   <span class="badge"><span class="l-en">FEATURED — bring your own backend</span><span class="l-ja">目玉機能 — 自分のバックエンドを持ち込む</span><span class="l-zh">特色功能 — 自带后端</span></span>
   <h1><span class="l-en">Worker setup</span><span class="l-ja">Worker 構築ガイド</span><span class="l-zh">Worker 搭建指南</span></h1>
   <p class="lede">
-    <span class="l-en">ToiCamera never talks to OpenAI directly. The watch calls a small
+    <span class="l-en">ToiCamera never talks to OpenAI directly. ToiCamera calls a small
     <strong>Cloudflare Worker</strong> that holds every API key, defines the model menu,
     picks the TTS voice and answers with strict JSON. You deploy it under
     <strong>your own free Cloudflare account</strong> — the whole system is yours.
     No shared backend, no third-party server.</span>
-    <span class="l-ja">ToiCamera が OpenAI と直接通信することはありません。時計が呼ぶのは小さな
+    <span class="l-ja">ToiCamera が OpenAI と直接通信することはありません。ToiCameraが呼ぶのは小さな
     <strong>Cloudflare Worker</strong> — API キーを保管し、モデルメニューを定義し、TTS の声を決め、
     厳密な JSON で応答します。これを<strong>自分の無料 Cloudflare アカウント</strong>にデプロイすれば、
     システム全体があなたのもの。共有バックエンドも第三者サーバーもありません。</span>
-    <span class="l-zh">ToiCamera 从不直接与 OpenAI 通信。手表调用的是一个小小的
+    <span class="l-zh">ToiCamera 从不直接与 OpenAI 通信。ToiCamera调用的是一个小小的
     <strong>Cloudflare Worker</strong> — 它保管所有 API 密钥、定义模型菜单、决定 TTS 音色,
     并以严格的 JSON 应答。把它部署到<strong>你自己的免费 Cloudflare 账号</strong>下,
     整套系统就完全属于你。没有共享后端,没有第三方服务器。</span>
@@ -29,7 +29,7 @@ title: Worker setup — bring your own AI relay | ToiCamera
     <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#41d9ff"/></marker>
   </defs>
   <circle cx="80" cy="80" r="52" fill="none" stroke="#ffd23e" stroke-width="6" stroke-dasharray="245 82" transform="rotate(-135 80 80)"/>
-  <text x="80" y="76" fill="#e8eaed" text-anchor="middle">Watch</text>
+  <text x="80" y="76" fill="#e8eaed" text-anchor="middle" font-size="11">ToiCamera</text>
   <text x="80" y="94" fill="#9aa3ad" text-anchor="middle" font-size="11">X-Device-Token</text>
   <line x1="140" y1="80" x2="255" y2="80" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar2)"/>
   <text x="197" y="66" fill="#9aa3ad" text-anchor="middle" font-size="11">HTTPS</text>
@@ -49,11 +49,11 @@ title: Worker setup — bring your own AI relay | ToiCamera
 
 <div class="note">⏱
   <span class="l-en"><strong>Time budget: about 10 minutes.</strong> Everything runs on
-  Cloudflare's free tier. You only pay OpenAI for what the watch actually asks.</span>
+  Cloudflare's free tier. You only pay OpenAI for what ToiCamera actually asks.</span>
   <span class="l-ja"><strong>所要時間: 約10分。</strong>すべて Cloudflare の無料枠で動きます。
-  OpenAI の費用も、時計が実際に問いかけた分だけ。</span>
+  OpenAI の費用も、ToiCameraが実際に問いかけた分だけ。</span>
   <span class="l-zh"><strong>预计耗时:约 10 分钟。</strong>一切都跑在 Cloudflare 免费套餐上。
-  OpenAI 只为手表实际的提问付费。</span>
+  OpenAI 只为ToiCamera实际的提问付费。</span>
 </div>
 
 <h2 id="ai">⚡ <span class="l-en">Fastest path: let an AI do it</span><span class="l-ja">最速ルート: AI に任せる</span><span class="l-zh">最快路径:交给 AI</span></h2>
@@ -83,10 +83,11 @@ Do this, asking me for input only when marked [ASK]:
 2. npm install
 3. Configure vars in wrangler.jsonc for my choice:
    (a) leave the defaults
-   (b) "OPENAI_BASE_URL": "&lt;the API base, e.g. https://openrouter.ai/api/v1&gt;"
-       "MODELS": "&lt;comma-separated model ids to show on the watch&gt;"
+   (b) "MAIN_API_BASE_URL": "&lt;the API base, e.g. https://openrouter.ai/api/v1&gt;"
+       "MODELS": "&lt;comma-separated model ids to show on ToiCamera&gt;"
        "ANALYZE_MODEL": "&lt;default model id&gt;"
    (c) "ANALYZE_PROVIDER": "anthropic", "MODEL": "&lt;claude model id&gt;"
+       (the same TOICAMERA_MAIN_API_KEY secret then holds my Anthropic key)
 4. npx wrangler deploy
    - If wrangler is not logged in, run `npx wrangler login` first and tell me
      to approve it in the browser.
@@ -95,11 +96,10 @@ Do this, asking me for input only when marked [ASK]:
    (I paste values into the hidden prompt myself; never echo them):
    - TOICAMERA_MAIN_API_KEY → [ASK] the API key of my chat/vision backend
    - TOICAMERA_TTS_API_KEY  → [ASK] an OpenAI-compatible key for voice STT/TTS
-     (audio always uses OPENAI_AUDIO_BASE_URL, default api.openai.com — skip
-     if I don't need voice; the watch then falls back to chirps)
-   - ANTHROPIC_API_KEY      → only for choice (c)
+     (audio always uses AUDIO_API_BASE_URL, default api.openai.com — skip
+     if I don't need voice; ToiCamera then falls back to chirps)
    - DEVICE_TOKEN           → generate with `openssl rand -hex 16`, show it to
-     me, and remind me THIS is the value I type into the watch's WiFi settings
+     me, and remind me THIS is the value I type into ToiCamera's WiFi settings
      portal (Settings → WiFi → scan QR → http://192.168.4.1).
 6. Verify:
    curl -s https://&lt;worker-url&gt;/config -H "x-device-token: &lt;token&gt;"
@@ -138,7 +138,7 @@ local model or server, use that instead.
      cloudflared tunnel run toicamera-llm   (keep it running)
 3. Verify through the tunnel: curl https://&lt;tunnel-host&gt;/v1/models
 4. In ToiCamera/worker/wrangler.jsonc set:
-     "OPENAI_BASE_URL": "https://&lt;tunnel-host&gt;/v1"
+     "MAIN_API_BASE_URL": "https://&lt;tunnel-host&gt;/v1"
      "MODELS": "gemma4:12b"            // list only models this server has
      "ANALYZE_MODEL": "gemma4:12b"
    then `npx wrangler deploy`.
@@ -146,7 +146,7 @@ local model or server, use that instead.
    x-device-token + X-Model: gemma4:12b → expect {"caption":...,"detail":...}
    (the first call is slow while the model loads into memory).
 Notes: /analyze needs a VISION-capable model. Voice STT/TTS stays on
-OPENAI_AUDIO_BASE_URL (OpenAI) and keeps working unchanged. If the tunnel
+AUDIO_API_BASE_URL (OpenAI) and keeps working unchanged. If the tunnel
 stops, redeploy with the OpenAI defaults to switch back.</code></pre>
 
 <h2 id="manual">🔧 <span class="l-en">Manual path, step by step</span><span class="l-ja">手動ルート: ステップごとに</span><span class="l-zh">手动路径:逐步进行</span></h2>
@@ -186,7 +186,7 @@ Deployed toicamera triggers (0.91 sec)
   <span class="y">https://toicamera.&lt;your-subdomain&gt;.workers.dev</span></code></pre>
 <figure>
   <img src="images/worker/cf-workers-overview.jpg" alt="Cloudflare dashboard, Workers and Pages list showing the deployed toicamera worker">
-  <figcaption><span class="l-en">After deploying, the Worker appears in the dashboard under <em>Compute (Workers) → Workers &amp; Pages</em>. The <code>workers.dev</code> URL on the card is the one the watch calls.</span><span class="l-ja">デプロイ後、ダッシュボードの <em>Compute (Workers) → Workers &amp; Pages</em> に Worker が現れます。カードの <code>workers.dev</code> URL が時計の呼び先です。</span><span class="l-zh">部署后,Worker 会出现在控制台的 <em>Compute (Workers) → Workers &amp; Pages</em> 里。卡片上的 <code>workers.dev</code> URL 就是手表要调用的地址。</span></figcaption>
+  <figcaption><span class="l-en">After deploying, the Worker appears in the dashboard under <em>Compute (Workers) → Workers &amp; Pages</em>. The <code>workers.dev</code> URL on the card is the one ToiCamera calls.</span><span class="l-ja">デプロイ後、ダッシュボードの <em>Compute (Workers) → Workers &amp; Pages</em> に Worker が現れます。カードの <code>workers.dev</code> URL がToiCameraの呼び先です。</span><span class="l-zh">部署后,Worker 会出现在控制台的 <em>Compute (Workers) → Workers &amp; Pages</em> 里。卡片上的 <code>workers.dev</code> URL 就是ToiCamera要调用的地址。</span></figcaption>
 </figure>
 <figure>
   <img src="images/worker/cf-worker-url.jpg" alt="Worker overview page showing the workers.dev URL and the Enabled Workers Logs toggle">
@@ -196,19 +196,18 @@ Deployed toicamera triggers (0.91 sec)
 
 <div class="step"><div class="num">2</div><div class="body">
 <h2><span class="l-en">Set the secrets</span><span class="l-ja">シークレットを設定</span><span class="l-zh">设置密钥</span></h2>
-<p><span class="l-en">The Worker reads three secrets (plus one optional). From the terminal — each
+<p><span class="l-en">The Worker reads three secrets. From the terminal — each
 command prompts on stdin, so keys never touch your shell history:</span>
-<span class="l-ja">Worker は 3 つのシークレット(+任意 1 つ)を読みます。ターミナルから — 各コマンドは非表示入力で受け取るので、キーがシェル履歴に残りません:</span>
-<span class="l-zh">Worker 读取 3 个密钥(外加 1 个可选)。在终端执行 — 每条命令都通过隐藏输入接收,密钥不会留在 shell 历史里:</span></p>
+<span class="l-ja">Worker が読むシークレットは 3 つ。ターミナルから — 各コマンドは非表示入力で受け取るので、キーがシェル履歴に残りません:</span>
+<span class="l-zh">Worker 只读取 3 个密钥。在终端执行 — 每条命令都通过隐藏输入接收,密钥不会留在 shell 历史里:</span></p>
 <pre><code>npx wrangler secret put TOICAMERA_MAIN_API_KEY  <span class="cmt"># your AI backend's API key</span>
 npx wrangler secret put TOICAMERA_TTS_API_KEY   <span class="cmt"># key for voice STT/TTS (OpenAI; often the same key)</span>
 npx wrangler secret put DEVICE_TOKEN            <span class="cmt"># a password YOU make up, e.g. `openssl rand -hex 16`</span></code></pre>
 <table>
   <tr><th>Secret</th><th><span class="l-en">What it is</span><span class="l-ja">説明</span><span class="l-zh">说明</span></th></tr>
-  <tr><td><code>TOICAMERA_MAIN_API_KEY</code></td><td><span class="l-en">API key of your main chat/vision backend (vision, Q&amp;A, digest). OpenAI by default — or the key of whatever OpenAI-compatible API <code>OPENAI_BASE_URL</code> points at</span><span class="l-ja">メインのチャット/ビジョン用 API キー(画像解析・Q&amp;A・要約)。既定は OpenAI — <code>OPENAI_BASE_URL</code> を別の互換 API に向けたときはそのキー</span><span class="l-zh">主要聊天/视觉后端的 API 密钥(视觉、问答、摘要)。默认是 OpenAI — 若 <code>OPENAI_BASE_URL</code> 指向其他兼容 API,则填那个 API 的密钥</span></td></tr>
-  <tr><td><code>TOICAMERA_TTS_API_KEY</code></td><td><span class="l-en">Key for voice STT/TTS (goes to <code>OPENAI_AUDIO_BASE_URL</code>, default OpenAI). Usually the <strong>same key</strong> as above; skip it if you don't need voice — the watch falls back to chirps</span><span class="l-ja">音声 STT/TTS 用キー(<code>OPENAI_AUDIO_BASE_URL</code>、既定 OpenAI へ)。通常は上と<strong>同じキー</strong>で OK。音声不要ならスキップ可 — 時計はピコピコにフォールバック</span><span class="l-zh">语音 STT/TTS 密钥(发往 <code>OPENAI_AUDIO_BASE_URL</code>,默认 OpenAI)。通常与上面<strong>同一个</strong>即可;不需要语音可跳过 — 手表会退回哔哔声</span></td></tr>
-  <tr><td><code>DEVICE_TOKEN</code></td><td><span class="l-en">A shared secret <strong>you invent</strong>. The watch sends it as <code>X-Device-Token</code>; the Worker rejects everything else. <strong>This is the value you type into the watch's WiFi settings portal</strong> (Settings → WiFi → scan QR → <code>http://192.168.4.1</code>)</span><span class="l-ja"><strong>自分で決める</strong>合言葉。時計が <code>X-Device-Token</code> として送り、一致しないリクエストは Worker が拒否します。<strong>時計の WiFi 設定画面(ポータル)の「デバイストークン」欄に入力するのがこの値</strong>です(設定 → WiFi → QR → <code>http://192.168.4.1</code>)</span><span class="l-zh"><strong>由你自己定</strong>的共享口令。手表以 <code>X-Device-Token</code> 发送,不匹配的请求会被 Worker 拒绝。<strong>在手表 WiFi 设置门户里填的就是这个值</strong>(设置 → WiFi → 扫码 → <code>http://192.168.4.1</code>)</span></td></tr>
-  <tr><td><code>ANTHROPIC_API_KEY</code></td><td><span class="l-en">Optional — only if you flip <code>ANALYZE_PROVIDER</code> to <code>anthropic</code></span><span class="l-ja">任意 — <code>ANALYZE_PROVIDER</code> を <code>anthropic</code> に切り替える場合のみ</span><span class="l-zh">可选 — 仅当把 <code>ANALYZE_PROVIDER</code> 切到 <code>anthropic</code> 时需要</span></td></tr>
+  <tr><td><code>TOICAMERA_MAIN_API_KEY</code></td><td><span class="l-en">API key of your main chat/vision backend (vision, Q&amp;A, digest). OpenAI by default — or the key of whatever OpenAI-compatible API <code>MAIN_API_BASE_URL</code> points at</span><span class="l-ja">メインのチャット/ビジョン用 API キー(画像解析・Q&amp;A・要約)。既定は OpenAI — <code>MAIN_API_BASE_URL</code> を別の互換 API に向けたときはそのキー</span><span class="l-zh">主要聊天/视觉后端的 API 密钥(视觉、问答、摘要)。默认是 OpenAI — 若 <code>MAIN_API_BASE_URL</code> 指向其他兼容 API,则填那个 API 的密钥</span></td></tr>
+  <tr><td><code>TOICAMERA_TTS_API_KEY</code></td><td><span class="l-en">Key for voice STT/TTS (goes to <code>AUDIO_API_BASE_URL</code>, default OpenAI). Usually the <strong>same key</strong> as above; skip it if you don't need voice — ToiCamera falls back to chirps</span><span class="l-ja">音声 STT/TTS 用キー(<code>AUDIO_API_BASE_URL</code>、既定 OpenAI へ)。通常は上と<strong>同じキー</strong>で OK。音声不要ならスキップ可 — ToiCameraはピコピコにフォールバック</span><span class="l-zh">语音 STT/TTS 密钥(发往 <code>AUDIO_API_BASE_URL</code>,默认 OpenAI)。通常与上面<strong>同一个</strong>即可;不需要语音可跳过 — ToiCamera会退回哔哔声</span></td></tr>
+  <tr><td><code>DEVICE_TOKEN</code></td><td><span class="l-en">A shared secret <strong>you invent</strong>. ToiCamera sends it as <code>X-Device-Token</code>; the Worker rejects everything else. <strong>This is the value you type into ToiCamera's WiFi settings portal</strong> (Settings → WiFi → scan QR → <code>http://192.168.4.1</code>)</span><span class="l-ja"><strong>自分で決める</strong>合言葉。ToiCameraが <code>X-Device-Token</code> として送り、一致しないリクエストは Worker が拒否します。<strong>ToiCameraの WiFi 設定画面(ポータル)の「デバイストークン」欄に入力するのがこの値</strong>です(設定 → WiFi → QR → <code>http://192.168.4.1</code>)</span><span class="l-zh"><strong>由你自己定</strong>的共享口令。ToiCamera以 <code>X-Device-Token</code> 发送,不匹配的请求会被 Worker 拒绝。<strong>在ToiCamera WiFi 设置门户里填的就是这个值</strong>(设置 → WiFi → 扫码 → <code>http://192.168.4.1</code>)</span></td></tr>
 </table>
 <p><span class="l-en">Prefer clicking? The dashboard does the same thing:
 <em>your Worker → Settings → Variables and Secrets → Add</em>, choose type <strong>Secret</strong>:</span>
@@ -223,7 +222,7 @@ npx wrangler secret put DEVICE_TOKEN            <span class="cmt"># a password Y
 </div></div>
 
 <div class="step"><div class="num">3</div><div class="body">
-<h2><span class="l-en">Point the watch at your Worker</span><span class="l-ja">時計を自分の Worker に向ける</span><span class="l-zh">让手表指向你的 Worker</span></h2>
+<h2><span class="l-en">Point ToiCamera at your Worker</span><span class="l-ja">ToiCameraを自分の Worker に向ける</span><span class="l-zh">让ToiCamera指向你的 Worker</span></h2>
 <p><span class="l-en">Two values connect the firmware to your Worker: the <strong>URL</strong> from step 1
 and the <strong>device token</strong> from step 2.</span>
 <span class="l-ja">ファームと Worker をつなぐのは 2 つの値: ステップ 1 の <strong>URL</strong> と、ステップ 2 の<strong>デバイストークン</strong>です。</span>
@@ -238,13 +237,13 @@ and the <strong>device token</strong> from step 2.</span>
 <pre><code>-DWORKER_URL=\"https://toicamera.&lt;your-subdomain&gt;.workers.dev\"
 -DDEVICE_TOKEN=\"&lt;the token you made up&gt;\"</code></pre></li>
 <li><span class="l-en"><strong>Or at runtime</strong> — the token (not the URL) can be entered later from
-the watch itself: <em>Settings → WiFi → scan the QR → <code>http://192.168.4.1</code></em> →
+ToiCamera itself: <em>Settings → WiFi → scan the QR → <code>http://192.168.4.1</code></em> →
 the <em>device token</em> field. Stored in NVS, overrides the build-time value.
 This field expects the <code>DEVICE_TOKEN</code> shared secret — <strong>not</strong> an OpenAI key.</span>
-<span class="l-ja"><strong>後から実機で</strong> — トークン(URL は不可)は時計からも設定できます:
+<span class="l-ja"><strong>後から実機で</strong> — トークン(URL は不可)はToiCameraからも設定できます:
 <em>設定 → WiFi → QR を読む → <code>http://192.168.4.1</code></em> →「デバイストークン」欄。
 NVS に保存され、ビルド時の値を上書きします。入れるのは <code>DEVICE_TOKEN</code> の合言葉 — <strong>OpenAI キーではありません</strong>。</span>
-<span class="l-zh"><strong>或在运行时</strong> — 令牌(URL 不行)也可以之后从手表设置:
+<span class="l-zh"><strong>或在运行时</strong> — 令牌(URL 不行)也可以之后从ToiCamera设置:
 <em>设置 → WiFi → 扫描二维码 → <code>http://192.168.4.1</code></em> →「设备令牌」栏。
 保存在 NVS 中,覆盖构建时的值。这里填的是 <code>DEVICE_TOKEN</code> 口令 — <strong>不是</strong> OpenAI 密钥。</span></li>
 </ul>
@@ -259,44 +258,44 @@ NVS に保存され、ビルド時の値を上書きします。入れるのは 
 <table>
   <tr><th><span class="l-en">Response</span><span class="l-ja">応答</span><span class="l-zh">响应</span></th><th><span class="l-en">Meaning</span><span class="l-ja">意味</span><span class="l-zh">含义</span></th></tr>
   <tr><td><code>401</code></td><td><span class="l-en">Token mismatch — header value must equal the <code>DEVICE_TOKEN</code> secret</span><span class="l-ja">トークン不一致 — ヘッダー値は <code>DEVICE_TOKEN</code> シークレットと同じ必要があります</span><span class="l-zh">令牌不匹配 — 请求头的值必须与 <code>DEVICE_TOKEN</code> 密钥一致</span></td></tr>
-  <tr><td><code>429</code> + <code>reset_jst</code></td><td><span class="l-en">OpenAI free daily quota exhausted; the watch shows the reset time</span><span class="l-ja">OpenAI の無料枠を使い切り。時計にリセット時刻が表示されます</span><span class="l-zh">OpenAI 免费每日额度用尽;手表会显示重置时间</span></td></tr>
+  <tr><td><code>429</code> + <code>reset_jst</code></td><td><span class="l-en">OpenAI free daily quota exhausted; ToiCamera shows the reset time</span><span class="l-ja">OpenAI の無料枠を使い切り。ToiCameraにリセット時刻が表示されます</span><span class="l-zh">OpenAI 免费每日额度用尽;ToiCamera会显示重置时间</span></td></tr>
   <tr><td><code>400 empty or truncated image</code></td><td><span class="l-en">(on /analyze) the test file is smaller than 128 bytes</span><span class="l-ja">(/analyze で)テストファイルが 128 バイト未満</span><span class="l-zh">(/analyze 时)测试文件小于 128 字节</span></td></tr>
 </table>
 <p><span class="l-en">Watch live logs while testing from the device: <code>npx wrangler tail</code> —
-or in the dashboard, the Worker's <em>Observability</em> tab shows every request the watch makes:</span>
+or in the dashboard, the Worker's <em>Observability</em> tab shows every request ToiCamera makes:</span>
 <span class="l-ja">実機からのテスト中は <code>npx wrangler tail</code> でライブログを確認 —
-またはダッシュボードの <em>Observability</em> タブに、時計からの全リクエストが記録されます:</span>
+またはダッシュボードの <em>Observability</em> タブに、ToiCameraからの全リクエストが記録されます:</span>
 <span class="l-zh">从设备测试时用 <code>npx wrangler tail</code> 看实时日志 —
-或者在控制台的 <em>Observability</em> 标签页查看手表发来的每个请求:</span></p>
+或者在控制台的 <em>Observability</em> 标签页查看ToiCamera发来的每个请求:</span></p>
 <figure>
-  <img src="images/worker/cf-logs.jpg" alt="Worker Observability tab listing POST /analyze and /digest requests from the watch">
-  <figcaption><span class="l-en">Every shutter press shows up as <code>POST /analyze</code> (and the daily summary as <code>/digest</code>). 0 errors = the watch and your Worker are talking.</span><span class="l-ja">シャッターを押すたびに <code>POST /analyze</code>(日次要約は <code>/digest</code>)が並びます。エラー 0 = 時計と Worker が正しく通信中。</span><span class="l-zh">每按一次快门就会出现一条 <code>POST /analyze</code>(每日摘要是 <code>/digest</code>)。0 错误 = 手表和 Worker 通信正常。</span></figcaption>
+  <img src="images/worker/cf-logs.jpg" alt="Worker Observability tab listing POST /analyze and /digest requests from ToiCamera">
+  <figcaption><span class="l-en">Every shutter press shows up as <code>POST /analyze</code> (and the daily summary as <code>/digest</code>). 0 errors = ToiCamera and your Worker are talking.</span><span class="l-ja">シャッターを押すたびに <code>POST /analyze</code>(日次要約は <code>/digest</code>)が並びます。エラー 0 = ToiCameraと Worker が正しく通信中。</span><span class="l-zh">每按一次快门就会出现一条 <code>POST /analyze</code>(每日摘要是 <code>/digest</code>)。0 错误 = ToiCamera和 Worker 通信正常。</span></figcaption>
 </figure>
 </div></div>
 
 <h2 id="models">🎛 <span class="l-en">Your Worker, your model menu</span><span class="l-ja">モデルメニューは Worker が決める</span><span class="l-zh">你的 Worker,你的模型菜单</span></h2>
-<p><span class="l-en">The watch <strong>never hardcodes model names</strong>: on boot it fetches
+<p><span class="l-en">ToiCamera <strong>never hardcodes model names</strong>: on boot it fetches
 <code>GET /config</code> and shows whatever your Worker offers in
 <em>Settings → Model</em>. The menu is one var in <code>worker/wrangler.jsonc</code>:</span>
-<span class="l-ja">時計は<strong>モデル名をハードコードしません</strong>。起動時に <code>GET /config</code> を取得し、
+<span class="l-ja">ToiCameraは<strong>モデル名をハードコードしません</strong>。起動時に <code>GET /config</code> を取得し、
 Worker が提供するものをそのまま<em>設定 → モデル</em>に表示します。メニューは <code>worker/wrangler.jsonc</code> の変数 1 行:</span>
-<span class="l-zh">手表<strong>从不硬编码模型名</strong>:开机时拉取 <code>GET /config</code>,
+<span class="l-zh">ToiCamera<strong>从不硬编码模型名</strong>:开机时拉取 <code>GET /config</code>,
 把你的 Worker 提供的内容原样显示在<em>设置 → 模型</em>里。菜单就是 <code>worker/wrangler.jsonc</code> 里的一个变量:</span></p>
 <pre><code>"MODELS": "gpt-5.6-terra,gpt-5.6-luna",   <span class="cmt">// comma-separated — this IS the Settings menu</span></code></pre>
-<p><span class="l-en">Edit, <code>npx wrangler deploy</code>, reboot the watch — done. The same applies to
-the speech voice: the watch only chooses <em>chirps or TTS</em>; which voice TTS
+<p><span class="l-en">Edit, <code>npx wrangler deploy</code>, reboot ToiCamera — done. The same applies to
+the speech voice: ToiCamera only chooses <em>chirps or TTS</em>; which voice TTS
 speaks with is your Worker's <code>TTS_VOICE</code> var.</span>
-<span class="l-ja">編集して <code>npx wrangler deploy</code>、時計を再起動すれば反映完了。声も同じ考え方で、
-時計が選ぶのは<em>ピコピコか TTS か</em>だけ。TTS が話す声は Worker の <code>TTS_VOICE</code> 変数で決まります。</span>
-<span class="l-zh">改完执行 <code>npx wrangler deploy</code>,重启手表即生效。语音同理:
-手表只选<em>哔哔声还是 TTS</em>;TTS 用什么音色由 Worker 的 <code>TTS_VOICE</code> 变量决定。</span></p>
+<span class="l-ja">編集して <code>npx wrangler deploy</code>、ToiCameraを再起動すれば反映完了。声も同じ考え方で、
+ToiCameraが選ぶのは<em>ピコピコか TTS か</em>だけ。TTS が話す声は Worker の <code>TTS_VOICE</code> 変数で決まります。</span>
+<span class="l-zh">改完执行 <code>npx wrangler deploy</code>,重启ToiCamera即生效。语音同理:
+ToiCamera只选<em>哔哔声还是 TTS</em>;TTS 用什么音色由 Worker 的 <code>TTS_VOICE</code> 变量决定。</span></p>
 
 <h2 id="local-llm">🏠 <span class="l-en">Local LLM (Ollama, LM Studio, …)</span><span class="l-ja">ローカル LLM(Ollama・LM Studio など)</span><span class="l-zh">本地 LLM(Ollama、LM Studio 等)</span></h2>
 <p><span class="l-en">Everything the Worker calls goes through the OpenAI-compatible
-<code>OPENAI_BASE_URL</code> var — so the “AI” can be a model running on your own machine:</span>
-<span class="l-ja">Worker の呼び先はすべて OpenAI 互換の <code>OPENAI_BASE_URL</code> 変数経由。
+<code>MAIN_API_BASE_URL</code> var — so the “AI” can be a model running on your own machine:</span>
+<span class="l-ja">Worker の呼び先はすべて OpenAI 互換の <code>MAIN_API_BASE_URL</code> 変数経由。
 つまり「AI」を母艦 PC で動くモデルにもできます:</span>
-<span class="l-zh">Worker 的所有调用都经过 OpenAI 兼容的 <code>OPENAI_BASE_URL</code> 变量 —
+<span class="l-zh">Worker 的所有调用都经过 OpenAI 兼容的 <code>MAIN_API_BASE_URL</code> 变量 —
 所以「AI」完全可以是跑在你自己电脑上的模型:</span></p>
 <div class="diagram">
 <svg viewBox="0 0 760 120" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="13">
@@ -304,7 +303,7 @@ speaks with is your Worker's <code>TTS_VOICE</code> var.</span>
   <rect x="10" y="36" width="150" height="48" rx="12" fill="#191d23" stroke="#41d9ff"/>
   <text x="85" y="64" fill="#e8eaed" text-anchor="middle">Your Worker</text>
   <line x1="160" y1="60" x2="280" y2="60" stroke="#57d993" stroke-width="2" marker-end="url(#ar3)"/>
-  <text x="220" y="46" fill="#9aa3ad" text-anchor="middle" font-size="11">OPENAI_BASE_URL</text>
+  <text x="220" y="46" fill="#9aa3ad" text-anchor="middle" font-size="11">MAIN_API_BASE_URL</text>
   <rect x="285" y="36" width="190" height="48" rx="12" fill="#191d23" stroke="#57d993"/>
   <text x="380" y="58" fill="#e8eaed" text-anchor="middle">Cloudflare Tunnel</text>
   <text x="380" y="76" fill="#9aa3ad" text-anchor="middle" font-size="11">cloudflared</text>
@@ -324,16 +323,16 @@ speaks with is your Worker's <code>TTS_VOICE</code> var.</span>
   <li><span class="l-en">Point the Worker at it and redeploy:</span>
       <span class="l-ja">Worker をそこに向けて再デプロイ:</span>
       <span class="l-zh">把 Worker 指过去并重新部署:</span>
-<pre><code>"OPENAI_BASE_URL": "https://&lt;tunnel-host&gt;/v1",
+<pre><code>"MAIN_API_BASE_URL": "https://&lt;tunnel-host&gt;/v1",
 "MODELS": "gemma3:12b",          <span class="cmt">// whatever `ollama list` shows</span>
 "ANALYZE_MODEL": "gemma3:12b"    <span class="cmt">// default when the device sends none</span></code></pre></li>
 </ol>
 <div class="tip"><span class="l-en">Voice STT/TTS intentionally use a <em>separate</em> base
-(<code>OPENAI_AUDIO_BASE_URL</code>, default api.openai.com) — speech keeps working
+(<code>AUDIO_API_BASE_URL</code>, default api.openai.com) — speech keeps working
 even while chat runs on a chat-only local server.</span>
-<span class="l-ja">音声(STT/TTS)はあえて<em>別の</em>ベース URL(<code>OPENAI_AUDIO_BASE_URL</code>、既定 api.openai.com)を使います —
+<span class="l-ja">音声(STT/TTS)はあえて<em>別の</em>ベース URL(<code>AUDIO_API_BASE_URL</code>、既定 api.openai.com)を使います —
 チャット専用のローカルサーバーでも音声機能はそのまま動きます。</span>
-<span class="l-zh">语音 STT/TTS 特意走<em>独立的</em>基址(<code>OPENAI_AUDIO_BASE_URL</code>,默认 api.openai.com) —
+<span class="l-zh">语音 STT/TTS 特意走<em>独立的</em>基址(<code>AUDIO_API_BASE_URL</code>,默认 api.openai.com) —
 即使聊天跑在只支持对话的本地服务上,语音功能也不受影响。</span></div>
 <div class="warn"><span class="l-en">Pick a <strong>vision-capable</strong> model for /analyze (it receives a photo).
 Structured-output support (<code>response_format: json_schema</code>) varies by server; Ollama ≥ 0.5 handles it.</span>
@@ -350,7 +349,7 @@ Structured-output support (<code>response_format: json_schema</code>) varies by 
   <li><span class="l-en">The device↔Worker link is HTTPS, but the firmware uses <code>setInsecure()</code> (no CA pinning). Fine for a hobby build that only sends a photo and a token; pin the root CA if you fork this for anything serious.</span>
       <span class="l-ja">デバイス↔Worker は HTTPS ですが、ファームは <code>setInsecure()</code>(CA ピン留めなし)。写真とトークンしか送らないホビー用途なら十分 — 本格用途にフォークするならルート CA をピン留めしてください。</span>
       <span class="l-zh">设备↔Worker 走 HTTPS,但固件使用 <code>setInsecure()</code>(无 CA 固定)。对只发送照片和令牌的爱好项目足够 — 若要正式使用请固定根 CA。</span></li>
-  <li><span class="l-en">Change <code>TOI_AP_PASS</code> (watch AP password) before deploying your own — anyone who joins the watch AP can reach the setup portal.</span>
-      <span class="l-ja">自分用にデプロイする前に <code>TOI_AP_PASS</code>(時計の AP パスワード)を変更してください — AP に入れた人は設定ポータルに到達できます。</span>
-      <span class="l-zh">部署自己的版本前请修改 <code>TOI_AP_PASS</code>(手表 AP 密码) — 任何接入手表 AP 的人都能打开设置门户。</span></li>
+  <li><span class="l-en">Change <code>TOI_AP_PASS</code> (ToiCamera AP password) before deploying your own — anyone who joins the ToiCamera AP can reach the setup portal.</span>
+      <span class="l-ja">自分用にデプロイする前に <code>TOI_AP_PASS</code>(ToiCameraの AP パスワード)を変更してください — AP に入れた人は設定ポータルに到達できます。</span>
+      <span class="l-zh">部署自己的版本前请修改 <code>TOI_AP_PASS</code>(ToiCamera AP 密码) — 任何接入ToiCamera AP 的人都能打开设置门户。</span></li>
 </ul>

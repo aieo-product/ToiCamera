@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 export interface Env {
-  ANTHROPIC_API_KEY: string;
   TOICAMERA_TTS_API_KEY: string;
   /** Free daily-token key (data-sharing program) — used for /analyze while
    *  the Anthropic account has no credit. */
@@ -18,10 +17,10 @@ export interface Env {
   MODELS?: string;
   /** OpenAI-compatible API base (default https://api.openai.com/v1).
    *  Point it at a Cloudflare Tunnel to use a local LLM (Ollama etc). */
-  OPENAI_BASE_URL?: string;
+  MAIN_API_BASE_URL?: string;
   /** Separate base for STT/TTS (default https://api.openai.com/v1) so voice
-   *  keeps working when OPENAI_BASE_URL points at a chat-only local LLM. */
-  OPENAI_AUDIO_BASE_URL?: string;
+   *  keeps working when MAIN_API_BASE_URL points at a chat-only local LLM. */
+  AUDIO_API_BASE_URL?: string;
 }
 
 type Lang = "ja" | "en" | "zh";
@@ -75,7 +74,7 @@ const DEFAULT_MODELS = "gpt-5.6-terra,gpt-5.6-luna";
 
 // Worker-defined model menu: the device fetches it via GET /config and only
 // echoes one entry back in X-Model — adding or swapping models (including a
-// local LLM behind OPENAI_BASE_URL) is a Worker redeploy, never a firmware
+// local LLM behind MAIN_API_BASE_URL) is a Worker redeploy, never a firmware
 // change.
 function configuredModels(env: Env): string[] {
   return (env.MODELS || DEFAULT_MODELS)
@@ -85,13 +84,13 @@ function configuredModels(env: Env): string[] {
 }
 
 function openaiBase(env: Env): string {
-  return (env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+  return (env.MAIN_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
 // STT/TTS stay on OpenAI even when chat points at a local LLM — most local
 // servers only implement chat/completions.
 function audioBase(env: Env): string {
-  return (env.OPENAI_AUDIO_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+  return (env.AUDIO_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
 function pickModel(request: Request, env: Env): string {
@@ -491,7 +490,7 @@ async function handleAnalyze(
     );
   }
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey: env.TOICAMERA_MAIN_API_KEY });
   const response = await client.messages.create({
     model: env.MODEL,
     max_tokens: 1024,

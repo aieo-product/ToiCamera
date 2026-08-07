@@ -19,7 +19,7 @@ title: ToiCamera — a watch that tells you about what it sees
     <a class="btn primary" href="worker-setup.html"><span class="l-en">Build yours — Worker setup</span><span class="l-ja">自分の1台を作る — Worker 構築</span><span class="l-zh">打造你的一台 — 搭建 Worker</span></a>
     <a class="btn ghost" href="https://github.com/aieo-product/ToiCamera"><span class="l-en">Source on GitHub</span><span class="l-ja">GitHub でソースを見る</span><span class="l-zh">在 GitHub 查看源码</span></a>
   </div>
-  <img class="shot" src="images/gps-dashboard.jpg" alt="ToiCamera watch showing the dashboard with GPS location">
+  <img class="shot" src="images/gps-dashboard.jpg" alt="ToiCamera showing the dashboard with GPS location">
 </div>
 
 <h2><span class="l-en">What it does</span><span class="l-ja">できること</span><span class="l-zh">功能一览</span></h2>
@@ -33,7 +33,7 @@ title: ToiCamera — a watch that tells you about what it sees
   <div class="card"><h3>📍 <span class="l-en">Location-aware</span><span class="l-ja">位置情報つき</span><span class="l-zh">位置感知</span></h3>
     <p class="muted"><span class="l-en">GPS + reverse geocoding: town-level location, nearest station, place-flavored explanations.</span><span class="l-ja">GPS+逆ジオコーディングで市区町村・最寄り駅を表示。場所を踏まえた解説も。</span><span class="l-zh">GPS + 逆地理编码:显示所在城镇、最近车站,解说也会带上地点味道。</span></p></div>
   <div class="card"><h3>🌐 <span class="l-en">Trilingual</span><span class="l-ja">3言語対応</span><span class="l-zh">三语支持</span></h3>
-    <p class="muted"><span class="l-en">日本語 / English / 中文 — UI and AI content switch together, right on the watch.</span><span class="l-ja">日本語 / English / 中文 — UI も AI の解説も、時計の上でまとめて切替。</span><span class="l-zh">日本語 / English / 中文 — UI 和 AI 内容在手表上一键同步切换。</span></p></div>
+    <p class="muted"><span class="l-en">日本語 / English / 中文 — UI and AI content switch together, right on ToiCamera.</span><span class="l-ja">日本語 / English / 中文 — UI も AI の解説も、ToiCameraの上でまとめて切替。</span><span class="l-zh">日本語 / English / 中文 — UI 和 AI 内容在ToiCamera上一键同步切换。</span></p></div>
   <div class="card"><h3>🧱 <span class="l-en">LEGO-compatible back</span><span class="l-ja">レゴ互換バックプレート</span><span class="l-zh">乐高兼容背板</span></h3>
     <p class="muted"><span class="l-en">3D-printed backpack plate; camera &amp; GPS clip anywhere, LEGO Technic pin pitch.</span><span class="l-ja">3D プリントの背面プレート。カメラも GPS もレゴテクニックピッチで好きな位置に。</span><span class="l-zh">3D 打印背板,相机与 GPS 可按乐高科技件孔距任意夹装。</span></p></div>
 </div>
@@ -42,15 +42,15 @@ title: ToiCamera — a watch that tells you about what it sees
 <p>
   <span class="l-en">ToiCamera ships with <strong>no shared server</strong>. You deploy a small
   Cloudflare Worker under your own account — it holds your API keys, defines the
-  <strong>model menu</strong> the watch shows in Settings, picks the TTS voice, and can even
+  <strong>model menu</strong> ToiCamera shows in Settings, picks the TTS voice, and can even
   route to a <strong>local LLM running on your own machine</strong> through a Cloudflare
   Tunnel. The firmware never hardcodes a model name.</span>
   <span class="l-ja">ToiCamera に<strong>共有サーバーはありません</strong>。小さな Cloudflare Worker を
-  自分のアカウントにデプロイし、そこに API キーを保管。時計の設定に出てくる
+  自分のアカウントにデプロイし、そこに API キーを保管。ToiCameraの設定に出てくる
   <strong>モデルメニューも Worker 側で定義</strong>でき、TTS の声も選べて、Cloudflare Tunnel 経由なら
   <strong>母艦 PC のローカル LLM</strong> にもつなげます。ファームにモデル名は一切ハードコードされていません。</span>
   <span class="l-zh">ToiCamera <strong>没有共享服务器</strong>。你在自己的账号下部署一个小小的
-  Cloudflare Worker — 它保管你的 API 密钥、定义手表设置里的<strong>模型菜单</strong>、
+  Cloudflare Worker — 它保管你的 API 密钥、定义ToiCamera设置里的<strong>模型菜单</strong>、
   选择 TTS 音色,甚至能通过 Cloudflare Tunnel 连接<strong>运行在你自己电脑上的本地 LLM</strong>。
   固件从不硬编码任何模型名。</span>
 </p>
@@ -61,7 +61,7 @@ title: ToiCamera — a watch that tells you about what it sees
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#41d9ff"/></marker>
   </defs>
   <circle cx="80" cy="80" r="52" fill="none" stroke="#ffd23e" stroke-width="6" stroke-dasharray="245 82" transform="rotate(-135 80 80)"/>
-  <text x="80" y="76" fill="#e8eaed" text-anchor="middle">Watch</text>
+  <text x="80" y="76" fill="#e8eaed" text-anchor="middle" font-size="11">ToiCamera</text>
   <text x="80" y="94" fill="#9aa3ad" text-anchor="middle" font-size="11">+ CamS3 / GPS</text>
   <line x1="140" y1="80" x2="255" y2="80" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar)"/>
   <text x="197" y="66" fill="#9aa3ad" text-anchor="middle" font-size="11">HTTPS + X-Device-Token</text>
@@ -100,8 +100,8 @@ title: ToiCamera — a watch that tells you about what it sees
 <h2><span class="l-en">Hardware</span><span class="l-ja">ハードウェア</span><span class="l-zh">硬件</span></h2>
 <table>
   <tr><th><span class="l-en">Part</span><span class="l-ja">パーツ</span><span class="l-zh">部件</span></th><th><span class="l-en">Role</span><span class="l-ja">役割</span><span class="l-zh">作用</span></th></tr>
-  <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a> (ESP32-S3, C152)</span><span class="l-ja"><a href="https://docs.m5stack.com/ja/core/StopWatch">M5Stack StopWatch Dev Kit</a>(ESP32-S3, C152)</span><span class="l-zh"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a>(ESP32-S3, C152)</span></td><td><span class="l-en">The watch — 466×466 round AMOLED, buttons, mic, speaker, RTC, IMU</span><span class="l-ja">時計本体 — 466×466 円形 AMOLED・ボタン・マイク・スピーカー・RTC・IMU</span><span class="l-zh">手表本体 — 466×466 圆形 AMOLED、按键、麦克风、扬声器、RTC、IMU</span></td></tr>
-  <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a> (5&nbsp;MP)</span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a>(5&nbsp;MP)</span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a>(5&nbsp;MP)</span></td><td><span class="l-en">Camera — joins the watch's own SoftAP, custom STA-server firmware</span><span class="l-ja">カメラ — 時計自身の SoftAP に接続。カスタム STA サーバー FW</span><span class="l-zh">相机 — 接入手表自建的 SoftAP,运行定制 STA 服务器固件</span></td></tr>
+  <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a> (ESP32-S3, C152)</span><span class="l-ja"><a href="https://docs.m5stack.com/ja/core/StopWatch">M5Stack StopWatch Dev Kit</a>(ESP32-S3, C152)</span><span class="l-zh"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a>(ESP32-S3, C152)</span></td><td><span class="l-en">ToiCamera — 466×466 round AMOLED, buttons, mic, speaker, RTC, IMU</span><span class="l-ja">ToiCamera本体 — 466×466 円形 AMOLED・ボタン・マイク・スピーカー・RTC・IMU</span><span class="l-zh">ToiCamera本体 — 466×466 圆形 AMOLED、按键、麦克风、扬声器、RTC、IMU</span></td></tr>
+  <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a> (5&nbsp;MP)</span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a>(5&nbsp;MP)</span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">M5Stack Unit CamS3</a>(5&nbsp;MP)</span></td><td><span class="l-en">Camera — joins ToiCamera's own SoftAP, custom STA-server firmware</span><span class="l-ja">カメラ — ToiCamera自身の SoftAP に接続。カスタム STA サーバー FW</span><span class="l-zh">相机 — 接入ToiCamera自建的 SoftAP,运行定制 STA 服务器固件</span></td></tr>
   <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-GPS%20v1.1">M5Stack Unit GPS v1.1</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-GPS%20v1.1">M5Stack Unit GPS v1.1</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-GPS%20v1.1">M5Stack Unit GPS v1.1</a></span></td><td><span class="l-en">Location — NMEA over Grove, shares the port via a Y-cable</span><span class="l-ja">位置情報 — Grove 経由 NMEA。Y 字ケーブルでポートを共用</span><span class="l-zh">定位 — 通过 Grove 输出 NMEA,经 Y 型线共享端口</span></td></tr>
   <tr><td><span class="l-en"><a href="https://docs.m5stack.com/en/accessory/CLIP-B">M5Stack CLIP-B</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/accessory/CLIP-B">M5Stack CLIP-B</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/accessory/CLIP-B">M5Stack CLIP-B</a></span></td><td><span class="l-en">Official Unit clip (LEGO-compatible holes) — holds the CamS3 on the plate, no glue or screws</span><span class="l-ja">純正ユニットクリップ(レゴ互換穴)— CamS3 をプレートに固定。接着剤・ネジ不要</span><span class="l-zh">官方 Unit 固定夹(乐高兼容孔)— 把 CamS3 固定在背板上,无需胶水或螺丝</span></td></tr>
   <tr><td><span class="l-en">3D-printed back plate</span><span class="l-ja">3D プリント背面プレート</span><span class="l-zh">3D 打印背板</span></td><td><span class="l-en">LEGO-compatible mount for both units (<a href="print-guide.html">print guide</a>)</span><span class="l-ja">両ユニットをレゴ互換で固定(<a href="print-guide.html">印刷ガイド</a>)</span><span class="l-zh">乐高兼容,固定两个单元(<a href="print-guide.html">打印指南</a>)</span></td></tr>
