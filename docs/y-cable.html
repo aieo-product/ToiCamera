@@ -1,0 +1,167 @@
+---
+layout: default
+title: Y-cable (Grove splitter) | ToiCamera
+---
+
+<h1><span class="l-en">Y-cable (Grove splitter) how-to</span><span class="l-ja">Y 字ケーブル(Grove 分岐ハーネス)の作り方</span><span class="l-zh">Y 型线缆(Grove 分线束)制作方法</span></h1>
+
+<p>
+<span class="l-en">The watch has a single Grove port, but using the <strong>camera and GPS at the same time</strong> means splitting it. The whole trick: <strong>“cut only the red and black wires.”</strong></span>
+<span class="l-ja">ウォッチの Grove ポートは 1 つですが、<strong>カメラと GPS を同時に使う</strong>にはこのポートを分岐します。ポイントは<strong>「切るのは赤・黒の 2 本だけ」</strong>。</span>
+<span class="l-zh">手表只有一个 Grove 端口,想<strong>同时使用相机和 GPS</strong> 就需要把它分成两路。全部诀窍就是:<strong>「只剪红、黑两根线」</strong>。</span>
+</p>
+
+<h2><span class="l-en">How it works</span><span class="l-ja">仕組み</span><span class="l-zh">原理</span></h2>
+
+<p><span class="l-en">The four Grove (HY2.0-4P) wires:</span><span class="l-ja">Grove(HY2.0-4P)の 4 線の役割:</span><span class="l-zh">Grove(HY2.0-4P)四根线的作用:</span></p>
+
+<table>
+  <tr><th><span class="l-en">Wire</span><span class="l-ja">線色</span><span class="l-zh">线色</span></th><th><span class="l-en">Signal</span><span class="l-ja">信号</span><span class="l-zh">信号</span></th><th><span class="l-en">Camera</span><span class="l-ja">カメラ</span><span class="l-zh">相机</span></th><th>GPS</th></tr>
+  <tr><td><span class="l-en">Red</span><span class="l-ja">赤</span><span class="l-zh">红</span></td><td>5V</td><td><span class="l-en">✓ (power only)</span><span class="l-ja">✓(給電のみ)</span><span class="l-zh">✓(仅供电)</span></td><td>✓</td></tr>
+  <tr><td><span class="l-en">Black</span><span class="l-ja">黒</span><span class="l-zh">黑</span></td><td>GND</td><td>✓</td><td>✓</td></tr>
+  <tr><td><span class="l-en">Yellow</span><span class="l-ja">黄</span><span class="l-zh">黄</span></td><td>G10 (UART RX)</td><td><span class="l-en">unused</span><span class="l-ja">使わない</span><span class="l-zh">不用</span></td><td>✓ (NMEA)</td></tr>
+  <tr><td><span class="l-en">White</span><span class="l-ja">白</span><span class="l-zh">白</span></td><td>G11 (UART TX)</td><td><span class="l-en">unused</span><span class="l-ja">使わない</span><span class="l-zh">不用</span></td><td>✓</td></tr>
+</table>
+
+<p><span class="l-en">The camera talks over Wi-Fi, so it only needs <strong>5V/GND power</strong> from the cable.</span>
+<span class="l-ja">カメラは Wi-Fi で通信するため <strong>5V/GND の給電だけ</strong>あれば動きます。</span>
+<span class="l-zh">相机通过 Wi-Fi 通信,所以线缆上只需要 <strong>5V/GND 供电</strong>即可。</span></p>
+
+<div class="note">
+<span class="l-en">Common question: “don’t you have to cut the GPS cable too to make a Y?” — <strong>Yes, you do</strong>. On the trunk cable to the GPS you also cut <strong>only the red and black wires</strong> mid-run. What you never cut: <strong>the yellow and white wires, and both connectors</strong> — so no re-crimping, and the GPS signal lines stay untouched.</span>
+<span class="l-ja">よくある疑問: 「GPS へ行くケーブルも切らないと Y にならないのでは?」— <strong>その通りです</strong>。GPS へ行く幹線ケーブルも<strong>赤・黒の 2 本だけは途中で切ります</strong>。切らないのは<strong>黄・白の 2 本と、両端のコネクタ</strong>です(だからコネクタの付け直しが要らず、GPS の信号線も無傷のまま)。</span>
+<span class="l-zh">常见疑问:「通向 GPS 的线不剪就成不了 Y 型吧?」— <strong>没错</strong>。通向 GPS 的主干线也要<strong>在中途只剪断红、黑两根</strong>。始终不剪的是<strong>黄、白两根线和两端的连接器</strong>(因此无需重新压接,GPS 信号线也毫发无损)。</span>
+</div>
+
+<h2><span class="l-en">Parts used</span><span class="l-ja">使用パーツ</span><span class="l-zh">使用部件</span></h2>
+
+<table>
+  <tr><th><span class="l-en">Part</span><span class="l-ja">パーツ</span><span class="l-zh">部件</span></th><th><span class="l-en">Notes</span><span class="l-ja">備考</span><span class="l-zh">备注</span></th></tr>
+  <tr>
+    <td><span class="l-en"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/core/StopWatch">M5Stack StopWatch 開発キット</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch 开发套件</a></span></td>
+    <td><span class="l-en">The watch itself (one Grove port = the reason this page exists)</span><span class="l-ja">時計本体(Grove ポートが 1 つしかないのが本ページの出発点)</span><span class="l-zh">手表本体(只有一个 Grove 端口,正是本页存在的原因)</span></td>
+  </tr>
+  <tr>
+    <td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span></td>
+    <td><span class="l-en">Camera unit — powered from the Y branch, data over Wi-Fi</span><span class="l-ja">カメラユニット — Y の枝から給電、データは Wi-Fi</span><span class="l-zh">相机单元 — 由 Y 型分支供电,数据走 Wi-Fi</span></td>
+  </tr>
+  <tr>
+    <td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-GPS%20v1.1">Unit GPS v1.1</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-GPS%20v1.1">Unit GPS v1.1</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-GPS%20v1.1">Unit GPS v1.1</a></span></td>
+    <td><span class="l-en">GPS unit — gets the untouched yellow/white UART lines on the trunk</span><span class="l-ja">GPS ユニット — 幹線の黄・白(UART)を無傷のまま受け取る側</span><span class="l-zh">GPS 单元 — 使用主干线上完好无损的黄/白 UART 线</span></td>
+  </tr>
+  <tr>
+    <td><span class="l-en"><a href="https://docs.m5stack.com/en/accessory/CLIP-B">CLIP-B</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/accessory/CLIP-B">CLIP-B</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/accessory/CLIP-B">CLIP-B</a></span></td>
+    <td><span class="l-en">M5Stack's official mounting clip for Unit-size modules, with LEGO-compatible holes. <strong>The CamS3 is held by CLIP-B</strong> snapped onto the printed back plate — no glue, no screws through the unit, and it clicks off in seconds.</span><span class="l-ja">M5Stack 純正のユニット固定クリップ(レゴ互換穴付き)。<strong>CamS3 の固定にはこの CLIP-B を使用</strong> — 3D プリントプレートに挟んでパチッと固定でき、接着剤もユニットへのネジ穴も不要。外すのも数秒です。</span><span class="l-zh">M5Stack 官方的 Unit 固定夹(带乐高兼容孔)。<strong>CamS3 就是用 CLIP-B 固定的</strong> — 卡在 3D 打印背板上即可,无需胶水、无需在单元上打螺丝,拆卸也只要几秒。</span></td>
+  </tr>
+  <tr>
+    <td><span class="l-en">Grove cables ×2</span><span class="l-ja">Grove ケーブル ×2</span><span class="l-zh">Grove 线 ×2</span></td>
+    <td><span class="l-en">The spares bundled with M5 units are fine</span><span class="l-ja">M5 ユニット付属の予備で OK</span><span class="l-zh">M5 单元附带的备用线即可</span></td>
+  </tr>
+</table>
+
+<h2><span class="l-en">Diagram</span><span class="l-ja">図解</span><span class="l-zh">图解</span></h2>
+
+<figure>
+  <img src="images/y-cable-diagram.png" alt="Y-cable build in three steps (Japanese labels)">
+  <figcaption><span class="l-en">The 3-step build (labels in Japanese: ① parts ② cut only red/black on the trunk ③ twist three ends and solder).</span><span class="l-ja">Y 字ケーブルの作り方(3 ステップ)。</span><span class="l-zh">三步制作图(标注为日文:① 准备 ② 主干只剪红/黑 ③ 三线并绞焊接)。</span></figcaption>
+</figure>
+
+<h2><span class="l-en">Steps (soldering, ~15 min)</span><span class="l-ja">手順(はんだ付け・約 15 分)</span><span class="l-zh">步骤(焊接,约 15 分钟)</span></h2>
+
+<ol>
+  <li><span class="l-en"><strong>Power OFF</strong> (turn the watch off, unplug USB)</span><span class="l-ja"><strong>電源 OFF</strong>(ウォッチの電源を切り、USB も抜く)</span><span class="l-zh"><strong>断电</strong>(关闭手表、拔掉 USB)</span></li>
+  <li><span class="l-en">Prepare two Grove cables:</span><span class="l-ja">Grove ケーブルを 2 本用意:</span><span class="l-zh">准备两根 Grove 线:</span>
+    <ul>
+      <li><span class="l-en"><strong>Cable A = trunk</strong> (watch⇔GPS). Both connectors stay as-is</span><span class="l-ja"><strong>ケーブル A = 幹線</strong>(ウォッチ⇔GPS)。コネクタは両端ともそのまま使う</span><span class="l-zh"><strong>线 A = 主干</strong>(手表⇔GPS)。两端连接器原样保留</span></li>
+      <li><span class="l-en"><strong>Cable B = camera branch</strong>. Cut in half, use the connector half only</span><span class="l-ja"><strong>ケーブル B = カメラ枝</strong>。真ん中で切断し、コネクタ付きの半分だけ使う</span><span class="l-zh"><strong>线 B = 相机分支</strong>。从中间剪断,只用带连接器的一半</span></li>
+    </ul></li>
+  <li><span class="l-en">Cable B (branch): <strong>strip 5 mm off red and black only</strong>. Cut yellow/white at the root and tape them off</span><span class="l-ja">ケーブル B(枝): <strong>赤・黒だけ被覆を 5mm むく</strong>。黄・白は根本で切ってテープ絶縁</span><span class="l-zh">线 B(分支):<strong>只把红、黑剥去 5mm 皮</strong>。黄、白从根部剪掉并用胶带绝缘</span></li>
+  <li><span class="l-en">Cable A (trunk): at the branch point, <strong>cut only the red and black wires</strong> and strip 5 mm on both sides of each cut (<strong>never cut yellow/white</strong>)</span><span class="l-ja">ケーブル A(幹線): 分岐させたい位置で<strong>赤と黒の 2 本だけを切断</strong>し、切り口の両側とも 5mm むく(<strong>黄・白は 1 度も切らない</strong>)</span><span class="l-zh">线 A(主干):在想分支的位置<strong>只剪断红、黑两根</strong>,切口两侧各剥 5mm(<strong>黄、白一次也不剪</strong>)</span>
+
+    <figure>
+      <img src="images/y-step-strip.jpg" alt="Branch stripped and trunk red/black cut, ends tinned">
+      <figcaption><span class="l-en">Branch (with connector) stripped, trunk red/black cut — ends pre-tinned.</span><span class="l-ja">枝(コネクタ付き)の赤・黒を剥き、幹線の赤・黒を切断したところ。先端に予備はんだ。</span><span class="l-zh">分支(带连接器)已剥皮,主干红/黑已剪断 — 线头已预镀锡。</span></figcaption>
+    </figure>
+
+    <p><span class="l-en">In practice, <strong>pre-tinning</strong> the stripped ends (a thin coat of solder) keeps the strands from fraying and makes the next twist much easier. Note in the photo: <strong>yellow and white are untouched everywhere</strong>.</span>
+    <span class="l-ja">実際の作業ではより線のほつれ防止に、剥いた先端へ<strong>予備はんだ</strong>(薄くはんだを乗せる)をしておくと、次のより合わせが楽になります。写真のとおり<strong>黄・白はどこも切っていない</strong>のがポイント。</span>
+    <span class="l-zh">实际操作中,给剥好的线头<strong>预镀锡</strong>(薄薄上一层焊锡)可防止线芯散开,下一步并绞也更轻松。注意照片中<strong>黄、白线处处完好</strong>。</span></p>
+
+    <figure>
+      <img src="images/y-step-splice.jpg" alt="Close-up of tinned cut ends, yellow and white intact">
+      <figcaption><span class="l-en">Close-up: tinned red/black ends, yellow/white intact.</span><span class="l-ja">切り口のクローズアップ。赤・黒の先端に予備はんだ、黄・白は無傷のまま。</span><span class="l-zh">切口特写:红/黑线头已镀锡,黄/白完好无损。</span></figcaption>
+    </figure></li>
+  <li><span class="l-en">Two 3-way twists: “both trunk red ends + branch red”, twist and <strong>solder</strong>. Same for black</span><span class="l-ja">3 本より合わせ ×2 箇所: 「幹線の赤 2 端 + 枝の赤」をねじって<strong>はんだ付け</strong>。黒も同様</span><span class="l-zh">两处三线并绞:「主干红线两端 + 分支红线」拧在一起<strong>焊接</strong>。黑线同理</span></li>
+  <li><span class="l-en">Insulate with <strong>heat-shrink tubing</strong> (slide it on before soldering). Vinyl tape works in a pinch</span><span class="l-ja"><strong>熱収縮チューブ</strong>で絶縁(はんだ前に通しておく)。無ければビニールテープ可</span><span class="l-zh">用<strong>热缩管</strong>绝缘(焊接前先套上)。没有的话胶布也行</span>
+
+    <figure>
+      <img src="images/y-harness-done.jpg" alt="Finished Y harness with two black heat-shrink joints">
+      <figcaption><span class="l-en">The finished Y harness — both joints sealed in black heat-shrink.</span><span class="l-ja">完成した Y 字ハーネス。接合部 2 箇所が黒い熱収縮チューブで絶縁されている。</span><span class="l-zh">完成的 Y 型线束 — 两处接点都用黑色热缩管封好。</span></figcaption>
+    </figure></li>
+  <li><span class="l-en">Before power-on, check with a multimeter that 5V–GND isn't shorted → power ON → confirm the camera LED lights and the serial log's <code>[toi] gps: bytes=...</code> keeps counting up</span><span class="l-ja">通電前にテスターで 5V–GND 間のショートが無いことを確認 → 電源 ON → カメラの LED 点灯と、シリアルの <code>[toi] gps: bytes=...</code> 増加で確認</span><span class="l-zh">通电前用万用表确认 5V–GND 无短路 → 开机 → 确认相机 LED 点亮、串口日志 <code>[toi] gps: bytes=...</code> 持续增长</span></li>
+</ol>
+
+<h2><span class="l-en">No soldering iron?</span><span class="l-ja">はんだごてが無い場合</span><span class="l-zh">没有电烙铁?</span></h2>
+<ul>
+  <li><span class="l-en"><strong>Solder seal connectors</strong> (heat-shrink with low-temp solder inside): insert the wires and hit with a lighter/heat gun</span><span class="l-ja"><strong>はんだシールコネクタ</strong>(低温はんだ入り熱収縮チューブ): 線を差してライター/ヒートガンで炙るだけ</span><span class="l-zh"><strong>免焊热缩接线管</strong>(内含低温焊锡的热缩管):插入线头,用打火机/热风枪加热即可</span></li>
+  <li><span class="l-en">T-tap connectors: tool-free, but Grove wires are thin (~AWG26) — pick a <strong>fine-wire rated</strong> model</span><span class="l-ja">エレクトロタップ: 工具不要だが Grove の細線(AWG26 相当)には<strong>細線対応品</strong>を選ぶこと</span><span class="l-zh">免破线分接端子:无需工具,但 Grove 线较细(约 AWG26)— 要选<strong>细线专用</strong>型号</span></li>
+</ul>
+
+<h2><span class="l-en">Hook up and verify</span><span class="l-ja">接続と動作確認</span><span class="l-zh">连接与验证</span></h2>
+
+<p><span class="l-en">Plug the trunk connectors into the watch and the GPS, and the branch connector into the camera (CamS3).</span>
+<span class="l-ja">ハーネスの幹線コネクタをウォッチと GPS に、枝コネクタをカメラ(CamS3)に挿します。</span>
+<span class="l-zh">把主干两端接到手表和 GPS,分支连接器接到相机(CamS3)。</span></p>
+
+<figure>
+  <img src="images/y-connect.jpg" alt="Connecting the harness to the camera and GPS units">
+  <figcaption><span class="l-en">Connecting the harness to the camera and GPS units.</span><span class="l-ja">ハーネスをカメラ・GPS ユニットへ接続しているところ。</span><span class="l-zh">正在把线束接到相机和 GPS 单元。</span></figcaption>
+</figure>
+
+<p><span class="l-en">Power on — the boot sequence runs and the camera's green LED lights up (= 5V from the branch is good).</span>
+<span class="l-ja">電源を入れると起動シーケンスが走り、カメラの緑 LED が点灯します(=枝からの 5V 給電 OK)。</span>
+<span class="l-zh">开机后启动流程运行,相机绿色 LED 点亮(= 分支 5V 供电正常)。</span></p>
+
+<figure>
+  <img src="images/y-boot-check.jpg" alt="Right after power on: WiFi connecting message and green camera LED">
+  <figcaption><span class="l-en">Right after power-on: “WiFi connecting…” and the camera's green LED.</span><span class="l-ja">電源 ON 直後。「WiFi接続中...」表示とカメラの緑 LED。</span><span class="l-zh">开机后:「WiFi 连接中…」提示与相机绿色 LED。</span></figcaption>
+</figure>
+
+<p><span class="l-en">If the finder shows an image, the camera runs happily on Y-cable power alone (its data goes over Wi-Fi).</span>
+<span class="l-ja">ファインダーに映像が出れば、カメラは Y 字ケーブル経由の給電だけで正常動作しています(通信は Wi-Fi)。</span>
+<span class="l-zh">取景器出现画面,说明相机仅靠 Y 型线供电即可正常工作(数据走 Wi-Fi)。</span></p>
+
+<figure>
+  <img src="images/y-finder-check.jpg" alt="Finder image showing the camera works over Y-cable power">
+  <figcaption><span class="l-en">Finder live view = the camera runs on Y-cable power.</span><span class="l-ja">ファインダー表示 = カメラが Y 字ケーブル給電で動作中。</span><span class="l-zh">取景器实时画面 = 相机由 Y 型线供电运行中。</span></figcaption>
+</figure>
+
+<h2><span class="l-en">The finished builds</span><span class="l-ja">完成イメージ</span><span class="l-zh">成品对比</span></h2>
+
+<p><span class="l-en">The two configurations side by side. <strong>No Y-cable needed while you use the camera alone</strong> (direct Grove connection) — build it when you add the GPS.</span>
+<span class="l-ja">2 つの構成を並べるとこうなります。<strong>カメラ単体で使う間は Y ケーブル不要</strong>(付属 Grove ケーブルで直結のまま)。GPS を追加するときに作れば OK です。</span>
+<span class="l-zh">两种配置并排对比。<strong>只用相机时不需要 Y 型线</strong>(Grove 直连即可)— 加装 GPS 时再做也不迟。</span></p>
+
+<table>
+  <tr>
+    <th><span class="l-en">Camera only (direct, no Y)</span><span class="l-ja">カメラ単体(直結・Y 不要)</span><span class="l-zh">仅相机(直连,无需 Y)</span></th>
+    <th><span class="l-en">Camera + GPS (Y-cable)</span><span class="l-ja">カメラ+GPS(Y 字ケーブル)</span><span class="l-zh">相机 + GPS(Y 型线)</span></th>
+  </tr>
+  <tr>
+    <td><img src="images/y-final-cam-only.jpg" alt="Camera-only build: CamS3 centered on the plate, direct Grove"></td>
+    <td><img src="images/y-final-cam-gps.jpg" alt="Camera plus GPS build wired with the Y harness"></td>
+  </tr>
+</table>
+
+<p><span class="l-en">Once the GPS gets a fix, the dashboard shows your location and the nearest station.</span>
+<span class="l-ja">GPS が測位すると、ダッシュボードに現在地と最寄り駅が表示されます。</span>
+<span class="l-zh">GPS 定位成功后,仪表盘会显示当前位置和最近车站。</span></p>
+
+<figure>
+  <img src="images/gps-dashboard.jpg" alt="Dashboard showing current location and nearest station via GPS">
+  <figcaption><span class="l-en">Dashboard with GPS: location + nearest station.</span><span class="l-ja">GPS を追加した状態のダッシュボード(現在地・最寄り駅を表示)。</span><span class="l-zh">加装 GPS 后的仪表盘(显示当前位置与最近车站)。</span></figcaption>
+</figure>
+
+<p><span class="l-en">For mounting positions, see the <strong><a href="print-guide.html">print &amp; assembly guide</a></strong>.</span>
+<span class="l-ja">取り付け位置は <strong><a href="print-guide.html">印刷・組立ガイド</a></strong> を参照してください。</span>
+<span class="l-zh">安装位置请参考<strong><a href="print-guide.html">打印与组装指南</a></strong>。</span></p>
