@@ -1544,6 +1544,7 @@ static bool fetchWorkerConfig() {
   code = configHttp.GET();
   if (code != HTTP_CODE_OK) {
     configHttp.end();
+    configClient.stop();
     Serial.printf("[toi] config: HTTP %d\n", code);
     return false;
   }
@@ -1552,6 +1553,7 @@ static bool fetchWorkerConfig() {
   if (deserializeJson(doc, configHttp.getString()) !=
       DeserializationError::Ok) {
     configHttp.end();
+    configClient.stop();
     Serial.println("[toi] config: invalid JSON");
     return false;
   }
@@ -1587,6 +1589,10 @@ static bool fetchWorkerConfig() {
     toiVoiceName = nextVoice;
     if (toiPrefsReady) toiPrefs.putString("voiceName", toiVoiceName);
   }
+  // One-shot per boot: release the socket and its ~50KB TLS context — keeping
+  // it alive starves later analyze/tts TLS handshakes of internal heap.
+  configHttp.end();
+  configClient.stop();
   selectModelByName(preferredName);
   homeDirty = true;
   Serial.printf("[toi] config: loaded %u models, selected=%s\n",
@@ -1603,12 +1609,13 @@ static void retryWorkerConfigOnSettingsEntry() {
   fetchWorkerConfig();
 }
 
-static void speakViaTts(const String &text) {
+// Fetch the TTS WAV for `text` into ttsBuf (blocking, up to ~30s).
+// Returns true when a playable buffer is ready.
+static bool fetchTts(const String &text) {
   stopSpeech();
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[toi] tts: WiFi unavailable, using chirps");
-    speakAnimalese(text);
-    return;
+    Serial.println("[toi] tts: WiFi unavailable");
+    return false;
   }
   if (!ttsHttpInit) {
     ttsClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
@@ -1633,10 +1640,12 @@ static void speakViaTts(const String &text) {
       const int contentLen = ttsHttp.getSize();
       if (contentLen > 0 && static_cast<size_t>(contentLen) <= kMaxTtsWav) {
         ttsBuf = readBody(ttsHttp, kMaxTtsWav, ttsLen);
-        if (ttsBuf && ttsLen == static_cast<size_t>(contentLen) &&
-            M5.Speaker.playWav(ttsBuf, ttsLen)) {
-          Serial.printf("[toi] tts: playing %u bytes\n", (unsigned)ttsLen);
-          return;  // ttsBuf stays alive until stopSpeech() is called.
+        if (ttsBuf && ttsLen == static_cast<size_t>(contentLen)) {
+          // Body fully buffered — release the socket and TLS context now.
+          ttsHttp.end();
+          ttsClient.stop();
+          Serial.printf("[toi] tts: fetched %u bytes\n", (unsigned)ttsLen);
+          return true;  // ttsBuf stays alive until stopSpeech() is called.
         }
       } else {
         Serial.printf("[toi] tts: invalid content length %d\n", contentLen);
@@ -1645,17 +1654,20 @@ static void speakViaTts(const String &text) {
   }
 
   ttsHttp.end();
+  ttsClient.stop();
   stopSpeech();
-  Serial.printf("[toi] tts: HTTP %d failed, using chirps\n", code);
-  speakAnimalese(text);
+  Serial.printf("[toi] tts: HTTP %d failed\n", code);
+  return false;
+}
+
+// Play the buffer fetchTts() prepared; false if there is nothing to play.
+static bool playFetchedTts() {
+  return ttsBuf && ttsLen && M5.Speaker.playWav(ttsBuf, ttsLen);
 }
 
 static void speakText(const String &text) {
-  if (voiceMode == 1) {
-    speakViaTts(text);
-  } else {
-    speakAnimalese(text);
-  }
+  if (voiceMode == 1 && fetchTts(text) && playFetchedTts()) return;
+  speakAnimalese(text);
 }
 
 static bool fetchHomePlace() {
@@ -2132,10 +2144,17 @@ static void voiceQuestionFlow() {
             recordInquiry("Q: " + q, a);
             caption = "Q: " + q;
             detailText = a;
+            bool ttsReady = false;
+            if (voiceMode == 1) {
+              drawBusy(tr("音声生成中...", "Generating voice...",
+                          "生成语音中..."),
+                       TFT_CYAN);
+              ttsReady = fetchTts(a);
+            }
             buildResultCanvas();
             drawResult(true);
             autoScrollAt = millis() + 2500;
-            speakText(a);
+            if (!(ttsReady && playFetchedTts())) speakAnimalese(a);
             ok = true;
           }
         }
@@ -2879,11 +2898,20 @@ static void runCaptureCycle() {
 
   recordInquiry(caption, detailText);
 
+  const String speech = caption + "。" + detailText;
+  bool ttsReady = false;
+  if (voiceMode == 1) {
+    // Generate the voice first so the result screen appears WITH sound —
+    // otherwise the freshly drawn screen sits frozen during the fetch.
+    drawBusy(tr("音声生成中...", "Generating voice...", "生成语音中..."),
+             TFT_CYAN);
+    ttsReady = fetchTts(speech);
+  }
   buildResultCanvas();
   drawResult(true);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
-  speakText(caption + "。" + detailText);
+  if (!(ttsReady && playFetchedTts())) speakAnimalese(speech);
   Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
