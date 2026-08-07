@@ -134,6 +134,7 @@ static uint8_t selectedModel = 0;
 static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
 static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS
+static String toiVoiceName;        // TTS voice name reported by GET /config
 static bool toiConfigSettingsRetryDone = false;
 
 static TinyGPSPlus gps;
@@ -904,9 +905,11 @@ static void drawPageSettings() {
         homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
         homeCanvas.drawString(
             voiceMode == 0
-                ? tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)")
-                : tr("TTS(Workerの声)", "TTS (Worker voice)",
-                     "TTS(Worker语音)"),
+                ? String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"))
+                : (toiVoiceName.length()
+                       ? String("TTS(") + toiVoiceName + ")"
+                       : String(tr("TTS(Workerの声)", "TTS (Worker voice)",
+                                   "TTS(Worker语音)"))),
             90, screenItemTop + 46);
         break;
       case 5: {
@@ -1579,6 +1582,11 @@ static bool fetchWorkerConfig() {
   for (uint8_t i = nextCount; i < 8; ++i) toiModels[i] = "";
   toiModelCount = nextCount;
   if (toiPrefsReady) toiPrefs.putString("models", rawModels);
+  const String nextVoice = doc["voice"].as<String>();
+  if (nextVoice.length() && nextVoice != toiVoiceName) {
+    toiVoiceName = nextVoice;
+    if (toiPrefsReady) toiPrefs.putString("voiceName", toiVoiceName);
+  }
   selectModelByName(preferredName);
   homeDirty = true;
   Serial.printf("[toi] config: loaded %u models, selected=%s\n",
@@ -2913,6 +2921,7 @@ void setup() {
     captureQuality = toiPrefs.getUChar("qual", 0);
     if (captureQuality > 1) captureQuality = 0;
     loadModelSettings();
+    toiVoiceName = toiPrefs.getString("voiceName", "");
     selectedLang = toiPrefs.getUChar("lang", 0);
     if (selectedLang > 2) selectedLang = 0;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
