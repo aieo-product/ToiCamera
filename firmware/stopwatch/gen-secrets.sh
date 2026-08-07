@@ -7,7 +7,7 @@
 #   WORKER_URL=https://toicamera.<your-subdomain>.workers.dev \
 #     ./gen-secrets.sh <ssid1> <pass1> [ssid2] [pass2] [cams3-ip]
 #
-# WORKER_URL points at YOUR deployed Worker (see docs/worker-setup.md).
+# WORKER_URL points at YOUR deployed Worker (see the Worker setup guide (aieo-product.github.io/ToiCamera)).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,7 +16,7 @@ PASS1="${2:?missing pass1}"
 SSID2="${3:-}"
 PASS2="${4:-}"
 CAM_IP="${5:-192.168.1.50}"
-WORKER_URL="${WORKER_URL:?set WORKER_URL to your deployed Worker URL (deploy worker/ first — see docs/worker-setup.md)}"
+WORKER_URL="${WORKER_URL:?set WORKER_URL to your deployed Worker URL (deploy worker/ first — see the Worker setup guide (aieo-product.github.io/ToiCamera))}"
 
 TOKEN="$(akc get TOICAMERA_DEVICE_TOKEN --reveal)"
 
