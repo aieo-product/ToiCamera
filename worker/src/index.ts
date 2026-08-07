@@ -1,18 +1,12 @@
-import Anthropic from "@anthropic-ai/sdk";
-
 export interface Env {
   TOICAMERA_TTS_API_KEY: string;
-  /** Free daily-token key (data-sharing program) — used for /analyze while
-   *  the Anthropic account has no credit. */
+  /** API key of the main chat/vision backend (whatever MAIN_API_BASE_URL
+   *  points at — OpenAI by default). */
   TOICAMERA_MAIN_API_KEY: string;
   DEVICE_TOKEN: string;
-  /** "openai" | "anthropic" — which vision backend /analyze uses */
-  ANALYZE_PROVIDER: string;
-  /** OpenAI vision model (free-token eligible) */
-  ANALYZE_MODEL: string;
-  /** Anthropic vision model (used when ANALYZE_PROVIDER=anthropic) */
-  MODEL: string;
   TTS_VOICE: string;
+  /** TTS model at AUDIO_API_BASE_URL (default gpt-4o-mini-tts). */
+  TTS_MODEL?: string;
   /** Comma-separated model ids offered to the device (GET /config). */
   MODELS?: string;
   /** OpenAI-compatible API base (default https://api.openai.com/v1).
@@ -21,6 +15,13 @@ export interface Env {
   /** Separate base for STT/TTS (default https://api.openai.com/v1) so voice
    *  keeps working when MAIN_API_BASE_URL points at a chat-only local LLM. */
   AUDIO_API_BASE_URL?: string;
+  /** Cap on /analyze reply tokens (default 500). */
+  ANALYZE_MAX_TOKENS?: string;
+  /** Style lines appended to the analyze system prompt depending on the
+   *  device's AI-detail toggle (X-Detail: low|high). Retune output depth and
+   *  length here — no firmware update needed. */
+  ANALYZE_STYLE_LOW?: string;
+  ANALYZE_STYLE_HIGH?: string;
 }
 
 type Lang = "ja" | "en" | "zh";
@@ -95,9 +96,10 @@ function audioBase(env: Env): string {
 
 function pickModel(request: Request, env: Env): string {
   const requestedModel = request.headers.get("x-model");
-  return requestedModel && configuredModels(env).includes(requestedModel)
+  const menu = configuredModels(env);
+  return requestedModel && menu.includes(requestedModel)
     ? requestedModel
-    : env.ANALYZE_MODEL;
+    : menu[0];
 }
 
 function pickLang(request: Request): Lang {
@@ -127,8 +129,7 @@ const FALLBACK_RESULT = {
   detail: "この写真はうまく解説できませんでした。別のものを撮ってみてください。",
 };
 
-// Chat completion against OpenAI, free data-sharing key only (no paid
-// fallback by owner's decision — the device surfaces quota exhaustion).
+// Chat completion against the configured OpenAI-compatible backend.
 async function openaiChat(env: Env, payload: unknown): Promise<Response> {
   return fetch(`${openaiBase(env)}/chat/completions`, {
     method: "POST",
@@ -179,6 +180,19 @@ function pickDetail(request: Request): "low" | "high" {
   return request.headers.get("x-detail") === "high" ? "high" : "low";
 }
 
+// The device only ever sends X-Detail low|high; what that MEANS is decided
+// here, so the owner can retune output depth without touching firmware.
+function analyzeStyle(env: Env, detailLevel: "low" | "high"): string {
+  const extra =
+    detailLevel === "high" ? env.ANALYZE_STYLE_HIGH : env.ANALYZE_STYLE_LOW;
+  return extra && extra.trim() ? "\n" + extra.trim() : "";
+}
+
+function analyzeMaxTokens(env: Env): number {
+  const n = Number(env.ANALYZE_MAX_TOKENS);
+  return Number.isFinite(n) && n >= 100 && n <= 4000 ? Math.floor(n) : 500;
+}
+
 async function analyzeWithOpenAI(
   env: Env,
   imageB64: string,
@@ -189,9 +203,9 @@ async function analyzeWithOpenAI(
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
-    max_completion_tokens: 500,
+    max_completion_tokens: analyzeMaxTokens(env),
     messages: [
-      { role: "system", content: SYSTEM_PROMPT[lang] },
+      { role: "system", content: SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) },
       {
         role: "user",
         content: [
@@ -479,55 +493,14 @@ async function handleAnalyze(
     }
   }
 
-  if (env.ANALYZE_PROVIDER !== "anthropic") {
-    return analyzeWithOpenAI(
-      env,
-      toBase64(image),
-      userText,
-      pickModel(request, env),
-      pickDetail(request),
-      lang,
-    );
-  }
-
-  const client = new Anthropic({ apiKey: env.TOICAMERA_MAIN_API_KEY });
-  const response = await client.messages.create({
-    model: env.MODEL,
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT[lang],
-    output_config: {
-      format: { type: "json_schema", schema: RESULT_SCHEMA },
-    },
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/jpeg",
-              data: toBase64(image),
-            },
-          },
-          { type: "text", text: userText },
-        ],
-      },
-    ],
-  });
-
-  if (response.stop_reason === "refusal") {
-    return json(FALLBACK_RESULT);
-  }
-
-  const text = response.content.find((b) => b.type === "text")?.text;
-  if (!text) {
-    return json({ error: "no text in model response" }, 502);
-  }
-  // output_config.format により text は RESULT_SCHEMA に適合した JSON
-  return new Response(text, {
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+  return analyzeWithOpenAI(
+    env,
+    toBase64(image),
+    userText,
+    pickModel(request, env),
+    pickDetail(request),
+    lang,
+  );
 }
 
 const ANSWER_SCHEMA = {
@@ -539,8 +512,6 @@ const ANSWER_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-// Voice question about the last shot: WAV body -> STT -> answer using the
-// prior explanation (caption/detail passed as query params) as context.
 async function handleAsk(request: Request, env: Env): Promise<Response> {
   const audio = await request.arrayBuffer();
   if (audio.byteLength < 4000) return json({ error: "audio too short" }, 400);
@@ -698,7 +669,7 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini-tts",
+      model: env.TTS_MODEL || "gpt-4o-mini-tts",
       voice: env.TTS_VOICE,
       input: text.slice(0, 500),
       response_format: "wav", // ESP32 側は M5Unified Speaker (WAV/RAW のみ) で再生
@@ -711,8 +682,22 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
     return json({ error: "tts upstream failed", status: upstream.status }, 502);
   }
 
-  return new Response(upstream.body, {
-    headers: { "content-type": "audio/wav" },
+  // Buffer the stream: the device needs Content-Length, and OpenAI streams
+  // WAV with 0xFFFFFFFF placeholder sizes in the RIFF header — patch in the
+  // real ones so the device-side WAV parser sees a well-formed file.
+  const buf = new Uint8Array(await upstream.arrayBuffer());
+  if (buf.length >= 44) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    dv.setUint32(4, buf.length - 8, true);
+    if (buf[36] === 0x64 && buf[37] === 0x61 && buf[38] === 0x74 && buf[39] === 0x61) {
+      dv.setUint32(40, buf.length - 44, true);
+    }
+  }
+  return new Response(buf, {
+    headers: {
+      "content-type": "audio/wav",
+      "content-length": String(buf.length),
+    },
   });
 }
 
@@ -721,7 +706,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return json({ ok: true, model: env.MODEL });
+      return json({ ok: true, model: configuredModels(env)[0] });
     }
 
     if (request.headers.get("x-device-token") !== env.DEVICE_TOKEN) {
