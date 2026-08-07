@@ -6,9 +6,9 @@ title: Y-cable (Grove splitter) | ToiCamera
 <h1><span class="l-en">Y-cable (Grove splitter) how-to</span><span class="l-ja">Y 字ケーブル(Grove 分岐ハーネス)の作り方</span><span class="l-zh">Y 型线缆(Grove 分线束)制作方法</span></h1>
 
 <p>
-<span class="l-en">The watch has a single Grove port, but using the <strong>camera and GPS at the same time</strong> means splitting it. The whole trick: <strong>“cut only the red and black wires.”</strong></span>
-<span class="l-ja">ウォッチの Grove ポートは 1 つですが、<strong>カメラと GPS を同時に使う</strong>にはこのポートを分岐します。ポイントは<strong>「切るのは赤・黒の 2 本だけ」</strong>。</span>
-<span class="l-zh">手表只有一个 Grove 端口,想<strong>同时使用相机和 GPS</strong> 就需要把它分成两路。全部诀窍就是:<strong>「只剪红、黑两根线」</strong>。</span>
+<span class="l-en">ToiCamera has a single Grove port, but using the <strong>camera and GPS at the same time</strong> means splitting it. The whole trick: <strong>“cut only the red and black wires.”</strong></span>
+<span class="l-ja">ToiCameraの Grove ポートは 1 つですが、<strong>カメラと GPS を同時に使う</strong>にはこのポートを分岐します。ポイントは<strong>「切るのは赤・黒の 2 本だけ」</strong>。</span>
+<span class="l-zh">ToiCamera只有一个 Grove 端口,想<strong>同时使用相机和 GPS</strong> 就需要把它分成两路。全部诀窍就是:<strong>「只剪红、黑两根线」</strong>。</span>
 </p>
 
 <h2><span class="l-en">How it works</span><span class="l-ja">仕組み</span><span class="l-zh">原理</span></h2>
@@ -39,7 +39,7 @@ title: Y-cable (Grove splitter) | ToiCamera
   <tr><th><span class="l-en">Part</span><span class="l-ja">パーツ</span><span class="l-zh">部件</span></th><th><span class="l-en">Notes</span><span class="l-ja">備考</span><span class="l-zh">备注</span></th></tr>
   <tr>
     <td><span class="l-en"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch Dev Kit</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/core/StopWatch">M5Stack StopWatch 開発キット</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/core/StopWatch">M5Stack StopWatch 开发套件</a></span></td>
-    <td><span class="l-en">The watch itself (one Grove port = the reason this page exists)</span><span class="l-ja">時計本体(Grove ポートが 1 つしかないのが本ページの出発点)</span><span class="l-zh">手表本体(只有一个 Grove 端口,正是本页存在的原因)</span></td>
+    <td><span class="l-en">ToiCamera itself (one Grove port = the reason this page exists)</span><span class="l-ja">ToiCamera本体(Grove ポートが 1 つしかないのが本ページの出発点)</span><span class="l-zh">ToiCamera本体(只有一个 Grove 端口,正是本页存在的原因)</span></td>
   </tr>
   <tr>
     <td><span class="l-en"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span><span class="l-ja"><a href="https://docs.m5stack.com/ja/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span><span class="l-zh"><a href="https://docs.m5stack.com/en/unit/Unit-CAMS3%205MP">Unit CamS3 5MP</a></span></td>
@@ -69,10 +69,10 @@ title: Y-cable (Grove splitter) | ToiCamera
 <h2><span class="l-en">Steps (soldering, ~15 min)</span><span class="l-ja">手順(はんだ付け・約 15 分)</span><span class="l-zh">步骤(焊接,约 15 分钟)</span></h2>
 
 <ol>
-  <li><span class="l-en"><strong>Power OFF</strong> (turn the watch off, unplug USB)</span><span class="l-ja"><strong>電源 OFF</strong>(ウォッチの電源を切り、USB も抜く)</span><span class="l-zh"><strong>断电</strong>(关闭手表、拔掉 USB)</span></li>
+  <li><span class="l-en"><strong>Power OFF</strong> (turn ToiCamera off, unplug USB)</span><span class="l-ja"><strong>電源 OFF</strong>(ToiCameraの電源を切り、USB も抜く)</span><span class="l-zh"><strong>断电</strong>(关闭ToiCamera、拔掉 USB)</span></li>
   <li><span class="l-en">Prepare two Grove cables:</span><span class="l-ja">Grove ケーブルを 2 本用意:</span><span class="l-zh">准备两根 Grove 线:</span>
     <ul>
-      <li><span class="l-en"><strong>Cable A = trunk</strong> (watch⇔GPS). Both connectors stay as-is</span><span class="l-ja"><strong>ケーブル A = 幹線</strong>(ウォッチ⇔GPS)。コネクタは両端ともそのまま使う</span><span class="l-zh"><strong>线 A = 主干</strong>(手表⇔GPS)。两端连接器原样保留</span></li>
+      <li><span class="l-en"><strong>Cable A = trunk</strong> (ToiCamera⇔GPS). Both connectors stay as-is</span><span class="l-ja"><strong>ケーブル A = 幹線</strong>(ToiCamera⇔GPS)。コネクタは両端ともそのまま使う</span><span class="l-zh"><strong>线 A = 主干</strong>(ToiCamera⇔GPS)。两端连接器原样保留</span></li>
       <li><span class="l-en"><strong>Cable B = camera branch</strong>. Cut in half, use the connector half only</span><span class="l-ja"><strong>ケーブル B = カメラ枝</strong>。真ん中で切断し、コネクタ付きの半分だけ使う</span><span class="l-zh"><strong>线 B = 相机分支</strong>。从中间剪断,只用带连接器的一半</span></li>
     </ul></li>
   <li><span class="l-en">Cable B (branch): <strong>strip 5 mm off red and black only</strong>. Cut yellow/white at the root and tape them off</span><span class="l-ja">ケーブル B(枝): <strong>赤・黒だけ被覆を 5mm むく</strong>。黄・白は根本で切ってテープ絶縁</span><span class="l-zh">线 B(分支):<strong>只把红、黑剥去 5mm 皮</strong>。黄、白从根部剪掉并用胶带绝缘</span></li>
@@ -109,9 +109,9 @@ title: Y-cable (Grove splitter) | ToiCamera
 
 <h2><span class="l-en">Hook up and verify</span><span class="l-ja">接続と動作確認</span><span class="l-zh">连接与验证</span></h2>
 
-<p><span class="l-en">Plug the trunk connectors into the watch and the GPS, and the branch connector into the camera (CamS3).</span>
-<span class="l-ja">ハーネスの幹線コネクタをウォッチと GPS に、枝コネクタをカメラ(CamS3)に挿します。</span>
-<span class="l-zh">把主干两端接到手表和 GPS,分支连接器接到相机(CamS3)。</span></p>
+<p><span class="l-en">Plug the trunk connectors into ToiCamera and the GPS, and the branch connector into the camera (CamS3).</span>
+<span class="l-ja">ハーネスの幹線コネクタをToiCameraと GPS に、枝コネクタをカメラ(CamS3)に挿します。</span>
+<span class="l-zh">把主干两端接到ToiCamera和 GPS,分支连接器接到相机(CamS3)。</span></p>
 
 <figure>
   <img src="images/y-connect.jpg" alt="Connecting the harness to the camera and GPS units">
