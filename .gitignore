@@ -15,10 +15,11 @@ node_modules/
 dist/
 .wrangler/
 
-# dev-workflow
-.agent/logs/
+# dev-workflow (internal agent handover/logs — never publish)
+.agent/
 .claude/handoff/
 firmware/cams3/build-tree/
 
 # Local media / working files (demo videos, drafts)
 userInput/
+video/

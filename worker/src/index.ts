@@ -292,7 +292,7 @@ async function placeHint(
       if (data && typeof data.place === "string") return data;
     }
     const res = await fetch(url, {
-      headers: { "user-agent": "ToiCamera/1.0 (contest gadget; take.otani@syn-gr.com)" },
+      headers: { "user-agent": "ToiCamera/1.0 (+https://github.com/aieo-product/ToiCamera)" },
       signal: AbortSignal.timeout(800),
     });
     if (!res.ok) return NO_PLACE;
@@ -391,7 +391,7 @@ async function nearestStation(
     const rlat = Number(lat).toFixed(3);
     const rlon = Number(lon).toFixed(3);
     const url =
-      `http://express.heartrails.com/api/json?method=getStations&x=${rlon}&y=${rlat}`;
+      `https://express.heartrails.com/api/json?method=getStations&x=${rlon}&y=${rlat}`;
     const cache = caches.default;
     const cacheKey = new Request(url);
     const cached = await cache.match(cacheKey);
@@ -709,6 +709,11 @@ export default {
       return json({ ok: true, model: configuredModels(env)[0] });
     }
 
+    // Refuse to serve until DEVICE_TOKEN is set — an empty/missing secret must
+    // not let an empty X-Device-Token header through.
+    if (!env.DEVICE_TOKEN) {
+      return json({ error: "server not configured" }, 500);
+    }
     if (request.headers.get("x-device-token") !== env.DEVICE_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }

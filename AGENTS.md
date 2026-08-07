@@ -3,9 +3,9 @@
 このリポジトリでの開発は **issue 駆動ワークフロー（dev-workflow スキル）** に従います。
 Codex CLI をはじめとする各 AI エージェントは、以下の規約とワークフロー正典に従って作業してください。
 
-- 正典（エンジン非依存の手順書）: `/Users/takehiro/.claude/skills/dev-workflow/workflows/*.md`
-- Claude Code 用エントリポイント: `/Users/takehiro/.claude/skills/dev-workflow/SKILL.md`
-- 他エージェント（Codex 等）向け詳細規約: `/Users/takehiro/.claude/skills/dev-workflow/AGENTS.md`
+- 正典（エンジン非依存の手順書）: `~/.claude/skills/dev-workflow/workflows/*.md`
+- Claude Code 用エントリポイント: `~/.claude/skills/dev-workflow/SKILL.md`
+- 他エージェント（Codex 等）向け詳細規約: `~/.claude/skills/dev-workflow/AGENTS.md`
 
 ## ワークフロー全体像（Step 0〜6）
 
@@ -55,7 +55,7 @@ Codex CLI をはじめとする各 AI エージェントは、以下の規約と
 
 ## 設定
 
-- 設定値の読み込み: `/Users/takehiro/.claude/skills/dev-workflow/scripts/load-config.sh`
+- 設定値の読み込み: `~/.claude/skills/dev-workflow/scripts/load-config.sh`
 - 設定ファイル: `config.toml` / `config.local.toml`
 
 ---

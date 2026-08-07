@@ -10,7 +10,7 @@ Entry for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 | | |
 |---|---|
 | 📷 | **Zero-lag shutter** — the live finder frame *is* the photo |
-| 🗣 | **AI explanations** spoken in on-device Animal-Crossing-style chirps (no cloud TTS) |
+| 🗣 | **AI explanations** spoken out loud — cloud TTS with on-device Animal-Crossing-style chirp fallback |
 | 🎤 | **Hold-to-talk Q&A** about the photo (STT → context-aware answer) |
 | 📍 | **Location-aware** — reverse-geocoded town, nearest station, place-flavored explanations |
 | ⌚ | **A real watch** — clock (NTP→RX8130), battery ring, steps, daily AI one-liner |
@@ -67,9 +67,10 @@ live backend. Deploying one takes about 10 minutes: **[Worker setup guide](https
 
 ## Demo
 
-- 2-minute demo video: *[YouTube link — see the Hackster article]*
-- Hackster article: *[link once published]*
+Demo video and write-up: coming soon.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The CamS3 patches apply on top of M5Stack's open-source UnitCamS3 firmware (see `firmware/cams3/README.md` for provenance).
+MIT — see [LICENSE](LICENSE). The CamS3 patches apply on top of M5Stack's open-source UnitCamS3 firmware (MIT, Copyright (c) M5Stack) — see `firmware/cams3/README.md` for provenance.
+
+Location data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL), reverse geocoding by [Nominatim](https://nominatim.org/). Nearest-station lookup by [HeartRails Express](https://express.heartrails.com/).

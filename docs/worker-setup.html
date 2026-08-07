@@ -95,9 +95,11 @@ Do this, asking me for input only when marked [ASK]:
 5. Set the secrets one by one with `npx wrangler secret put NAME`
    (I paste values into the hidden prompt myself; never echo them):
    - TOICAMERA_MAIN_API_KEY → [ASK] the API key of my chat/vision backend
-   - TOICAMERA_TTS_API_KEY  → [ASK] an OpenAI-compatible key for voice STT/TTS
-     (audio always uses AUDIO_API_BASE_URL, default api.openai.com — skip
-     if I don't need voice; ToiCamera then falls back to chirps)
+     (also authenticates STT for voice questions, which always goes to
+     AUDIO_API_BASE_URL, default api.openai.com)
+   - TOICAMERA_TTS_API_KEY  → [ASK] an OpenAI-compatible key for TTS speech
+     (also AUDIO_API_BASE_URL — skip if I don't need voice; ToiCamera then
+     falls back to chirps)
    - DEVICE_TOKEN           → generate with `openssl rand -hex 16`, show it to
      me, and remind me THIS is the value I type into ToiCamera's WiFi settings
      portal (Settings → WiFi → scan QR → http://192.168.4.1).
@@ -144,9 +146,12 @@ local model or server, use that instead.
 5. E2E test: POST a small JPEG to &lt;worker-url&gt;/analyze with headers
    x-device-token + X-Model: gemma4:12b → expect {"caption":...,"detail":...}
    (the first call is slow while the model loads into memory).
-Notes: /analyze needs a VISION-capable model. Voice STT/TTS stays on
-AUDIO_API_BASE_URL (OpenAI) and keeps working unchanged. If the tunnel
-stops, redeploy with the OpenAI defaults to switch back.</code></pre>
+Notes: /analyze needs a VISION-capable model. TTS speech stays on
+AUDIO_API_BASE_URL (OpenAI, via TOICAMERA_TTS_API_KEY) and keeps working.
+CAVEAT: STT for voice questions authenticates with TOICAMERA_MAIN_API_KEY
+against AUDIO_API_BASE_URL — if that secret now holds a local-only key,
+voice questions stop working until you set an OpenAI-valid key there.
+If the tunnel stops, redeploy with the OpenAI defaults to switch back.</code></pre>
 
 <h2 id="manual">🔧 <span class="l-en">Manual path, step by step</span><span class="l-ja">手動ルート: ステップごとに</span><span class="l-zh">手动路径:逐步进行</span></h2>
 
@@ -200,12 +205,12 @@ command prompts on stdin, so keys never touch your shell history:</span>
 <span class="l-ja">Worker が読むシークレットは 3 つ。ターミナルから — 各コマンドは非表示入力で受け取るので、キーがシェル履歴に残りません:</span>
 <span class="l-zh">Worker 只读取 3 个密钥。在终端执行 — 每条命令都通过隐藏输入接收,密钥不会留在 shell 历史里:</span></p>
 <pre><code>npx wrangler secret put TOICAMERA_MAIN_API_KEY  <span class="cmt"># your AI backend's API key</span>
-npx wrangler secret put TOICAMERA_TTS_API_KEY   <span class="cmt"># key for voice STT/TTS (OpenAI; often the same key)</span>
+npx wrangler secret put TOICAMERA_TTS_API_KEY   <span class="cmt"># key for TTS speech (OpenAI; often the same key)</span>
 npx wrangler secret put DEVICE_TOKEN            <span class="cmt"># a password YOU make up, e.g. `openssl rand -hex 16`</span></code></pre>
 <table>
   <tr><th>Secret</th><th><span class="l-en">What it is</span><span class="l-ja">説明</span><span class="l-zh">说明</span></th></tr>
-  <tr><td><code>TOICAMERA_MAIN_API_KEY</code></td><td><span class="l-en">API key of your main chat/vision backend (vision, Q&amp;A, digest). OpenAI by default — or the key of whatever OpenAI-compatible API <code>MAIN_API_BASE_URL</code> points at</span><span class="l-ja">メインのチャット/ビジョン用 API キー(画像解析・Q&amp;A・要約)。既定は OpenAI — <code>MAIN_API_BASE_URL</code> を別の互換 API に向けたときはそのキー</span><span class="l-zh">主要聊天/视觉后端的 API 密钥(视觉、问答、摘要)。默认是 OpenAI — 若 <code>MAIN_API_BASE_URL</code> 指向其他兼容 API,则填那个 API 的密钥</span></td></tr>
-  <tr><td><code>TOICAMERA_TTS_API_KEY</code></td><td><span class="l-en">Key for voice STT/TTS (goes to <code>AUDIO_API_BASE_URL</code>, default OpenAI). Usually the <strong>same key</strong> as above; skip it if you don't need voice — ToiCamera falls back to chirps</span><span class="l-ja">音声 STT/TTS 用キー(<code>AUDIO_API_BASE_URL</code>、既定 OpenAI へ)。通常は上と<strong>同じキー</strong>で OK。音声不要ならスキップ可 — ToiCameraはピコピコにフォールバック</span><span class="l-zh">语音 STT/TTS 密钥(发往 <code>AUDIO_API_BASE_URL</code>,默认 OpenAI)。通常与上面<strong>同一个</strong>即可;不需要语音可跳过 — ToiCamera会退回哔哔声</span></td></tr>
+  <tr><td><code>TOICAMERA_MAIN_API_KEY</code></td><td><span class="l-en">API key of your main chat/vision backend (vision, Q&amp;A, digest). OpenAI by default — or the key of whatever OpenAI-compatible API <code>MAIN_API_BASE_URL</code> points at. <strong>Also authenticates STT for voice questions</strong> (sent to <code>AUDIO_API_BASE_URL</code>, default OpenAI) — voice questions need this key to be valid there</span><span class="l-ja">メインのチャット/ビジョン用 API キー(画像解析・Q&amp;A・要約)。既定は OpenAI — <code>MAIN_API_BASE_URL</code> を別の互換 API に向けたときはそのキー。<strong>音声質問の STT 認証にもこのキーが使われます</strong>(送信先は <code>AUDIO_API_BASE_URL</code>、既定 OpenAI)— 音声質問を使うにはこのキーがそこで有効である必要があります</span><span class="l-zh">主要聊天/视觉后端的 API 密钥(视觉、问答、摘要)。默认是 OpenAI — 若 <code>MAIN_API_BASE_URL</code> 指向其他兼容 API,则填那个 API 的密钥。<strong>语音提问的 STT 也用此密钥认证</strong>(发往 <code>AUDIO_API_BASE_URL</code>,默认 OpenAI)— 要使用语音提问,此密钥须在那里有效</span></td></tr>
+  <tr><td><code>TOICAMERA_TTS_API_KEY</code></td><td><span class="l-en">Key for TTS speech (goes to <code>AUDIO_API_BASE_URL</code>, default OpenAI). Usually the <strong>same key</strong> as above; skip it if you don't need spoken output — ToiCamera falls back to chirps</span><span class="l-ja">読み上げ(TTS)用キー(<code>AUDIO_API_BASE_URL</code>、既定 OpenAI へ)。通常は上と<strong>同じキー</strong>で OK。読み上げ不要ならスキップ可 — ToiCameraはピコピコにフォールバック</span><span class="l-zh">语音朗读(TTS)密钥(发往 <code>AUDIO_API_BASE_URL</code>,默认 OpenAI)。通常与上面<strong>同一个</strong>即可;不需要朗读可跳过 — ToiCamera会退回哔哔声</span></td></tr>
   <tr><td><code>DEVICE_TOKEN</code></td><td><span class="l-en">A shared secret <strong>you invent</strong>. ToiCamera sends it as <code>X-Device-Token</code>; the Worker rejects everything else. <strong>This is the value you type into ToiCamera's WiFi settings portal</strong> (Settings → WiFi → scan QR → <code>http://192.168.4.1</code>)</span><span class="l-ja"><strong>自分で決める</strong>合言葉。ToiCameraが <code>X-Device-Token</code> として送り、一致しないリクエストは Worker が拒否します。<strong>ToiCameraの WiFi 設定画面(ポータル)の「デバイストークン」欄に入力するのがこの値</strong>です(設定 → WiFi → QR → <code>http://192.168.4.1</code>)</span><span class="l-zh"><strong>由你自己定</strong>的共享口令。ToiCamera以 <code>X-Device-Token</code> 发送,不匹配的请求会被 Worker 拒绝。<strong>在ToiCamera WiFi 设置门户里填的就是这个值</strong>(设置 → WiFi → 扫码 → <code>http://192.168.4.1</code>)</span></td></tr>
 </table>
 <p><span class="l-en">Prefer clicking? The dashboard does the same thing:
@@ -361,13 +366,20 @@ voice</strong> (e.g. Speaches / LocalAI) is possible — a verified local-voice 
 <pre><code>"MAIN_API_BASE_URL": "https://&lt;tunnel-host&gt;/v1",
 "MODELS": "gemma4:12b"           <span class="cmt">// whatever `ollama list` shows; first = default</span></code></pre></li>
 </ol>
-<div class="tip"><span class="l-en">Voice STT/TTS intentionally use a <em>separate</em> base
-(<code>AUDIO_API_BASE_URL</code>, default api.openai.com) — speech keeps working
-even while chat runs on a chat-only local server.</span>
-<span class="l-ja">音声(STT/TTS)はあえて<em>別の</em>ベース URL(<code>AUDIO_API_BASE_URL</code>、既定 api.openai.com)を使います —
-チャット専用のローカルサーバーでも音声機能はそのまま動きます。</span>
-<span class="l-zh">语音 STT/TTS 特意走<em>独立的</em>基址(<code>AUDIO_API_BASE_URL</code>,默认 api.openai.com) —
-即使聊天跑在只支持对话的本地服务上,语音功能也不受影响。</span></div>
+<div class="tip"><span class="l-en">Audio intentionally uses a <em>separate</em> base
+(<code>AUDIO_API_BASE_URL</code>, default api.openai.com), so TTS speech keeps working
+while chat runs on a chat-only local server. One caveat: STT for voice questions
+authenticates with <code>TOICAMERA_MAIN_API_KEY</code> — if that secret holds a
+local-only key, voice questions need it replaced with an OpenAI-valid key (TTS is
+unaffected, it uses <code>TOICAMERA_TTS_API_KEY</code>).</span>
+<span class="l-ja">音声はあえて<em>別の</em>ベース URL(<code>AUDIO_API_BASE_URL</code>、既定 api.openai.com)を使うため、
+チャット専用のローカルサーバーでも読み上げ(TTS)はそのまま動きます。ただし注意: 音声質問の STT は
+<code>TOICAMERA_MAIN_API_KEY</code> で認証されるため、このシークレットがローカル専用キーの場合、
+音声質問には OpenAI で有効なキーが必要です(読み上げは <code>TOICAMERA_TTS_API_KEY</code> を使うので影響なし)。</span>
+<span class="l-zh">音频特意走<em>独立的</em>基址(<code>AUDIO_API_BASE_URL</code>,默认 api.openai.com),
+因此即使聊天跑在只支持对话的本地服务上,语音朗读(TTS)也不受影响。注意:语音提问的 STT 用
+<code>TOICAMERA_MAIN_API_KEY</code> 认证 — 若该密钥仅对本地服务有效,语音提问需要换成对 OpenAI 有效的密钥
+(朗读用 <code>TOICAMERA_TTS_API_KEY</code>,不受影响)。</span></div>
 <div class="warn"><span class="l-en">Pick a <strong>vision-capable</strong> model for /analyze (it receives a photo).
 Structured-output support (<code>response_format: json_schema</code>) varies by server; Ollama ≥ 0.5 handles it.</span>
 <span class="l-ja">/analyze には<strong>画像対応(vision)</strong>モデルを選んでください(写真を受け取るため)。

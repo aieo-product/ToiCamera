@@ -1,1 +1,0 @@
-/Users/takehiro/.claude/skills/dev-workflow/workflows/pr-adversarial-review.md
