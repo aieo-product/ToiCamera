@@ -84,10 +84,10 @@ Do this, asking me for input only when marked [ASK]:
 3. Configure vars in wrangler.jsonc for my choice:
    (a) leave the defaults
    (b) "MAIN_API_BASE_URL": "&lt;the API base, e.g. https://openrouter.ai/api/v1&gt;"
-       "MODELS": "&lt;comma-separated model ids to show on ToiCamera&gt;"
-       "ANALYZE_MODEL": "&lt;default model id&gt;"
-   (c) "ANALYZE_PROVIDER": "anthropic", "MODEL": "&lt;claude model id&gt;"
-       (the same TOICAMERA_MAIN_API_KEY secret then holds my Anthropic key)
+       "MODELS": "&lt;comma-separated model ids; the FIRST is the default&gt;"
+   (c) "MAIN_API_BASE_URL": "https://api.anthropic.com/v1"
+       "MODELS": "&lt;claude model ids&gt;" — TOICAMERA_MAIN_API_KEY then holds
+       my Anthropic key (uses Anthropic's OpenAI-compatible endpoint)
 4. npx wrangler deploy
    - If wrangler is not logged in, run `npx wrangler login` first and tell me
      to approve it in the browser.
@@ -139,8 +139,7 @@ local model or server, use that instead.
 3. Verify through the tunnel: curl https://&lt;tunnel-host&gt;/v1/models
 4. In ToiCamera/worker/wrangler.jsonc set:
      "MAIN_API_BASE_URL": "https://&lt;tunnel-host&gt;/v1"
-     "MODELS": "gemma4:12b"            // list only models this server has
-     "ANALYZE_MODEL": "gemma4:12b"
+     "MODELS": "gemma4:12b"            // only models this server has; first = default
    then `npx wrangler deploy`.
 5. E2E test: POST a small JPEG to &lt;worker-url&gt;/analyze with headers
    x-device-token + X-Model: gemma4:12b → expect {"caption":...,"detail":...}
@@ -289,6 +288,22 @@ speaks with is your Worker's <code>TTS_VOICE</code> var.</span>
 ToiCameraが選ぶのは<em>ピコピコか TTS か</em>だけ。TTS が話す声は Worker の <code>TTS_VOICE</code> 変数で決まります。</span>
 <span class="l-zh">改完执行 <code>npx wrangler deploy</code>,重启ToiCamera即生效。语音同理:
 ToiCamera只选<em>哔哔声还是 TTS</em>;TTS 用什么音色由 Worker 的 <code>TTS_VOICE</code> 变量决定。</span></p>
+
+<div class="note">🎙
+<span class="l-en"><strong>Voice cost &amp; local voice:</strong> TTS speech uses the audio backend at
+<code>AUDIO_API_BASE_URL</code> (default OpenAI <code>gpt-4o-mini-tts</code> — roughly ~$0.015 per minute
+of audio; a one-shot explanation is a fraction of a cent). STT for questions is billed per audio
+minute as well. The var already accepts any OpenAI-compatible audio server, so a <strong>fully local
+voice</strong> (e.g. Speaches / LocalAI) is possible — a verified local-voice recipe is
+<strong>coming soon</strong>.</span>
+<span class="l-ja"><strong>ボイスのコストとローカル音声:</strong> TTS は <code>AUDIO_API_BASE_URL</code> の音声バックエンド
+(既定 OpenAI <code>gpt-4o-mini-tts</code> — 音声 1 分あたりおよそ $0.015、1 回の解説なら 1 円未満)を使います。
+質問の音声認識(STT)も音声長に応じた課金です。この変数は OpenAI 互換の音声サーバーならどこでも指せるため、
+<strong>音声も完全ローカル</strong>(Speaches / LocalAI など)にすることが可能です — 検証済みのローカル音声手順は<strong>今後追加予定</strong>。</span>
+<span class="l-zh"><strong>语音成本与本地语音:</strong> TTS 使用 <code>AUDIO_API_BASE_URL</code> 的音频后端
+(默认 OpenAI <code>gpt-4o-mini-tts</code> — 每分钟音频约 $0.015,一次解说不到一分钱)。提问的语音识别(STT)同样按音频时长计费。
+该变量可指向任何 OpenAI 兼容的音频服务,因此<strong>语音也可以完全本地化</strong>(如 Speaches / LocalAI)— 经过验证的本地语音教程<strong>即将推出</strong>。</span>
+</div>
 
 <h2 id="local-llm">🏠 <span class="l-en">Local LLM (Ollama, LM Studio, …)</span><span class="l-ja">ローカル LLM(Ollama・LM Studio など)</span><span class="l-zh">本地 LLM(Ollama、LM Studio 等)</span></h2>
 <p><span class="l-en">Everything the Worker calls goes through the OpenAI-compatible
