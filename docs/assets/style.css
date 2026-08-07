@@ -184,3 +184,27 @@ footer.site a { color: var(--muted); }
   .hero h1 { font-size: 1.8rem; }
   .step { gap: .7rem; }
 }
+
+/* ---- logo & language switcher ---- */
+.site-nav .brand img.logo { width: 26px; height: auto; }
+.lang-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.lang-switch button {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: .78rem; padding: .3rem .6rem; font-family: inherit;
+}
+.lang-switch button:hover { color: var(--cyan); }
+html[data-lang="en"] .lang-switch [data-setlang="en"],
+html[data-lang="ja"] .lang-switch [data-setlang="ja"],
+html[data-lang="zh"] .lang-switch [data-setlang="zh"] {
+  color: #10131a; background: var(--yellow); font-weight: 700;
+}
+
+/* ---- trilingual content: only the active language is visible ---- */
+html[data-lang="en"] .l-ja, html[data-lang="en"] .l-zh,
+html[data-lang="ja"] .l-en, html[data-lang="ja"] .l-zh,
+html[data-lang="zh"] .l-en, html[data-lang="zh"] .l-ja { display: none !important; }
+
+.hero img.logo-hero {
+  max-width: min(340px, 80%); margin: 0 auto .6rem; display: block;
+  border-radius: 24px;
+}

@@ -5,16 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ page.title | default: "ToiCamera docs" }}</title>
 <link rel="stylesheet" href="{{ '/assets/style.css' | relative_url }}">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='none' stroke='%23ffd23e' stroke-width='12' stroke-dasharray='180 60' transform='rotate(-135 50 50)'/></svg>">
+<link rel="icon" type="image/png" href="{{ '/assets/favicon.png' | relative_url }}">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem('toi-lang'); } catch (e) {}
+  var nav = (navigator.language || '').slice(0, 2);
+  var lang = saved || ({ ja: 'ja', zh: 'zh' }[nav] || 'en');
+  document.documentElement.setAttribute('data-lang', lang);
+})();
+</script>
 </head>
 <body>
 <nav class="site-nav">
   <div class="inner">
-    <a class="brand" href="{{ '/' | relative_url }}"><span class="dot"></span>ToiCamera</a>
+    <a class="brand" href="{{ '/' | relative_url }}"><img class="logo" src="{{ '/assets/logo-mark.png' | relative_url }}" alt="">ToiCamera</a>
     <span class="spacer"></span>
-    <a class="link" href="{{ '/worker-setup.html' | relative_url }}">Worker Setup</a>
-    <a class="link" href="{{ '/print-guide.html' | relative_url }}">Print &amp; Assembly</a>
+    <a class="link" href="{{ '/worker-setup.html' | relative_url }}"><span class="l-en">Worker Setup</span><span class="l-ja">Worker構築</span><span class="l-zh">Worker搭建</span></a>
+    <a class="link" href="{{ '/print-guide.html' | relative_url }}"><span class="l-en">Print &amp; Assembly</span><span class="l-ja">印刷・組立</span><span class="l-zh">打印与组装</span></a>
     <a class="link" href="https://github.com/aieo-product/ToiCamera">GitHub</a>
+    <span class="lang-switch">
+      <button data-setlang="en">EN</button><button data-setlang="ja">日本語</button><button data-setlang="zh">中文</button>
+    </span>
   </div>
 </nav>
 <main>
@@ -25,12 +37,19 @@
   <a href="https://github.com/aieo-product/ToiCamera">aieo-product/ToiCamera</a></div>
 </footer>
 <script>
-document.querySelectorAll('pre').forEach(pre => {
-  const btn = document.createElement('button');
+document.querySelectorAll('[data-setlang]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var l = b.getAttribute('data-setlang');
+    document.documentElement.setAttribute('data-lang', l);
+    try { localStorage.setItem('toi-lang', l); } catch (e) {}
+  });
+});
+document.querySelectorAll('pre').forEach(function (pre) {
+  var btn = document.createElement('button');
   btn.className = 'copy-btn'; btn.textContent = 'copy';
-  btn.addEventListener('click', () => {
-    navigator.clipboard.writeText(pre.querySelector('code')?.innerText || pre.innerText);
-    btn.textContent = 'copied!'; setTimeout(() => btn.textContent = 'copy', 1200);
+  btn.addEventListener('click', function () {
+    navigator.clipboard.writeText((pre.querySelector('code') || pre).innerText);
+    btn.textContent = 'copied!'; setTimeout(function () { btn.textContent = 'copy'; }, 1200);
   });
   pre.appendChild(btn);
 });
