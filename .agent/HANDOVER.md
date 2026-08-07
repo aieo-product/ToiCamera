@@ -8,6 +8,14 @@
 
 > **8/7 夕方**: Worker シークレット名変更(TOICAMERA_MAIN_API_KEY / TOICAMERA_TTS_API_KEY、本番投入済み・旧名は未削除)。**本番 Worker は母艦 gemma4:12b に切替中**: named tunnel `toicamera-llm`(toi-llm.teian.app → localhost:11434、config は ~/.cloudflared/toicamera-llm.yml、cloudflared はバックグラウンド実行中 — **再起動で止まる/LaunchAgent 未設定**)。/analyze 実測 ~29s(ファームの 30s タイムアウトすれすれ)。**OpenAI に戻すには wrangler.jsonc 既定のまま `npx wrangler deploy`**。Pages: y-cable 3言語化+CLIP-B/公式リンク、プロンプト A(API 非依存)/B(母艦 LLM)公開済み。
 
+> **8/8 朝**: 実機で analyze HTTP -1 → 原因=TLS ヒープ枯渇(config/tts クライアントの keep-alive)。**修正+TTS プリフェッチ(音声生成中表示)= PR #61 — 実機検証 OK・マージ済み**。Worker は OpenAI 構成に復帰済み(gemma/トンネルは停止中・戻し方は Pages ガイド)。ローカル TTS は issue #56。キービジュアル素材は issue #59。
+
+> **8/8 朝 — 環境復旧メモ**: 作業コピーを失った場合、gitignore 対象(`userInput/`・`secrets.ini`・`.pio/`)は clone では戻らない。再構築の要点:
+> - `WORKER_URL` は自分でデプロイした Worker の URL(リポジトリには載せない方針 — PR #37)。
+> - `CAM_BASE` は現行ソースで**未使用**(カメラは SoftAP 経由でペアリングする)。値は何でもよい。
+> - WiFi 認証情報とデバイストークンは **NVS が build フラグより優先**される(`connectWifi()` は NVS スロットを先に試し、空 SSID のスロットは飛ばす。`deviceToken()` も NVS 優先)。よって `secrets.ini` 側を空にしたままフラッシュし、端末の設定ポータル(設定→「WiFi設定」→ QR → 192.168.4.1)から入れ直せる。**ポータルのトークン欄は空欄=変更なしなので、NVS の値をクリアする手段は無い**(上書きのみ)。
+> - フラッシュ後にシリアルを開くと `rst:0x15 / boot:0x23 DOWNLOAD` に落ちて `waiting for download` で止まることがある。pyserial は open 時に DTR/RTS をアサートし、これが IO0 を引くため。判定は端末画面で行うのが速い。
+
 # (以下 8/6 時点の記録)
 
 > **締切: 2026-08-07 23:59 PST = 日本時間 8/8 15:59**。
