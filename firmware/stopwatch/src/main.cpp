@@ -1665,11 +1665,6 @@ static bool playFetchedTts() {
   return ttsBuf && ttsLen && M5.Speaker.playWav(ttsBuf, ttsLen);
 }
 
-static void speakText(const String &text) {
-  if (voiceMode == 1 && fetchTts(text) && playFetchedTts()) return;
-  speakAnimalese(text);
-}
-
 static bool fetchHomePlace() {
   if (!hasFreshGpsFix() || WiFi.status() != WL_CONNECTED) return false;
   if (!placeHttpInit) {
