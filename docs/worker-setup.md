@@ -55,6 +55,40 @@ npx wrangler secret put DEVICE_TOKEN
 Model, provider and TTS voice defaults live in the `vars` block of
 [`worker/wrangler.jsonc`](https://github.com/aieo-product/ToiCamera/blob/main/worker/wrangler.jsonc) — edit and redeploy to change them.
 
+### Customize the model menu
+
+The watch never hardcodes model names: it fetches `GET /config` from your
+Worker and shows whatever the `MODELS` var lists (comma-separated) in its
+Settings screen. Add or swap models, redeploy, and the watch picks them up on
+its next boot. The `TTS_VOICE` var likewise decides which voice the TTS speech
+mode uses — the device only chooses *chirps or TTS*, the voice itself is yours
+to define here.
+
+### Local LLM (Ollama, LM Studio, …)
+
+Everything the Worker calls goes through the OpenAI-compatible
+`OPENAI_BASE_URL` var, so you can serve ToiCamera from a model running on your
+own machine:
+
+1. Run a local server with an OpenAI-compatible API, e.g.
+   `ollama serve` (endpoint `http://localhost:11434/v1`).
+2. Expose it with a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
+   `cloudflared tunnel --url http://localhost:11434` → gives you a public
+   `https://…trycloudflare.com` host (or a named tunnel on your own domain).
+3. Set the vars and redeploy:
+   ```jsonc
+   "OPENAI_BASE_URL": "https://<tunnel-host>/v1",
+   "MODELS": "gemma3:12b",          // whatever `ollama list` shows
+   "ANALYZE_MODEL": "gemma3:12b"    // default when the device sends none
+   ```
+
+Caveats: the model must accept OpenAI-style `chat/completions` with an image
+part (pick a vision-capable model for /analyze). Voice STT/TTS intentionally
+use a separate base (`OPENAI_AUDIO_BASE_URL`, default api.openai.com), so
+speech keeps working while chat runs on your chat-only local server.
+Structured-output support (`response_format: json_schema`) varies by server;
+Ollama ≥0.5 handles it.
+
 ## 3. Point the watch at your Worker
 
 Two values connect the firmware to your Worker: the **URL** from step 1 and the

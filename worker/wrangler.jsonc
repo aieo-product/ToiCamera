@@ -17,7 +17,13 @@
     "MODEL": "claude-haiku-4-5",
     // OpenAI TTS voice. Swap Worker-side only if Japanese quality disappoints
     // (fallback plan: Google Cloud TTS ja-JP-Neural2, LINEAR16).
-    "TTS_VOICE": "marin"
+    "TTS_VOICE": "marin",
+    // Model menu the device shows in Settings (comma-separated). The device
+    // fetches this via GET /config and echoes one entry back as X-Model.
+    "MODELS": "gpt-5.6-terra,gpt-5.6-luna",
+    // OpenAI-compatible API base. Point at a Cloudflare Tunnel to use a local
+    // LLM (e.g. Ollama: https://<tunnel-host>/v1) — see docs/worker-setup.md.
+    "OPENAI_BASE_URL": "https://api.openai.com/v1"
   }
   // Secrets (set via `akc get <NAME> --reveal | wrangler secret put <NAME>`):
   //   ANTHROPIC_API_KEY    — Claude vision (when ANALYZE_PROVIDER=anthropic)
