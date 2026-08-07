@@ -1,0 +1,76 @@
+---
+layout: default
+title: ToiCamera — a watch that tells you about what it sees
+---
+
+<div class="hero">
+  <div class="ring"><span>📷</span></div>
+  <h1>ToiCamera</h1>
+  <p class="lede"><strong>Toi</strong> (問い) is Japanese for <em>a question</em> — and it sounds like <em>toy</em>.
+  A wrist-worn AI camera you ask questions with: point, shoot, and it explains
+  the world — on screen and out loud.</p>
+  <div class="cta-row">
+    <a class="btn primary" href="worker-setup.html">Build yours — Worker setup</a>
+    <a class="btn ghost" href="https://github.com/aieo-product/ToiCamera">Source on GitHub</a>
+  </div>
+  <img class="shot" src="images/gps-dashboard.jpg" alt="ToiCamera watch showing the dashboard with GPS location">
+</div>
+
+<h2>What it does</h2>
+<div class="grid">
+  <div class="card"><h3>📷 Zero-lag shutter</h3><p class="muted">The live finder frame <em>is</em> the photo — no capture delay, what you see is what you shot.</p></div>
+  <div class="card"><h3>🗣 Speaks its mind</h3><p class="muted">AI explanations in Animal-Crossing-style chirps, or real TTS with a voice your Worker defines.</p></div>
+  <div class="card"><h3>🎤 Hold-to-talk Q&amp;A</h3><p class="muted">Hold the yellow button and ask about the photo — STT, context-aware answer, spoken back.</p></div>
+  <div class="card"><h3>📍 Location-aware</h3><p class="muted">GPS + reverse geocoding: town-level location, nearest station, place-flavored explanations.</p></div>
+  <div class="card"><h3>🌐 Trilingual</h3><p class="muted">日本語 / English / 中文 — UI and AI content switch together, right on the watch.</p></div>
+  <div class="card"><h3>🧱 LEGO-compatible back</h3><p class="muted">3D-printed backpack plate; camera &amp; GPS clip anywhere, LEGO Technic pin pitch.</p></div>
+</div>
+
+<h2>Your device, your backend, your model</h2>
+<p>ToiCamera ships with <strong>no shared server</strong>. You deploy a small
+Cloudflare Worker under your own account — it holds your API keys, defines the
+<strong>model menu</strong> the watch shows in Settings, picks the TTS voice, and can even
+route to a <strong>local LLM running on your own machine</strong> through a Cloudflare
+Tunnel. The firmware never hardcodes a model name.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 190" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="13">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#41d9ff"/></marker>
+  </defs>
+  <circle cx="80" cy="80" r="52" fill="none" stroke="#ffd23e" stroke-width="6" stroke-dasharray="245 82" transform="rotate(-135 80 80)"/>
+  <text x="80" y="76" fill="#e8eaed" text-anchor="middle">Watch</text>
+  <text x="80" y="94" fill="#9aa3ad" text-anchor="middle" font-size="11">+ CamS3 / GPS</text>
+  <line x1="140" y1="80" x2="255" y2="80" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="197" y="66" fill="#9aa3ad" text-anchor="middle" font-size="11">HTTPS + X-Device-Token</text>
+  <rect x="260" y="42" width="200" height="76" rx="14" fill="#191d23" stroke="#41d9ff"/>
+  <text x="360" y="72" fill="#e8eaed" text-anchor="middle">Your Worker</text>
+  <text x="360" y="92" fill="#9aa3ad" text-anchor="middle" font-size="11">keys · models · voice · lang</text>
+  <line x1="460" y1="62" x2="575" y2="40" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="460" y1="98" x2="575" y2="130" stroke="#57d993" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+  <rect x="580" y="16" width="160" height="48" rx="12" fill="#191d23" stroke="#232a33"/>
+  <text x="660" y="45" fill="#e8eaed" text-anchor="middle">OpenAI API</text>
+  <rect x="580" y="106" width="160" height="48" rx="12" fill="#191d23" stroke="#57d993"/>
+  <text x="660" y="128" fill="#e8eaed" text-anchor="middle">Local LLM</text>
+  <text x="660" y="145" fill="#9aa3ad" text-anchor="middle" font-size="11">Ollama via Tunnel</text>
+</svg>
+</div>
+
+<h2>Guides</h2>
+<div class="grid">
+  <a class="card" href="worker-setup.html"><h3>⚡ Worker setup</h3><p class="muted">Deploy your own AI relay in ~10 minutes: keys, device token, model menu, local LLM.</p><span class="go">Read the guide →</span></a>
+  <a class="card" href="print-guide.html"><h3>🖨 Print &amp; assembly</h3><p class="muted">アタッチメント印刷・組立ガイド — 印刷設定・M2 ネジ・CLIP でのユニット取付(実写真つき)。</p><span class="go">Read the guide →</span></a>
+  <a class="card" href="y-cable.html"><h3>🔌 Y-cable</h3><p class="muted">Y 字ケーブルの作り方 — カメラ+GPS 同時使用のための Grove 分岐ハーネス。</p><span class="go">Read the guide →</span></a>
+  <a class="card" href="wiring.html"><h3>📐 Wiring notes</h3><p class="muted">Grove pinout facts and hardware constraints discovered on real devices.</p><span class="go">Read the notes →</span></a>
+  <a class="card" href="DESIGN.html"><h3>📘 Design document</h3><p class="muted">設計書(日本語)— アーキテクチャ・状態遷移・API 契約の正典。</p><span class="go">Read the doc →</span></a>
+</div>
+
+<h2>Hardware</h2>
+<table>
+  <tr><th>Part</th><th>Role</th></tr>
+  <tr><td>M5Stack StopWatch Dev Kit (ESP32-S3, C152)</td><td>The watch — 466×466 round AMOLED, buttons, mic, speaker, RTC, IMU</td></tr>
+  <tr><td>M5Stack Unit CamS3 (5&nbsp;MP)</td><td>Camera — joins the watch's own SoftAP, custom STA-server firmware</td></tr>
+  <tr><td>M5Stack Unit GPS v1.1</td><td>Location — NMEA over Grove, shares the port via a Y-cable</td></tr>
+  <tr><td>3D-printed back plate</td><td>LEGO-compatible mount for both units (<a href="print-guide.html">print guide</a>)</td></tr>
+</table>
+<p class="muted">Entry for the <a href="https://m5stack.com/global-innovation-contest-2026">M5Stack Global Innovation Contest 2026</a>.</p>

@@ -50,9 +50,9 @@ No router or PC on the camera path — the watch hosts a private AP for the came
 ## Getting started
 
 Everything here runs against **your own Cloudflare Worker** — this repo contains no
-live backend. Deploying one takes about 10 minutes: **[Worker setup guide](docs/worker-setup.md)**.
+live backend. Deploying one takes about 10 minutes: **[Worker setup guide](https://aieo-product.github.io/ToiCamera/worker-setup.html)**.
 
-1. **Worker** — deploy your own AI relay first: `cd worker && npx wrangler deploy`, then `wrangler secret put` the keys listed in `wrangler.jsonc` comments (OpenAI API key, a device token you make up). Full walkthrough: [docs/worker-setup.md](docs/worker-setup.md).
+1. **Worker** — deploy your own AI relay first: `cd worker && npx wrangler deploy`, then `wrangler secret put` the keys listed in `wrangler.jsonc` comments (OpenAI API key, a device token you make up). Full walkthrough: [Worker setup guide](https://aieo-product.github.io/ToiCamera/worker-setup.html).
 2. **Camera firmware** — `firmware/cams3/build.sh` (ESP-IDF v5.1.4). Flash with `erase-flash` first; see `firmware/cams3/README.md` for the sensor's quirks (the 5 MP PY260 ignores its quality register — verified on hardware).
 3. **Secrets** — `cp firmware/stopwatch/secrets.ini.example firmware/stopwatch/secrets.ini` and fill in Wi-Fi credentials, your Worker URL from step 1 and the same device token (`gen-secrets.sh` automates this). `secrets.ini` is gitignored; real values never enter the repo.
 4. **Watch firmware** — `cd firmware/stopwatch && pio run -t upload`.

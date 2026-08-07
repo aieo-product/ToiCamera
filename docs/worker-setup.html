@@ -1,0 +1,227 @@
+---
+layout: default
+title: Worker setup — bring your own AI relay | ToiCamera
+---
+
+<div class="hero" style="padding-bottom:0">
+  <span class="badge">FEATURED — bring your own backend</span>
+  <h1>Worker setup</h1>
+  <p class="lede">ToiCamera never talks to OpenAI directly. The watch calls a small
+  <strong>Cloudflare Worker</strong> that holds every API key, defines the model menu,
+  picks the TTS voice and answers with strict JSON. You deploy it under
+  <strong>your own free Cloudflare account</strong> — the whole system is yours.
+  No shared backend, no third-party server.</p>
+</div>
+
+<div class="diagram">
+<svg viewBox="0 0 760 190" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="13">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#41d9ff"/></marker>
+  </defs>
+  <circle cx="80" cy="80" r="52" fill="none" stroke="#ffd23e" stroke-width="6" stroke-dasharray="245 82" transform="rotate(-135 80 80)"/>
+  <text x="80" y="76" fill="#e8eaed" text-anchor="middle">Watch</text>
+  <text x="80" y="94" fill="#9aa3ad" text-anchor="middle" font-size="11">X-Device-Token</text>
+  <line x1="140" y1="80" x2="255" y2="80" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="197" y="66" fill="#9aa3ad" text-anchor="middle" font-size="11">HTTPS</text>
+  <rect x="260" y="42" width="200" height="76" rx="14" fill="#191d23" stroke="#41d9ff"/>
+  <text x="360" y="66" fill="#e8eaed" text-anchor="middle">Your Worker</text>
+  <text x="360" y="84" fill="#9aa3ad" text-anchor="middle" font-size="11">/analyze /ask /tts</text>
+  <text x="360" y="100" fill="#9aa3ad" text-anchor="middle" font-size="11">/digest /place /config</text>
+  <line x1="460" y1="62" x2="575" y2="40" stroke="#41d9ff" stroke-width="2" marker-end="url(#ar2)"/>
+  <line x1="460" y1="98" x2="575" y2="130" stroke="#57d993" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#ar2)"/>
+  <rect x="580" y="16" width="160" height="48" rx="12" fill="#191d23" stroke="#232a33"/>
+  <text x="660" y="45" fill="#e8eaed" text-anchor="middle">OpenAI API</text>
+  <rect x="580" y="106" width="160" height="48" rx="12" fill="#191d23" stroke="#57d993"/>
+  <text x="660" y="128" fill="#e8eaed" text-anchor="middle">Local LLM</text>
+  <text x="660" y="145" fill="#9aa3ad" text-anchor="middle" font-size="11">Ollama via Tunnel</text>
+</svg>
+</div>
+
+<div class="note">⏱ <strong>Time budget: about 10 minutes.</strong> Everything runs on
+Cloudflare's free tier. You only pay OpenAI for what the watch actually asks.</div>
+
+<h2 id="ai">⚡ Fastest path: let an AI do it</h2>
+<p>If you use an AI coding agent (Claude Code, Cursor, Codex CLI, …), paste this
+prompt and it will walk the whole setup with you — deploy, secrets, token,
+verification. It never needs to see your OpenAI key on screen (wrangler prompts
+for secrets on stdin).</p>
+
+<pre><code>You are setting up the AI relay Worker for ToiCamera
+(https://github.com/aieo-product/ToiCamera) on MY Cloudflare account.
+
+Do this, asking me for input only when marked [ASK]:
+1. git clone https://github.com/aieo-product/ToiCamera && cd ToiCamera/worker
+2. npm install
+3. npx wrangler deploy
+   - If wrangler is not logged in, run `npx wrangler login` first and tell me
+     to approve it in the browser.
+   - Record the printed Worker URL, e.g. https://toicamera.SUBDOMAIN.workers.dev
+4. Set the secrets with `npx wrangler secret put NAME` one by one:
+   - OPENAI_FREE_API_KEY  → [ASK] my OpenAI API key
+     (https://platform.openai.com/api-keys) — I will paste it into the hidden
+     prompt myself; do not echo it.
+   - OPENAI_API_KEY       → same key again (used for TTS)
+   - DEVICE_TOKEN         → generate one with `openssl rand -hex 16`, show it
+     to me, and tell me to keep it (the watch needs the same value).
+5. Verify:
+   curl -s https://&lt;worker-url&gt;/config -H "x-device-token: &lt;token&gt;"
+   → expect {"models":[...],"voice":"...","tts":true}
+6. Print a summary: Worker URL + device token + the two lines I must put in
+   firmware/stopwatch/secrets.ini:
+     -DWORKER_URL=\"https://&lt;worker-url&gt;\"
+     -DDEVICE_TOKEN=\"&lt;token&gt;\"
+   and remind me: the token can also be entered later from the watch
+   (Settings → WiFi → QR → http://192.168.4.1).
+Optional [ASK]: if I want a custom model menu, edit the MODELS var in
+worker/wrangler.jsonc (comma-separated) and redeploy.</code></pre>
+
+<p class="muted">日本語で使う場合も、このプロンプトをそのまま貼れば OK です(エージェントが日本語で応答します)。</p>
+
+<h2 id="manual">🔧 Manual path, step by step</h2>
+
+<div class="step"><div class="num">0</div><div class="body">
+<h2>Prerequisites</h2>
+<ul>
+  <li>A free <a href="https://dash.cloudflare.com/sign-up">Cloudflare account</a> — the Workers free tier is plenty. Sign up with Google/Apple/GitHub or email:</li>
+</ul>
+<figure>
+  <img src="images/worker/cf-signin.jpg" alt="Cloudflare sign-in page with Google / Apple / GitHub buttons and email form">
+  <figcaption>dash.cloudflare.com — create an account or sign in. No credit card needed for Workers.</figcaption>
+</figure>
+<ul>
+  <li>An <strong>OpenAI API key</strong> — create one at <a href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</a> (“Create new secret key”, copy the <code>sk-…</code> string somewhere safe)</li>
+  <li><strong>Node.js 18+</strong> on your PC — <code>npx</code> runs wrangler, no global install needed</li>
+</ul>
+</div></div>
+
+<div class="step"><div class="num">1</div><div class="body">
+<h2>Deploy the Worker</h2>
+<pre><code><span class="cmt"># in your clone of the repo</span>
+cd worker
+npm install
+npx wrangler deploy   <span class="cmt"># first run opens a browser → click “Allow” to log in</span></code></pre>
+<p>The deploy output prints <strong>your Worker URL</strong> — keep it, the firmware needs it in step 3:</p>
+<pre><code>Uploaded toicamera (2.59 sec)
+Deployed toicamera triggers (0.91 sec)
+  <span class="y">https://toicamera.&lt;your-subdomain&gt;.workers.dev</span></code></pre>
+<figure>
+  <img src="images/worker/cf-workers-overview.jpg" alt="Cloudflare dashboard, Workers and Pages list showing the deployed toicamera worker">
+  <figcaption>After deploying, the Worker appears in the dashboard under <em>Compute (Workers) → Workers &amp; Pages</em>. The <code>workers.dev</code> URL shown on the card is the one the watch calls.</figcaption>
+</figure>
+<figure>
+  <img src="images/worker/cf-worker-url.jpg" alt="Worker overview page showing the workers.dev URL and the Enabled Workers Logs toggle">
+  <figcaption>Clicking the Worker opens its overview — your URL sits at the top, and <em>Workers Logs: Enabled</em> means requests show up in the Observability tab (handy in step 4).</figcaption>
+</figure>
+</div></div>
+
+<div class="step"><div class="num">2</div><div class="body">
+<h2>Set the secrets</h2>
+<p>The Worker reads three secrets (plus one optional). From the terminal — each
+command prompts on stdin, so keys never touch your shell history:</p>
+<pre><code>npx wrangler secret put OPENAI_FREE_API_KEY   <span class="cmt"># paste your OpenAI key</span>
+npx wrangler secret put OPENAI_API_KEY        <span class="cmt"># same key again (TTS)</span>
+npx wrangler secret put DEVICE_TOKEN          <span class="cmt"># a password YOU make up, e.g. `openssl rand -hex 16`</span></code></pre>
+<table>
+  <tr><th>Secret</th><th>What it is</th></tr>
+  <tr><td><code>OPENAI_FREE_API_KEY</code></td><td>OpenAI key used for vision / Q&amp;A / digest. Any OpenAI key works — the name comes from the author's free daily-token program</td></tr>
+  <tr><td><code>OPENAI_API_KEY</code></td><td>OpenAI key used for TTS. Usually the <strong>same key</strong> as above</td></tr>
+  <tr><td><code>DEVICE_TOKEN</code></td><td>A shared secret <strong>you invent</strong>. The watch sends it as <code>X-Device-Token</code>; the Worker rejects everything else</td></tr>
+  <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Optional — only if you flip <code>ANALYZE_PROVIDER</code> to <code>anthropic</code></td></tr>
+</table>
+<p>Prefer clicking? The dashboard does the same thing:
+<em>your Worker → Settings → Variables and Secrets → Add</em>, choose type
+<strong>Secret</strong>:</p>
+<figure>
+  <img src="images/worker/cf-secrets.jpg" alt="Cloudflare worker Settings tab, Variables and Secrets section with Add button">
+  <figcaption>Dashboard alternative: add each secret by name here — the value is encrypted and never shown again.</figcaption>
+</figure>
+</div></div>
+
+<div class="step"><div class="num">3</div><div class="body">
+<h2>Point the watch at your Worker</h2>
+<p>Two values connect the firmware to your Worker: the <strong>URL</strong> from step 1
+and the <strong>device token</strong> from step 2.</p>
+<ul>
+<li><strong>At build time</strong> — put both in <code>firmware/stopwatch/secrets.ini</code>
+(copy from <code>secrets.ini.example</code>; <code>gen-secrets.sh</code> automates it):
+<pre><code>-DWORKER_URL=\"https://toicamera.&lt;your-subdomain&gt;.workers.dev\"
+-DDEVICE_TOKEN=\"&lt;the token you made up&gt;\"</code></pre></li>
+<li><strong>Or at runtime</strong> — the token (not the URL) can be entered later from
+the watch itself: <em>Settings → WiFi → scan the QR → <code>http://192.168.4.1</code></em> →
+the <em>device token</em> field. Stored in NVS, overrides the build-time value.
+This field expects the <code>DEVICE_TOKEN</code> shared secret — <strong>not</strong> an OpenAI key.</li>
+</ul>
+</div></div>
+
+<div class="step"><div class="num">4</div><div class="body">
+<h2>Verify</h2>
+<pre><code>curl -s "https://toicamera.&lt;your-subdomain&gt;.workers.dev/config" \
+  -H "x-device-token: &lt;your token&gt;"</code></pre>
+<p>Expected:</p>
+<pre><code>{"models":["gpt-5.6-terra","gpt-5.6-luna"],"voice":"marin","tts":true}</code></pre>
+<table>
+  <tr><th>Response</th><th>Meaning</th></tr>
+  <tr><td><code>401</code></td><td>Token mismatch — header value must equal the <code>DEVICE_TOKEN</code> secret</td></tr>
+  <tr><td><code>429</code> + <code>reset_jst</code></td><td>OpenAI free daily quota exhausted; the watch shows the reset time</td></tr>
+  <tr><td><code>400 empty or truncated image</code></td><td>(on /analyze) the test file is smaller than 128 bytes</td></tr>
+</table>
+<p>Watch live logs while testing from the device: <code>npx wrangler tail</code> —
+or in the dashboard, the Worker's <em>Observability</em> tab shows every request
+the watch makes:</p>
+<figure>
+  <img src="images/worker/cf-logs.jpg" alt="Worker Observability tab listing POST /analyze and /digest requests from the watch">
+  <figcaption>Every shutter press shows up as <code>POST /analyze</code> (and the daily summary as <code>/digest</code>). 0 errors = the watch and your Worker are talking.</figcaption>
+</figure>
+</div></div>
+
+<h2 id="models">🎛 Your Worker, your model menu</h2>
+<p>The watch <strong>never hardcodes model names</strong>: on boot it fetches
+<code>GET /config</code> and shows whatever your Worker offers in
+<em>Settings → Model</em>. The menu is one var in
+<code>worker/wrangler.jsonc</code>:</p>
+<pre><code>"MODELS": "gpt-5.6-terra,gpt-5.6-luna",   <span class="cmt">// comma-separated — this IS the Settings menu</span></code></pre>
+<p>Edit, <code>npx wrangler deploy</code>, reboot the watch — done. The same applies to
+the speech voice: the watch only chooses <em>chirps or TTS</em>; which voice TTS
+speaks with is your Worker's <code>TTS_VOICE</code> var.</p>
+
+<h2 id="local-llm">🏠 Local LLM (Ollama, LM Studio, …)</h2>
+<p>Everything the Worker calls goes through the OpenAI-compatible
+<code>OPENAI_BASE_URL</code> var — so the “AI” can be a model running on your own
+machine:</p>
+<div class="diagram">
+<svg viewBox="0 0 760 120" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="13">
+  <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#57d993"/></marker></defs>
+  <rect x="10" y="36" width="150" height="48" rx="12" fill="#191d23" stroke="#41d9ff"/>
+  <text x="85" y="64" fill="#e8eaed" text-anchor="middle">Your Worker</text>
+  <line x1="160" y1="60" x2="280" y2="60" stroke="#57d993" stroke-width="2" marker-end="url(#ar3)"/>
+  <text x="220" y="46" fill="#9aa3ad" text-anchor="middle" font-size="11">OPENAI_BASE_URL</text>
+  <rect x="285" y="36" width="190" height="48" rx="12" fill="#191d23" stroke="#57d993"/>
+  <text x="380" y="58" fill="#e8eaed" text-anchor="middle">Cloudflare Tunnel</text>
+  <text x="380" y="76" fill="#9aa3ad" text-anchor="middle" font-size="11">cloudflared</text>
+  <line x1="475" y1="60" x2="595" y2="60" stroke="#57d993" stroke-width="2" marker-end="url(#ar3)"/>
+  <rect x="600" y="36" width="150" height="48" rx="12" fill="#191d23" stroke="#232a33"/>
+  <text x="675" y="58" fill="#e8eaed" text-anchor="middle">Ollama :11434</text>
+  <text x="675" y="76" fill="#9aa3ad" text-anchor="middle" font-size="11">gemma3 etc.</text>
+</svg>
+</div>
+<ol>
+  <li>Run a local server with an OpenAI-compatible API — e.g. <code>ollama serve</code> (endpoint <code>http://localhost:11434/v1</code>)</li>
+  <li>Expose it: <code>cloudflared tunnel --url http://localhost:11434</code> → you get a public <code>https://….trycloudflare.com</code> host (or use a named tunnel on your own domain)</li>
+  <li>Point the Worker at it and redeploy:
+<pre><code>"OPENAI_BASE_URL": "https://&lt;tunnel-host&gt;/v1",
+"MODELS": "gemma3:12b",          <span class="cmt">// whatever `ollama list` shows</span>
+"ANALYZE_MODEL": "gemma3:12b"    <span class="cmt">// default when the device sends none</span></code></pre></li>
+</ol>
+<div class="tip">Voice STT/TTS intentionally use a <em>separate</em> base
+(<code>OPENAI_AUDIO_BASE_URL</code>, default api.openai.com) — speech keeps working
+even while chat runs on a chat-only local server.</div>
+<div class="warn">Pick a <strong>vision-capable</strong> model for /analyze (it receives a
+photo). Structured-output support (<code>response_format: json_schema</code>) varies by
+server; Ollama ≥ 0.5 handles it.</div>
+
+<h2 id="security">🔒 Security notes</h2>
+<ul>
+  <li>API keys exist <strong>only</strong> as Worker secrets — never in the firmware, NVS or repo.</li>
+  <li>The device↔Worker link is HTTPS, but the firmware uses <code>setInsecure()</code> (no CA pinning). Fine for a hobby build that only sends a photo and a token; pin the root CA if you fork this for anything serious.</li>
+  <li>Change <code>TOI_AP_PASS</code> (watch AP password) before deploying your own — anyone who joins the watch AP can reach the setup portal.</li>
+</ul>
