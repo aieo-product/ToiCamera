@@ -1447,8 +1447,8 @@ static bool pairCamera() {
 }
 
 // Factory firmware boots with awb/aec/agc all OFF -> near-black images
-// (vlogCamera hardware-verification, 2026-06-02). Enable auto exposure and
-// pick SVGA/q12 for fast transfer. Best-effort: failures are non-fatal.
+// (verified on hardware, 2026-06-02). Enable auto exposure and pick a fast
+// finder mode. Best-effort: failures are non-fatal.
 static void configureCamera() {
   static const char *kInit[] = {
       "/api/v1/control?var=awb&val=1",  "/api/v1/control?var=awb_gain&val=1",

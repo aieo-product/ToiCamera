@@ -22,7 +22,7 @@ AI 解説のテキスト表示 + スピーカー読み上げ、という一連�
 | 役割 | デバイス | 要点 |
 |---|---|---|
 | ホスト/UI | M5Stack Stopwatch Dev Kit (SKU C152) | ESP32-S3R8、16MB Flash / 8MB PSRAM、466×466 円形 AMOLED(CO5300/QSPI)、CST820B タッチ、ES8311+AW8737A+1W スピーカー、マイク、KEYA=G2(黄)/KEYB=G1(青)、Grove=GND/5V/G10/G11 |
-| カメラ | M5Stack Unit CamS3 | ESP32-S3 N16R8、**5MP 版で確定**(vlogCamera 実機検証)、microSD、バッテリーなし。**カスタムファーム**(公式 UserDemo + STA サーバーパッチ)で運用 |
+| カメラ | M5Stack Unit CamS3 | ESP32-S3 N16R8、**5MP 版で確定**(実機検証済み)、microSD、バッテリーなし。**カスタムファーム**(公式 UserDemo + STA サーバーパッチ)で運用 |
 | (Phase 1.5) 位置情報 | Unit GPS v1.1 (SKU U032-V11) | AT6668、UART Grove、48×24mm |
 
 ### 接続(Phase 1 / MVP)
@@ -91,8 +91,9 @@ RESULT / ERROR --[KEYB 青]--> IDLE
 
 ### 4.2 CamS3 ファームウェア(`firmware/cams3/`)— カスタム(2026-07-28 実機稼働確認)
 
-**変種は 5MP で確定**([vlogCamera](https://github.com/aieo-product/vlogCamera)
-2026-06-02 実機検証。ベース = `UnitCamS3-UserDemo` branch `unitcams3-5mp`)。
+**変種は 5MP で確定**(2026-06-02 実機検証。ベース =
+[m5stack/UnitCamS3-UserDemo](https://github.com/m5stack/UnitCamS3-UserDemo)
+branch `unitcams3-5mp`、MIT ライセンス)。
 
 工場ファームの STA モードは EzData poster 専用で **REST サーバーが起動しない**
 (TCP 診断で確定)ため、第 3 の起動モードを追加するパッチを作成した:
@@ -106,7 +107,7 @@ RESULT / ERROR --[KEYB 青]--> IDLE
   esp_insights の SHA_SIZE バグ修正を自動適用)。書き込みは USB-C、`erase-flash`
   で設定を初期化してから焼く(→ AP モードで起動しペアリング可能な状態になる)
 
-**露出の罠**: 工場初期値は awb/aec/agc 全 OFF で画像が真っ黒(vlogCamera 検証)。
+**露出の罠**: 工場初期値は awb/aec/agc 全 OFF で画像が真っ黒(実機検証)。
 Stopwatch 側が初回ファインダー進入時に `configureCamera()` で自動露出 ON +
 QVGA/quality 1 を適用する。
 
@@ -152,8 +153,8 @@ api.openai.com)に接続する)/ `ANALYZE_MAX_TOKENS` / `ANALYZE_STYLE_LOW` /
 
 ### 4.4 ケース(`case/`)
 
-コンパクトカメラ型、Bambu Lab X2D で印刷。STEP + 3MF(Bambu Studio プロファイル)を
-配布。クリアランス +0.3mm、2 イテレーション想定。詳細は `case/README.md`。
+LEGO 互換バックプレート、Bambu Lab X2D で印刷。Blender スクリプト
+(`case/blender/build_case.py`)から生成した STL(`case/blender/out/*.stl`)を配布。クリアランス +0.3mm、2 イテレーション想定。詳細は `case/README.md`。
 
 ## 5. 性能・容量見積り
 

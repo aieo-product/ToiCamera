@@ -1,4 +1,4 @@
-vlogCamera build fix: esp_insights が ESP-IDF v5.1.4 で 'SHA_SIZE' undeclared でビルド失敗する問題。
+ToiCamera build fix: esp_insights が ESP-IDF v5.1.4 で 'SHA_SIZE' undeclared でビルド失敗する問題。
 
 対象: managed_components/espressif__esp_insights/src/esp_insights_cbor_encoder.c
 （managed_components は component manager 生成物で git 管理外のため、手動適用 or 下記 sed で当てる）
@@ -10,7 +10,7 @@ vlogCamera build fix: esp_insights が ESP-IDF v5.1.4 で 'SHA_SIZE' undeclared 
 @@
  #include <esp_diagnostics.h>
 +
-+/* vlogCamera fix: esp_insights旧名 SHA_SIZE → esp_diagnosticsの DIAG_SHA_SIZE へ橋渡し */
++/* ToiCamera fix: esp_insights旧名 SHA_SIZE → esp_diagnosticsの DIAG_SHA_SIZE へ橋渡し */
 +#ifndef SHA_SIZE
 +#define SHA_SIZE DIAG_SHA_SIZE
 +#endif
