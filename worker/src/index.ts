@@ -14,6 +14,14 @@ export interface Env {
   /** Anthropic vision model (used when ANALYZE_PROVIDER=anthropic) */
   MODEL: string;
   TTS_VOICE: string;
+  /** Comma-separated model ids offered to the device (GET /config). */
+  MODELS?: string;
+  /** OpenAI-compatible API base (default https://api.openai.com/v1).
+   *  Point it at a Cloudflare Tunnel to use a local LLM (Ollama etc). */
+  OPENAI_BASE_URL?: string;
+  /** Separate base for STT/TTS (default https://api.openai.com/v1) so voice
+   *  keeps working when OPENAI_BASE_URL points at a chat-only local LLM. */
+  OPENAI_AUDIO_BASE_URL?: string;
 }
 
 type Lang = "ja" | "en" | "zh";
@@ -63,14 +71,32 @@ const DIGEST_SCHEMA = {
 } as const;
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // CamS3 は SVGA〜UXGA JPEG を送る想定 (~100-500KB)
-const ALLOWED_MODELS = new Set([
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-]);
+const DEFAULT_MODELS = "gpt-5.6-terra,gpt-5.6-luna";
+
+// Worker-defined model menu: the device fetches it via GET /config and only
+// echoes one entry back in X-Model — adding or swapping models (including a
+// local LLM behind OPENAI_BASE_URL) is a Worker redeploy, never a firmware
+// change.
+function configuredModels(env: Env): string[] {
+  return (env.MODELS || DEFAULT_MODELS)
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
+function openaiBase(env: Env): string {
+  return (env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+// STT/TTS stay on OpenAI even when chat points at a local LLM — most local
+// servers only implement chat/completions.
+function audioBase(env: Env): string {
+  return (env.OPENAI_AUDIO_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
 
 function pickModel(request: Request, env: Env): string {
   const requestedModel = request.headers.get("x-model");
-  return requestedModel && ALLOWED_MODELS.has(requestedModel)
+  return requestedModel && configuredModels(env).includes(requestedModel)
     ? requestedModel
     : env.ANALYZE_MODEL;
 }
@@ -105,7 +131,7 @@ const FALLBACK_RESULT = {
 // Chat completion against OpenAI, free data-sharing key only (no paid
 // fallback by owner's decision — the device surfaces quota exhaustion).
 async function openaiChat(env: Env, payload: unknown): Promise<Response> {
-  return fetch("https://api.openai.com/v1/chat/completions", {
+  return fetch(`${openaiBase(env)}/chat/completions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${env.OPENAI_FREE_API_KEY}`,
@@ -532,7 +558,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     form.append("file", new File([audio], "q.wav", { type: "audio/wav" }));
     form.append("model", model);
     form.append("language", lang);
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const res = await fetch(`${audioBase(env)}/audio/transcriptions`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.OPENAI_FREE_API_KEY}` },
       body: form,
@@ -666,7 +692,7 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
     return json({ error: "missing text" }, 400);
   }
 
-  const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
+  const upstream = await fetch(`${audioBase(env)}/audio/speech`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -702,13 +728,22 @@ export default {
     if (request.headers.get("x-device-token") !== env.DEVICE_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }
-    const expectedMethod = url.pathname === "/place" ? "GET" : "POST";
+    const expectedMethod =
+        url.pathname === "/place" || url.pathname === "/config" ? "GET" : "POST";
     if (request.method !== expectedMethod) {
       return json({ error: "method not allowed" }, 405);
     }
 
     try {
       switch (url.pathname) {
+        case "/config":
+          // Device-facing menu: which models this Worker offers and which
+          // TTS voice it speaks with. The firmware caches this in NVS.
+          return json({
+            models: configuredModels(env),
+            voice: env.TTS_VOICE,
+            tts: true,
+          });
         case "/analyze":
           return await handleAnalyze(request, env, ctx);
         case "/ask":
