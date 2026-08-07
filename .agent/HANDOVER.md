@@ -6,6 +6,8 @@
 > 実機 = マージ後 main 相当をフラッシュ済み(UI 3言語・スクロール設定7項目・動的モデル・ボイス TTS)・ユーザー確認済み。
 > **残り = 提出フローのみ**: 動画最終化(専用セッション)→ YouTube → 記事リンク差し替え → Hackster 投稿 → Google Form(8/8 15:59 JST)+受付スクショ。
 
+> **8/7 夕方**: Worker シークレット名変更(TOICAMERA_MAIN_API_KEY / TOICAMERA_TTS_API_KEY、本番投入済み・旧名は未削除)。**本番 Worker は母艦 gemma4:12b に切替中**: named tunnel `toicamera-llm`(toi-llm.teian.app → localhost:11434、config は ~/.cloudflared/toicamera-llm.yml、cloudflared はバックグラウンド実行中 — **再起動で止まる/LaunchAgent 未設定**)。/analyze 実測 ~29s(ファームの 30s タイムアウトすれすれ)。**OpenAI に戻すには wrangler.jsonc 既定のまま `npx wrangler deploy`**。Pages: y-cable 3言語化+CLIP-B/公式リンク、プロンプト A(API 非依存)/B(母艦 LLM)公開済み。
+
 # (以下 8/6 時点の記録)
 
 > **締切: 2026-08-07 23:59 PST = 日本時間 8/8 15:59**。
