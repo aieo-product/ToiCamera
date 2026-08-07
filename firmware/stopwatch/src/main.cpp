@@ -3,7 +3,7 @@
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation
 // Blue button   (KEYB/G1): home (finder), sleep (home), back (result/error)
 // Blue hold                 : re-pair the camera from the live finder
-// Speech: on-device "animalese" (per-character chirps with intonation) — no TTS
+// Speech: on-device animalese chirps or Worker-generated TTS
 // Touch drag             : scroll explanation text
 // Home screen            : clock, place, steps; camera stream is stopped
 // Idle screen            : live viewfinder (continuous QVGA preview)
@@ -86,7 +86,7 @@ static int settingsPressedRow = -1;
 static int settingsItemForY(int screenY) {
   if (screenY < 128 || screenY >= 432) return -1;
   const int item = (screenY - 128 + settingsScrollY) / 78;
-  return constrain(item, 0, 5);
+  return constrain(item, 0, 6);
 }
 static bool homeTouchActive = false;
 static bool homeVolumeDragging = false;
@@ -127,9 +127,14 @@ static uint8_t paBoostPulses = 0;
 // mode, no audible distortion — so it ships enabled.
 static bool es8311DacBoost = true;
 static uint8_t captureQuality = 0;
-static uint8_t selectedModel = 2;
+static String toiModels[8];
+static uint8_t toiModelCount = 0;
+static String toiFallbackModels[2] = {"gpt-5.6-terra", "gpt-5.6-luna"};
+static uint8_t selectedModel = 0;
 static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
+static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS
+static bool toiConfigSettingsRetryDone = false;
 
 static TinyGPSPlus gps;
 static uint32_t gpsBytes = 0;
@@ -162,6 +167,8 @@ static bool accelPeakHigh = false;
 static TaskHandle_t animTask = nullptr;
 static volatile bool animStopFlag = false;
 static String animText;
+static uint8_t *ttsBuf = nullptr;
+static size_t ttsLen = 0;
 
 static bool gNetOk = false;
 static bool gCamOk = false;
@@ -175,10 +182,71 @@ static uint32_t retainAt = 0;
 static constexpr size_t kMaxJpeg = 2 * 1024 * 1024;
 static constexpr int kTextWidth = 320;  // inscribed square of the 466px round AMOLED
 
-// sol dropped by owner's decision (heaviest tier — quota drains too fast).
+static uint8_t activeModelCount() {
+  return toiModelCount ? toiModelCount : 2;
+}
+
+static String &activeModelAt(uint8_t index) {
+  if (toiModelCount) {
+    return toiModels[index < toiModelCount ? index : 0];
+  }
+  return toiFallbackModels[index < 2 ? index : 0];
+}
+
 static const char *selectedModelName() {
-  static constexpr const char *kModels[] = {"gpt-5.6-terra", "gpt-5.6-luna"};
-  return kModels[selectedModel < 2 ? selectedModel : 1];
+  return activeModelAt(selectedModel).c_str();
+}
+
+static void selectModelByName(const String &name, bool persist = true) {
+  selectedModel = 0;
+  const uint8_t count = activeModelCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    if (activeModelAt(i) == name) {
+      selectedModel = i;
+      break;
+    }
+  }
+  if (persist && toiPrefsReady) {
+    toiPrefs.putString("modelName", selectedModelName());
+  }
+}
+
+static bool loadModelCsv(const String &csv) {
+  String parsed[8];
+  uint8_t count = 0;
+  int start = 0;
+  while (start <= static_cast<int>(csv.length()) && count < 8) {
+    const int comma = csv.indexOf(',', start);
+    const int end = comma >= 0 ? comma : csv.length();
+    String model = csv.substring(start, end);
+    model.trim();
+    if (model.length() > 0 && model.length() <= 48) parsed[count++] = model;
+    if (comma < 0) break;
+    start = comma + 1;
+  }
+  if (!count) return false;
+  for (uint8_t i = 0; i < count; ++i) toiModels[i] = parsed[i];
+  for (uint8_t i = count; i < 8; ++i) toiModels[i] = "";
+  toiModelCount = count;
+  return true;
+}
+
+static void loadModelSettings() {
+  if (!toiPrefsReady) return;
+  loadModelCsv(toiPrefs.getString("models", ""));
+
+  const String savedName = toiPrefs.getString("modelName", "");
+  if (savedName.length()) {
+    selectModelByName(savedName);
+  } else if (toiPrefs.isKey("model")) {
+    const uint8_t legacyIndex = toiPrefs.getUChar("model", 0);
+    selectedModel = legacyIndex < activeModelCount() ? legacyIndex : 0;
+    toiPrefs.putString("modelName", selectedModelName());
+    toiPrefs.remove("model");
+    Serial.printf("[toi] model: migrated to %s\n", selectedModelName());
+  } else {
+    selectModelByName("");
+  }
 }
 
 static const char *selectedLangCode() {
@@ -752,7 +820,8 @@ static void drawPageHistory() {
   homeCanvas.clearClipRect();
 }
 
-// Six spacious items: model / volume / quality / AI detail / WiFi / language.
+// Seven spacious items: model / volume / quality / AI detail / voice / WiFi /
+// language.
 // Items use 78px content-space bands inside the clipped y=128..431 viewport.
 static void drawPageSettings() {
   homeCanvas.setFont(contentFont());
@@ -763,13 +832,13 @@ static void drawPageSettings() {
   homeCanvas.drawString(tr("設定", "Settings", "设置"),
                         M5.Display.width() / 2, 40);
 
-  settingsScrollY = constrain(settingsScrollY, 0, 164);
+  settingsScrollY = constrain(settingsScrollY, 0, 242);
   homeCanvas.setClipRect(0, 128, 466, 304);
   const auto rowBg = [&](int row) {
     return settingsPressedRow == row ? 0x2945 : (int)TFT_BLACK;
   };
 
-  for (int item = 0; item < 6; ++item) {
+  for (int item = 0; item < 7; ++item) {
     const int itemTop = item * 78;
     const int screenItemTop = 128 + itemTop - settingsScrollY;
     if (screenItemTop >= 432 || screenItemTop + 78 <= 128) continue;
@@ -787,7 +856,8 @@ static void drawPageSettings() {
                               screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
-        homeCanvas.drawString(selectedModelName(), 90, screenItemTop + 46);
+        homeCanvas.drawString(fitHomeText(String(selectedModelName()), 300), 90,
+                              screenItemTop + 46);
         break;
       case 1: {
         homeCanvas.drawString(tr("音量", "Volume", "音量"), 90,
@@ -827,7 +897,19 @@ static void drawPageSettings() {
                                        "低(快速,省token)"),
                               90, screenItemTop + 46);
         break;
-      case 4: {
+      case 4:
+        homeCanvas.drawString(tr("ボイス", "Voice", "语音"), 90,
+                              screenItemTop + 18);
+        homeCanvas.setTextSize(1);
+        homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
+        homeCanvas.drawString(
+            voiceMode == 0
+                ? tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)")
+                : tr("TTS(Workerの声)", "TTS (Worker voice)",
+                     "TTS(Worker语音)"),
+            90, screenItemTop + 46);
+        break;
+      case 5: {
         homeCanvas.drawString("WiFi", 90, screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_CYAN, rowBg(item));
@@ -839,7 +921,7 @@ static void drawPageSettings() {
                               screenItemTop + 46);
         break;
       }
-      case 5: {
+      case 6: {
         homeCanvas.drawString(tr("言語", "Language", "语言"), 90,
                               screenItemTop + 18);
         homeCanvas.setTextSize(1);
@@ -941,6 +1023,16 @@ static void stopAnimalese() {
   M5.Speaker.stop();
 }
 
+static void stopSpeech() {
+  stopAnimalese();
+  M5.Speaker.stop();
+  if (ttsBuf) {
+    free(ttsBuf);
+    ttsBuf = nullptr;
+    ttsLen = 0;
+  }
+}
+
 static void animaleseWorker(void *) {
   const String t = animText;
   const float base = 660.0f + (esp_random() % 120);
@@ -979,7 +1071,7 @@ static void animaleseWorker(void *) {
 }
 
 static void speakAnimalese(const String &text) {
-  stopAnimalese();
+  stopSpeech();
   animText = text;
   animStopFlag = false;
   xTaskCreatePinnedToCore(animaleseWorker, "animalese", 4096, nullptr, 1,
@@ -1414,12 +1506,149 @@ static bool captureFromCam(bool useRetained) {
 static WiFiClientSecure analyzeClient;
 static HTTPClient analyzeHttp;
 static bool analyzeInit = false;
+static WiFiClientSecure configClient;
+static HTTPClient configHttp;
+static bool configHttpInit = false;
+static WiFiClientSecure ttsClient;
+static HTTPClient ttsHttp;
+static bool ttsHttpInit = false;
 static WiFiClientSecure placeClient;
 static HTTPClient placeHttp;
 static bool placeHttpInit = false;
 static WiFiClientSecure digestClient;
 static HTTPClient digestHttp;
 static bool digestHttpInit = false;
+
+static bool fetchWorkerConfig() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (!configHttpInit) {
+    configClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
+    configHttp.setReuse(true);
+    configHttp.setConnectTimeout(5000);
+    configHttp.setTimeout(5000);
+    configHttpInit = true;
+  }
+
+  const String preferredName =
+      toiPrefsReady ? toiPrefs.getString("modelName", selectedModelName())
+                    : String(selectedModelName());
+  int code = -1;
+  if (!configHttp.begin(configClient, String(WORKER_URL) + "/config")) {
+    Serial.println("[toi] config: begin failed");
+    return false;
+  }
+  configHttp.addHeader("X-Device-Token", deviceToken());
+  code = configHttp.GET();
+  if (code != HTTP_CODE_OK) {
+    configHttp.end();
+    Serial.printf("[toi] config: HTTP %d\n", code);
+    return false;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, configHttp.getString()) !=
+      DeserializationError::Ok) {
+    configHttp.end();
+    Serial.println("[toi] config: invalid JSON");
+    return false;
+  }
+
+  String nextModels[8];
+  uint8_t nextCount = 0;
+  for (JsonVariantConst value : doc["models"].as<JsonArrayConst>()) {
+    if (nextCount >= 8) break;
+    if (!value.is<const char *>()) continue;
+    const String model = value.as<String>();
+    if (model.length() == 0 || model.length() > 48 || model.indexOf(',') >= 0) {
+      continue;
+    }
+    nextModels[nextCount++] = model;
+  }
+  if (!nextCount) {
+    configHttp.end();
+    Serial.println("[toi] config: no valid models");
+    return false;
+  }
+
+  String rawModels;
+  for (uint8_t i = 0; i < nextCount; ++i) {
+    toiModels[i] = nextModels[i];
+    if (i) rawModels += ',';
+    rawModels += nextModels[i];
+  }
+  for (uint8_t i = nextCount; i < 8; ++i) toiModels[i] = "";
+  toiModelCount = nextCount;
+  if (toiPrefsReady) toiPrefs.putString("models", rawModels);
+  selectModelByName(preferredName);
+  homeDirty = true;
+  Serial.printf("[toi] config: loaded %u models, selected=%s\n",
+                (unsigned)toiModelCount, selectedModelName());
+  return true;
+}
+
+static void retryWorkerConfigOnSettingsEntry() {
+  if (toiModelCount || toiConfigSettingsRetryDone ||
+      WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  toiConfigSettingsRetryDone = true;
+  fetchWorkerConfig();
+}
+
+static void speakViaTts(const String &text) {
+  stopSpeech();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[toi] tts: WiFi unavailable, using chirps");
+    speakAnimalese(text);
+    return;
+  }
+  if (!ttsHttpInit) {
+    ttsClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
+    ttsHttp.setReuse(true);
+    ttsHttp.setConnectTimeout(5000);
+    ttsHttp.setTimeout(30000);
+    ttsHttpInit = true;
+  }
+
+  JsonDocument requestDoc;
+  requestDoc["text"] = text;
+  String body;
+  serializeJson(requestDoc, body);
+
+  int code = -1;
+  if (ttsHttp.begin(ttsClient, String(WORKER_URL) + "/tts")) {
+    ttsHttp.addHeader("Content-Type", "application/json");
+    ttsHttp.addHeader("X-Device-Token", deviceToken());
+    code = ttsHttp.POST(body);
+    if (code == HTTP_CODE_OK) {
+      constexpr size_t kMaxTtsWav = 2 * 1024 * 1024;
+      const int contentLen = ttsHttp.getSize();
+      if (contentLen > 0 && static_cast<size_t>(contentLen) <= kMaxTtsWav) {
+        ttsBuf = readBody(ttsHttp, kMaxTtsWav, ttsLen);
+        if (ttsBuf && ttsLen == static_cast<size_t>(contentLen) &&
+            M5.Speaker.playWav(ttsBuf, ttsLen)) {
+          Serial.printf("[toi] tts: playing %u bytes\n", (unsigned)ttsLen);
+          return;  // ttsBuf stays alive until stopSpeech() is called.
+        }
+      } else {
+        Serial.printf("[toi] tts: invalid content length %d\n", contentLen);
+      }
+    }
+  }
+
+  ttsHttp.end();
+  stopSpeech();
+  Serial.printf("[toi] tts: HTTP %d failed, using chirps\n", code);
+  speakAnimalese(text);
+}
+
+static void speakText(const String &text) {
+  if (voiceMode == 1) {
+    speakViaTts(text);
+  } else {
+    speakAnimalese(text);
+  }
+}
 
 static bool fetchHomePlace() {
   if (!hasFreshGpsFix() || WiFi.status() != WL_CONNECTED) return false;
@@ -1805,7 +2034,7 @@ static String urlenc(const String &in) {
 // show + speak the answer.
 static void voiceQuestionFlow() {
   const uint32_t tHold = millis();
-  stopAnimalese();
+  stopSpeech();
   // Users start talking the moment they feel the hold engage — every ms
   // before Mic.begin() is speech lost, so the codec swap happens FIRST and
   // the ready cue is visual (red banner). No pre-beep, no delay.
@@ -1898,7 +2127,7 @@ static void voiceQuestionFlow() {
             buildResultCanvas();
             drawResult(true);
             autoScrollAt = millis() + 2500;
-            speakAnimalese(a);
+            speakText(a);
             ok = true;
           }
         }
@@ -1968,11 +2197,12 @@ static void stepCounterTick() {
 }
 
 static void enterHome(int targetPage = 0) {
-  stopAnimalese();
+  stopSpeech();
   streamStop();
   Serial.println("[toi] finder: stream stopped (home)");
   state = AppState::Home;
   homePage = constrain(targetPage, 0, 2);
+  if (homePage == 2) retryWorkerConfigOnSettingsEntry();
   settingsPressedRow = -1;
   homeHistoryScrollY = 0;
   settingsScrollY = 0;
@@ -2432,7 +2662,7 @@ static void homeTouchTick() {
         }
       } else if (homeTouchLastY != previousY) {
         const int nextScroll =
-            constrain(settingsScrollY - (homeTouchLastY - previousY), 0, 164);
+            constrain(settingsScrollY - (homeTouchLastY - previousY), 0, 242);
         if (nextScroll != settingsScrollY) {
           settingsScrollY = nextScroll;
           settingsScrolled = true;
@@ -2467,6 +2697,7 @@ static void homeTouchTick() {
     const int nextPage = constrain(homePage + (dx < 0 ? 1 : -1), 0, 2);
     if (nextPage != homePage) {
       homePage = nextPage;
+      if (homePage == 2) retryWorkerConfigOnSettingsEntry();
       homeDirty = true;
     }
   } else if (isTap) {
@@ -2489,8 +2720,10 @@ static void homeTouchTick() {
       settingsPressedRow = -1;
       homeDirty = true;
       if (releasedRow == 0) {
-        selectedModel = (selectedModel + 1) % 2;
-        if (toiPrefsReady) toiPrefs.putUChar("model", selectedModel);
+        selectedModel = (selectedModel + 1) % activeModelCount();
+        if (toiPrefsReady) {
+          toiPrefs.putString("modelName", selectedModelName());
+        }
         Serial.printf("[toi] model: %s\n", selectedModelName());
       } else if (releasedRow == 2) {
         captureQuality = captureQuality == 0 ? 1 : 0;
@@ -2502,8 +2735,13 @@ static void homeTouchTick() {
         if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
       } else if (releasedRow == 4) {
-        enterWifiSetup();
+        voiceMode = voiceMode == 0 ? 1 : 0;
+        if (toiPrefsReady) toiPrefs.putUChar("voice", voiceMode);
+        Serial.printf("[toi] voice: %s\n",
+                      voiceMode == 0 ? "chirps" : "tts");
       } else if (releasedRow == 5) {
+        enterWifiSetup();
+      } else if (releasedRow == 6) {
         selectedLang = (selectedLang + 1) % 3;
         if (toiPrefsReady) {
           toiPrefs.putUChar("lang", selectedLang);
@@ -2527,7 +2765,7 @@ static void homeTouchTick() {
 
 static void enterSleeping() {
   state = AppState::Sleeping;
-  stopAnimalese();
+  stopSpeech();
   streamStop();
   Serial.println("[toi] finder: stream stopped (sleep)");
   M5.Display.sleep();
@@ -2587,7 +2825,7 @@ static void flushButtons() {
 static void runCaptureCycle() {
   const uint32_t cycleStart = millis();
   state = AppState::Capturing;
-  stopAnimalese();
+  stopSpeech();
   sfxShutter();
 
   drawBusy(tr("カメラ通信中", "Talking to camera", "与相机通信中"),
@@ -2637,7 +2875,7 @@ static void runCaptureCycle() {
   drawResult(true);
   autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
-  speakAnimalese(caption + "。" + detailText);
+  speakText(caption + "。" + detailText);
   Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
@@ -2674,11 +2912,12 @@ void setup() {
     es8311DacBoost = toiPrefs.getUChar("dacboost", 1) != 0;
     captureQuality = toiPrefs.getUChar("qual", 0);
     if (captureQuality > 1) captureQuality = 0;
-    selectedModel = toiPrefs.getUChar("model", 1);
-    if (selectedModel > 1) selectedModel = 1;  // old sol/luna indices clamp to luna
+    loadModelSettings();
     selectedLang = toiPrefs.getUChar("lang", 0);
     if (selectedLang > 2) selectedLang = 0;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
+    voiceMode = toiPrefs.getUChar("voice", 0);
+    if (voiceMode > 1) voiceMode = 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");
     nvsDeviceToken = toiPrefs.getString("dev_token", "");
@@ -2705,6 +2944,7 @@ void setup() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);  // modem sleep adds 100-300ms bursts to every request
   gNetOk = connectWifi();  // internet is only needed for the AI call
+  if (gNetOk) fetchWorkerConfig();
   Serial.printf("[toi] STA %s ip=%s ch=%d\n", gNetOk ? "ok" : "FAIL",
                 WiFi.localIP().toString().c_str(), WiFi.channel());
   startSoftAp();
@@ -2885,7 +3125,7 @@ void loop() {
       }
       if (M5.BtnB.wasPressed()) {
         // Cancel: stop speech, back to the finder
-        stopAnimalese();
+        stopSpeech();
         sfxCancel();
         enterIdle();
         flushButtons();  // eat the release — else Idle sees BtnB click -> Home
