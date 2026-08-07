@@ -7,19 +7,13 @@
     "enabled": true
   },
   "vars": {
-    // /analyze vision backend: "openai" uses the free daily-token key while the
-    // Anthropic account is unfunded; flip back with --var ANALYZE_PROVIDER:anthropic
-    "ANALYZE_PROVIDER": "openai",
-    // OpenAI vision model (free-token eligible tier)
-    "ANALYZE_MODEL": "gpt-5.6-luna",
-    // Claude model for /analyze when ANALYZE_PROVIDER=anthropic.
-    // Flip to a higher tier for demo recording: --var MODEL:claude-sonnet-5
-    "MODEL": "claude-haiku-4-5",
-    // OpenAI TTS voice. Swap Worker-side only if Japanese quality disappoints
-    // (fallback plan: Google Cloud TTS ja-JP-Neural2, LINEAR16).
+    // Voice + model for TTS at AUDIO_API_BASE_URL. The device shows the voice
+    // name in Settings (via GET /config).
     "TTS_VOICE": "marin",
-    // Model menu the device shows in Settings (comma-separated). The device
-    // fetches this via GET /config and echoes one entry back as X-Model.
+    "TTS_MODEL": "gpt-4o-mini-tts",
+    // Model menu ToiCamera shows in Settings (comma-separated). The device
+    // fetches it via GET /config and echoes one entry back as X-Model.
+    // The FIRST entry is the default when none is selected.
     "MODELS": "gpt-5.6-terra,gpt-5.6-luna",
     // OpenAI-compatible base URL of the main chat/vision backend. Point at a
     // Cloudflare Tunnel to use a local LLM (e.g. Ollama: https://<host>/v1).
