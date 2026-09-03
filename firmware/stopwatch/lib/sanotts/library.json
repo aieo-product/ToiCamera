@@ -1,0 +1,18 @@
+{
+  "name": "sanotts",
+  "version": "0.2.0+a478680",
+  "description": "sanoTTS-jp C99 inference core (W8A8 + ESP32-S3 PIE) vendored for ToiCamera. Text-to-speech runs on the device itself.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayutaz/sanoTTS-jp"
+  },
+  "build": {
+    "flags": [
+      "-O2",
+      "-DSAAN_INT8_ACT=1",
+      "-DSAAN_PIE=1",
+      "-DSAAN_PORT_HEADER=\\\"saan_port_toi.h\\\""
+    ]
+  }
+}

@@ -14,6 +14,7 @@ explanation (ja/en/zh). The device never talks to an AI provider directly.
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` |
 | `POST /digest` | `X-Device-Token` | `{"items": ["…"]}` | `{summary}` — one-line day summary |
 | `POST /tts` | `X-Device-Token` | `{"text": "..."}` | `audio/wav` (24kHz mono) |
+| `POST /kana` | `X-Device-Token` | `{"text": "..."}` | `{kana}` — kana intermediate representation (pitch-accent marks) for the on-device sanoTTS voice |
 
 ## Setup
 
@@ -31,7 +32,8 @@ npx wrangler deploy
 
 Vars (see `wrangler.jsonc` for defaults and comments): `MODELS`,
 `MAIN_API_BASE_URL`, `AUDIO_API_BASE_URL`, `TTS_VOICE`, `TTS_MODEL`,
-`ANALYZE_MAX_TOKENS`, `ANALYZE_STYLE_LOW`, `ANALYZE_STYLE_HIGH`.
+`ANALYZE_MAX_TOKENS`, `ANALYZE_STYLE_LOW`, `ANALYZE_STYLE_HIGH`,
+`KANA_MODEL`, `KANA_REASONING_EFFORT`, `KANA_BUNDLE`, `ANALYZE_KANA_REASONING_EFFORT`.
 
 ## Testing
 
@@ -69,6 +71,34 @@ questions stop working (TTS keeps working via `TOICAMERA_TTS_API_KEY`).
 TTS voice is `TTS_VOICE` (model `TTS_MODEL`, default OpenAI
 `gpt-4o-mini-tts`). Any OpenAI-compatible `/audio/speech` backend works via
 `AUDIO_API_BASE_URL` — device side needs no change (still WAV).
+
+## On-device voice (sanoTTS) and `/kana`
+
+With the device's Voice setting on **sanoTTS**, speech is synthesized on the
+ESP32-S3 itself (`firmware/stopwatch/lib/sanotts`, Japanese only) and no TTS
+key is used. The device still needs the text spelled out as a *kana
+intermediate representation* — hiragana plus pitch-accent marks, e.g.
+`きょ][おわよ][いて][んきです°ね` for 今日は良い天気ですね。 — because the
+kanji dictionary does not fit in flash. `POST /kana` asks the chat model to do
+that (`KANA_MODEL` overrides the model, `KANA_REASONING_EFFORT` defaults to
+`none` for ~2 s latency; `low` gives better accents at ~10 s). The Worker
+sanitizes the reply down to what the on-device G2P accepts.
+
+When the device is in that voice mode it sends `X-Kana: 1` on `/analyze` and
+the kana is bundled into the analyze response (`KANA_BUNDLE`, default `1`),
+so no second round trip is needed; `/kana` is then only used for voice
+questions and as a fallback. The bundled call runs at
+`ANALYZE_KANA_REASONING_EFFORT` (default `none`) — measured on 2026-09-03 it
+takes ~4.5 s like a plain `/analyze`, whereas the model's default reasoning
+made it ~11 s and separate `/analyze` + `/kana` ~7 s. Set `KANA_BUNDLE=0` to
+go back to the two-call flow.
+
+```bash
+curl -s -X POST "$BASE/kana" \
+  -H "X-Device-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"text":"これは何ですか？"}'
+# → {"kana":"こ[れわ[な]んです°か?"}
+```
 
 ## Attribution
 

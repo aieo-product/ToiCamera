@@ -3,7 +3,8 @@
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation
 // Blue button   (KEYB/G1): home (finder), sleep (home), back (result/error)
 // Blue hold                 : re-pair the camera from the live finder
-// Speech: on-device animalese chirps or Worker-generated TTS
+// Speech: on-device animalese chirps, Worker-generated TTS, or on-device
+//         sanoTTS-jp synthesis (Japanese; see lib/sanotts)
 // Touch drag             : scroll explanation text
 // Home screen            : clock, place, steps; camera stream is stopped
 // Idle screen            : live viewfinder (continuous QVGA preview)
@@ -28,6 +29,14 @@
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
+#include <esp_heap_caps.h>
+
+extern "C" {
+#include "saanotts.h"
+#include "saanotts_stream.h"
+#include "g2p.h"
+#include "saan_model_blob.h"
+}
 
 #ifndef WIFI_SSID1
 #error "Build with secrets.ini (see secrets.ini.example)"
@@ -133,8 +142,9 @@ static String toiFallbackModels[2] = {"gpt-5.6-terra", "gpt-5.6-luna"};
 static uint8_t selectedModel = 0;
 static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
-static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS
+static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS, 2=sanoTTS (on-device, ja)
 static String toiVoiceName;        // TTS voice name reported by GET /config
+static String analyzeKana;         // kana bundled by /analyze (X-Kana: 1) for sanoTTS
 static bool toiConfigSettingsRetryDone = false;
 
 static TinyGPSPlus gps;
@@ -906,10 +916,15 @@ static void drawPageSettings() {
         homeCanvas.drawString(
             voiceMode == 0
                 ? String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"))
-                : (toiVoiceName.length()
-                       ? String("TTS(") + toiVoiceName + ")"
-                       : String(tr("TTS(Workerの声)", "TTS (Worker voice)",
-                                   "TTS(Worker语音)"))),
+                : voiceMode == 2
+                      ? String(tr("sanoTTS(端末内・日本語)",
+                                  "sanoTTS (on-device, ja)",
+                                  "sanoTTS(设备端·日语)"))
+                      : (toiVoiceName.length()
+                             ? String("TTS(") + toiVoiceName + ")"
+                             : String(tr("TTS(Workerの声)",
+                                         "TTS (Worker voice)",
+                                         "TTS(Worker语音)"))),
             90, screenItemTop + 46);
         break;
       case 5: {
@@ -1026,9 +1041,13 @@ static void stopAnimalese() {
   M5.Speaker.stop();
 }
 
+static void stopSano();
+static int sanoBannerPct = -1;   // result-screen voice progress; -1 = not shown
+
 static void stopSpeech() {
   stopAnimalese();
   M5.Speaker.stop();
+  stopSano();
   if (ttsBuf) {
     free(ttsBuf);
     ttsBuf = nullptr;
@@ -1665,6 +1684,425 @@ static bool playFetchedTts() {
   return ttsBuf && ttsLen && M5.Speaker.playWav(ttsBuf, ttsLen);
 }
 
+// ------------------------------------------------- sanoTTS (on-device, ja)
+// Voice mode 2: text → Worker /kana (LLM spells the kanji out as a kana
+// intermediate representation with pitch-accent marks) → saan_g2p() →
+// sanoTTS-jp streaming synthesis (lib/sanotts, W8A8 + PIE) into a PSRAM PCM
+// buffer. Synthesis runs in its own task at roughly real time (CoreS3
+// measurement upstream: xRT ≈ 0.93), so playback starts once enough audio is
+// banked that synthesis will finish before the playhead catches up. The rate
+// is measured on the fly — a PSRAM arena (used when internal DRAM is tight)
+// is several times slower and simply means a longer wait, not a broken voice.
+static constexpr size_t kSanoArenaBytes = 176 * 1024;  // upstream esp32/main/main.c
+static constexpr int32_t kSanoMaxIdsPerChunk = 300;     // < SAAN_MAX_IDS (350)
+static constexpr size_t kSanoGapSamples = 2205;         // 100 ms between chunks
+static constexpr int kSanoMaxChunks = 24;
+static constexpr float kSanoRateMargin = 1.15f;
+// Output gain. The model's PCM peaks around 0.29 FS (upstream: |max| 9,627 /
+// 32,767 — it is deliberately not normalized), so at the same speaker volume
+// it sounds ~10 dB quieter than the chirps and Worker WAVs. 3.0x brings the
+// peak to ~0.9 FS; a soft knee above 0.85 FS keeps the rare louder samples
+// from clipping harshly.
+static constexpr float kSanoGain = 3.0f;
+static inline float sanoSoftClip(float x) {
+  constexpr float knee = 0.85f;
+  const float a = fabsf(x);
+  if (a <= knee) return x;
+  const float y = knee + (1.0f - knee) * tanhf((a - knee) / (1.0f - knee));
+  return x < 0 ? -y : y;
+}
+
+static saan_weights sanoWeights;
+static bool sanoWeightsOk = false;
+static int16_t *sanoPcm = nullptr;        // PSRAM, whole utterance, zero-filled
+static size_t sanoTotal = 0;              // samples planned (incl. gaps)
+static volatile size_t sanoDone = 0;      // samples synthesized so far
+static volatile bool sanoStopFlag = false;
+static volatile bool sanoFailed = false;
+static volatile bool sanoFinished = false;
+static volatile bool sanoExited = true;   // task has left (safe to free)
+static bool sanoPlaying = false;
+static uint32_t sanoStartedAt = 0;
+static String sanoKana;                   // task input (set before create)
+static String sanoText;                   // for the chirp fallback
+
+static void sanoInit() {
+  if ((reinterpret_cast<uintptr_t>(saan_model_blob) & 15u) != 0) {
+    Serial.println("[toi] sanotts: weight blob is not 16-byte aligned");
+    return;
+  }
+  const saan_status st =
+      saan_weights_open(&sanoWeights, saan_model_blob, saan_model_blob_size);
+  if (st != SAAN_OK) {
+    Serial.printf("[toi] sanotts: weights_open failed: %s\n", saan_strerror(st));
+    return;
+  }
+  sanoWeightsOk = true;
+  Serial.printf("[toi] sanotts: weights OK (%u tensors, v%u, %u B)\n",
+                (unsigned)sanoWeights.n_tensors, (unsigned)sanoWeights.version,
+                (unsigned)saan_model_blob_size);
+}
+
+static void stopSano() {
+  if (!sanoExited) {
+    sanoStopFlag = true;
+    // One pull is ≤ ~1 s (DRAM) / a few s (PSRAM arena); never free the PCM
+    // buffer while the task may still be writing into it.
+    for (int i = 0; i < 1000 && !sanoExited; ++i) delay(10);
+  }
+  if (sanoPcm) {
+    free(sanoPcm);
+    sanoPcm = nullptr;
+  }
+  sanoTotal = 0;
+  sanoDone = 0;
+  sanoPlaying = false;
+  sanoFailed = false;
+  sanoFinished = false;
+  sanoBannerPct = -1;
+}
+
+// POST /kana {text} → kana intermediate representation (empty on failure).
+static String fetchKana(const String &text) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[toi] kana: WiFi unavailable");
+    return String();
+  }
+  if (!ttsHttpInit) {
+    ttsClient.setInsecure();
+    ttsHttp.setReuse(true);
+    ttsHttp.setConnectTimeout(5000);
+    ttsHttp.setTimeout(30000);
+    ttsHttpInit = true;
+  }
+  JsonDocument requestDoc;
+  requestDoc["text"] = text;
+  String body;
+  serializeJson(requestDoc, body);
+
+  String kana;
+  int code = -1;
+  const uint32_t t0 = millis();
+  if (ttsHttp.begin(ttsClient, String(WORKER_URL) + "/kana")) {
+    ttsHttp.addHeader("Content-Type", "application/json");
+    ttsHttp.addHeader("X-Device-Token", deviceToken());
+    ttsHttp.addHeader("X-Model", selectedModelName());
+    code = ttsHttp.POST(body);
+    if (code == HTTP_CODE_OK) {
+      JsonDocument doc;
+      if (deserializeJson(doc, ttsHttp.getString()) == DeserializationError::Ok) {
+        kana = doc["kana"].as<String>();
+      }
+    }
+  }
+  ttsHttp.end();
+  ttsClient.stop();  // free TLS heap before the arena is allocated
+  if (kana.length()) {
+    Serial.printf("[toi] kana: %lums %u B: %s\n", millis() - t0,
+                  (unsigned)kana.length(), kana.c_str());
+  } else {
+    Serial.printf("[toi] kana: HTTP %d failed\n", code);
+  }
+  return kana;
+}
+
+struct SanoChunk {
+  int32_t *ids;
+  int32_t nIds;
+  int32_t nFrames;
+};
+
+static int utf8Len(uint8_t lead) {
+  return lead < 0x80 ? 1 : (lead >> 5) == 6 ? 2 : (lead >> 4) == 14 ? 3 : 4;
+}
+
+// kana → student ids. Characters the on-device G2P does not know (anything the
+// Worker's sanitizer let through) are dropped one at a time instead of failing
+// the whole utterance. Returns false only when the input never fits.
+static bool sanoG2p(String text, int32_t *ids, int32_t cap, int32_t &nIds) {
+  for (int attempt = 0; attempt < 64 && text.length(); ++attempt) {
+    saan_g2p_info info;
+    const saan_g2p_status st =
+        saan_g2p(text.c_str(), text.length(), ids, cap, &nIds, &info);
+    if (st == SAAN_G2P_OK) return true;
+    if (st != SAAN_G2P_ERR_UNKNOWN || info.err_byte < 0 ||
+        info.err_byte >= (int32_t)text.length()) {
+      Serial.printf("[toi] sanotts: g2p %s\n", saan_g2p_strerror(st));
+      return false;
+    }
+    const int n = utf8Len(static_cast<uint8_t>(text[info.err_byte]));
+    text.remove(info.err_byte, n);
+  }
+  return false;
+}
+
+// Split at pauses (`_`) so that no chunk exceeds kSanoMaxIdsPerChunk ids —
+// the model was trained on ≤ 350 ids per utterance. A pause-less run that is
+// still too long is hard-cut every ~60 code points.
+static int sanoPlanChunks(const String &kana, SanoChunk *chunks, uint8_t *arena) {
+  int n = 0;
+  String cur;
+  const int32_t cap = kSanoMaxIdsPerChunk;
+  auto flush = [&](const String &s) -> bool {
+    if (!s.length() || n >= kSanoMaxChunks) return false;
+    int32_t *ids = static_cast<int32_t *>(ps_malloc(sizeof(int32_t) * (cap + 8)));
+    if (!ids) return false;
+    int32_t nIds = 0;
+    if (!sanoG2p(s, ids, cap, nIds) || nIds <= 3) {  // 3 = "^ _ $" (empty)
+      free(ids);
+      return false;
+    }
+    saan_arena a;
+    saan_arena_init(&a, arena, kSanoArenaBytes);
+    saan_stream st;
+    if (saan_stream_init(&st, &sanoWeights, &a, ids, nIds, SAAN_S_V) != SAAN_OK) {
+      free(ids);
+      return false;
+    }
+    chunks[n++] = {ids, nIds, st.n_frames};
+    // saan_stream_init runs the duration model — real CPU work. This task is
+    // pinned to core 0 (the WiFi core), so yield periodically or its idle
+    // task starves and the task watchdog reboots the device mid-synthesis.
+    vTaskDelay(1);
+    return true;
+  };
+  int start = 0;
+  const int len = kana.length();
+  while (start <= len) {
+    int end = kana.indexOf('_', start);
+    if (end < 0) end = len;
+    String seg = kana.substring(start, end);
+    // hard-cut over-long pause-less runs
+    while (seg.length()) {
+      int cps = 0, cut = 0;
+      while (cut < (int)seg.length() && cps < 60) {
+        cut += utf8Len(static_cast<uint8_t>(seg[cut]));
+        ++cps;
+      }
+      const String piece = seg.substring(0, cut);
+      seg = seg.substring(cut);
+      const String cand = cur.length() ? cur + "_" + piece : piece;
+      int32_t probe[kSanoMaxIdsPerChunk + 8];
+      int32_t nProbe = 0;
+      if (sanoG2p(cand, probe, cap, nProbe)) {
+        cur = cand;
+      } else {
+        flush(cur);
+        cur = piece;
+      }
+    }
+    start = end + 1;
+  }
+  flush(cur);
+  return n;
+}
+
+static void sanoWorker(void *) {
+  sanoExited = false;
+  const uint32_t t0 = millis();
+  uint8_t *arena = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+      16, kSanoArenaBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  const bool arenaInternal = arena != nullptr;
+  if (!arena) {
+    arena = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+        16, kSanoArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  float *chunkBuf = static_cast<float *>(ps_malloc(sizeof(float) * SAAN_CHUNK * SAAN_HOP));
+  SanoChunk chunks[kSanoMaxChunks] = {};
+  int nChunks = 0;
+  bool ok = arena && chunkBuf;
+  if (!ok) Serial.println("[toi] sanotts: arena/chunk alloc failed");
+
+  if (ok) {
+    nChunks = sanoPlanChunks(sanoKana, chunks, arena);
+    ok = nChunks > 0;
+    if (!ok) Serial.println("[toi] sanotts: nothing to synthesize");
+  }
+  if (ok) {
+    size_t total = 0;
+    for (int i = 0; i < nChunks; ++i)
+      total += (size_t)chunks[i].nFrames * SAAN_HOP + kSanoGapSamples;
+    sanoPcm = static_cast<int16_t *>(
+        heap_caps_calloc(total, sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    ok = sanoPcm != nullptr;
+    if (ok) {
+      sanoTotal = total;
+      Serial.printf("[toi] sanotts: %d chunk(s), %.1f s audio, arena %s, plan %lums\n",
+                    nChunks, total / (float)SAAN_SR,
+                    arenaInternal ? "DRAM" : "PSRAM", millis() - t0);
+    }
+  }
+
+  size_t pos = 0;
+  for (int i = 0; ok && i < nChunks && !sanoStopFlag; ++i) {
+    saan_arena a;
+    saan_arena_init(&a, arena, kSanoArenaBytes);
+    saan_stream st;
+    saan_status s = saan_stream_init(&st, &sanoWeights, &a, chunks[i].ids,
+                                     chunks[i].nIds, SAAN_S_V);
+    vTaskDelay(1);
+    if (s != SAAN_OK) {
+      Serial.printf("[toi] sanotts: stream_init %s\n", saan_strerror(s));
+      ok = false;
+      break;
+    }
+    int32_t n = 0;
+    while (!sanoStopFlag && (s = saan_stream_pull(&st, chunkBuf, &n)) == SAAN_OK && n > 0) {
+      const size_t count = (size_t)n * SAAN_HOP;
+      if (pos + count > sanoTotal) break;  // never past the planned buffer
+      for (size_t k = 0; k < count; ++k) {
+        float x = sanoSoftClip(chunkBuf[k] * kSanoGain) * 32767.0f;
+        if (x > 32767.0f) x = 32767.0f;
+        if (x < -32768.0f) x = -32768.0f;
+        sanoPcm[pos + k] = static_cast<int16_t>(lrintf(x));
+      }
+      pos += count;
+      sanoDone = pos;
+      // Each pull is real CPU work (tens–hundreds of ms). Yield every pull so
+      // the idle task on this core (WiFi/BT live here too) keeps running —
+      // otherwise the task watchdog reboots the device mid-synthesis.
+      vTaskDelay(1);
+    }
+    if (s != SAAN_OK) {
+      Serial.printf("[toi] sanotts: pull %s\n", saan_strerror(s));
+      ok = false;
+      break;
+    }
+    pos += kSanoGapSamples;  // already zero
+    sanoDone = pos;
+  }
+
+  if (ok && !sanoStopFlag) {
+    const uint32_t dt = millis() - t0;
+    Serial.printf("[toi] sanotts: done %lums for %.1f s audio (xRT %.2f)\n",
+                  dt, sanoTotal / (float)SAAN_SR,
+                  dt / 1000.0f / (sanoTotal / (float)SAAN_SR));
+    sanoDone = sanoTotal;
+    sanoFinished = true;
+  } else if (!sanoStopFlag) {
+    sanoFailed = true;
+  }
+  for (int i = 0; i < nChunks; ++i) free(chunks[i].ids);
+  if (chunkBuf) free(chunkBuf);
+  if (arena) heap_caps_free(arena);
+  sanoExited = true;
+  vTaskDelete(nullptr);
+}
+
+// Kick off on-device synthesis for `text`. `kanaHint` is the representation
+// bundled by /analyze; when empty this blocks for one POST /kana (~2-6 s).
+// Playback is started later by sanoPoll() from loop().
+static bool sanoPrepare(const String &text, const String &kanaHint) {
+  stopSpeech();
+  if (!sanoWeightsOk) return false;
+  const String kana = kanaHint.length() ? kanaHint : fetchKana(text);
+  if (!kana.length()) return false;
+  if (kanaHint.length()) Serial.printf("[toi] kana: bundled %u B\n", (unsigned)kana.length());
+  sanoKana = kana;
+  sanoText = text;
+  sanoStopFlag = false;
+  sanoFailed = false;
+  sanoFinished = false;
+  sanoPlaying = false;
+  sanoDone = 0;
+  sanoTotal = 0;
+  sanoStartedAt = millis();
+  sanoExited = false;
+  TaskHandle_t task = nullptr;
+  // Core 0 (WiFi core, idle after the fetch) so the UI loop on core 1 stays
+  // responsive; 16 KB stack for the 4 KB iSTFT auto arrays + call depth.
+  if (xTaskCreatePinnedToCore(sanoWorker, "sanotts", 16384, nullptr, 2, &task, 0) != pdPASS) {
+    sanoExited = true;
+    Serial.println("[toi] sanotts: task create failed");
+    return false;
+  }
+  return true;
+}
+
+// Result screen header (y < 90): "voice generating" progress while sanoTTS
+// synthesizes, cleared when playback starts. Auto-scroll waits for playback
+// so the text does not run away before the voice does.
+static void drawSanoBanner(int pct) {
+  if (state != AppState::Result) return;
+  if (pct == sanoBannerPct) return;
+  sanoBannerPct = pct;
+  const int x = (M5.Display.width() - kTextWidth) / 2;
+  M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
+  if (pct < 0) return;
+  M5.Display.setFont(contentFont());
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.drawString(
+      String(tr("ボイス生成中 ", "Generating voice ", "生成语音中 ")) + pct + "%",
+      M5.Display.width() / 2, 50);
+  const int barW = 220, barH = 8, bx = (M5.Display.width() - barW) / 2, by = 70;
+  M5.Display.drawRect(bx, by, barW, barH, TFT_DARKGREY);
+  M5.Display.fillRect(bx + 1, by + 1, (barW - 2) * pct / 100, barH - 2, TFT_CYAN);
+}
+
+static void startResultAutoScroll() { autoScrollAt = millis() + 2500; }
+
+// Called from loop(): start playback once synthesis is far enough ahead.
+static void sanoPoll() {
+  if (sanoPlaying) return;
+  if (sanoExited && !sanoFinished && !sanoFailed) return;  // idle
+  if (sanoFailed) {
+    Serial.println("[toi] sanotts: failed — falling back to chirps");
+    const String fallback = sanoText;
+    speakAnimalese(fallback);  // stopSpeech() inside clears the sano state
+    drawSanoBanner(-1);
+    startResultAutoScroll();
+    return;
+  }
+  const size_t done = sanoDone;
+  const size_t total = sanoTotal;
+  if (!sanoPcm || total == 0 || done == 0) {
+    drawSanoBanner(0);  // /kana done, planning / first chunk
+    return;
+  }
+  drawSanoBanner((int)(done * 100 / total));
+  bool ready = sanoFinished || done >= total;
+  if (!ready) {
+    // Measured synthesis rate r = seconds of compute per second of audio.
+    // Finishing before the playhead arrives needs done ≥ r·total/(1+r).
+    const float elapsed = (millis() - sanoStartedAt) / 1000.0f;
+    const float r = kSanoRateMargin * elapsed / (done / (float)SAAN_SR);
+    ready = done >= (size_t)(r * total / (1.0f + r));
+  }
+  if (!ready) return;
+  sanoPlaying = true;
+  Serial.printf("[toi] sanotts: play at %u/%u samples (%lums)\n", (unsigned)done,
+                (unsigned)total, millis() - sanoStartedAt);
+  M5.Speaker.playRaw(sanoPcm, sanoTotal, SAAN_SR, false, 1, -1, true);
+  drawSanoBanner(-1);
+  startResultAutoScroll();
+}
+
+// Voice dispatch shared by the capture and voice-question flows.
+// Returns true when playPreparedVoice() has something to play.
+static bool prepareVoice(const String &text, const String &kanaHint = String()) {
+  if (voiceMode == 2 && selectedLang == 0) {
+    if (!kanaHint.length()) {
+      drawBusy(tr("音声変換中...", "Preparing voice...", "语音转换中..."), TFT_CYAN);
+    }
+    if (sanoPrepare(text, kanaHint)) return true;
+    Serial.println("[toi] sanotts: prepare failed — trying Worker TTS");
+  }
+  if (voiceMode == 1 || voiceMode == 2) {
+    // Generate the voice first so the result screen appears WITH sound —
+    // otherwise the freshly drawn screen sits frozen during the fetch.
+    drawBusy(tr("音声生成中...", "Generating voice...", "生成语音中..."), TFT_CYAN);
+    return fetchTts(text);
+  }
+  return false;
+}
+
+static bool playPreparedVoice() {
+  if (!sanoExited || sanoPcm) return true;  // sanoPoll() starts it when ready
+  return playFetchedTts();
+}
+
 static bool fetchHomePlace() {
   if (!hasFreshGpsFix() || WiFi.status() != WL_CONNECTED) return false;
   if (!placeHttpInit) {
@@ -1806,6 +2244,11 @@ static bool analyzePhoto() {
     analyzeHttp.addHeader("X-Model", selectedModelName());
     analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
     analyzeHttp.addHeader("X-Lang", selectedLangCode());
+    // sanoTTS voice (ja): have the Worker bundle the kana intermediate
+    // representation into this response instead of a second /kana round trip.
+    const bool wantKana = voiceMode == 2 && selectedLang == 0;
+    if (wantKana) analyzeHttp.addHeader("X-Kana", "1");
+    analyzeKana = "";
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -1813,6 +2256,7 @@ static bool analyzePhoto() {
           DeserializationError::Ok) {
         caption = doc["caption"].as<String>();
         detailText = doc["detail"].as<String>();
+        if (wantKana) analyzeKana = doc["kana"].as<String>();
         ok = caption.length() > 0;
       }
     } else if (code == 429) {
@@ -2139,17 +2583,12 @@ static void voiceQuestionFlow() {
             recordInquiry("Q: " + q, a);
             caption = "Q: " + q;
             detailText = a;
-            bool ttsReady = false;
-            if (voiceMode == 1) {
-              drawBusy(tr("音声生成中...", "Generating voice...",
-                          "生成语音中..."),
-                       TFT_CYAN);
-              ttsReady = fetchTts(a);
-            }
+            const bool voiceReady = prepareVoice(a);
             buildResultCanvas();
             drawResult(true);
-            autoScrollAt = millis() + 2500;
-            if (!(ttsReady && playFetchedTts())) speakAnimalese(a);
+            if (!(voiceReady && playPreparedVoice())) speakAnimalese(a);
+            if (sanoExited) startResultAutoScroll();
+            else drawSanoBanner(0);
             ok = true;
           }
         }
@@ -2757,10 +3196,11 @@ static void homeTouchTick() {
         if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
       } else if (releasedRow == 4) {
-        voiceMode = voiceMode == 0 ? 1 : 0;
+        voiceMode = (voiceMode + 1) % 3;
         if (toiPrefsReady) toiPrefs.putUChar("voice", voiceMode);
         Serial.printf("[toi] voice: %s\n",
-                      voiceMode == 0 ? "chirps" : "tts");
+                      voiceMode == 0 ? "chirps"
+                                     : (voiceMode == 1 ? "tts" : "sanotts"));
       } else if (releasedRow == 5) {
         enterWifiSetup();
       } else if (releasedRow == 6) {
@@ -2894,19 +3334,15 @@ static void runCaptureCycle() {
   recordInquiry(caption, detailText);
 
   const String speech = caption + "。" + detailText;
-  bool ttsReady = false;
-  if (voiceMode == 1) {
-    // Generate the voice first so the result screen appears WITH sound —
-    // otherwise the freshly drawn screen sits frozen during the fetch.
-    drawBusy(tr("音声生成中...", "Generating voice...", "生成语音中..."),
-             TFT_CYAN);
-    ttsReady = fetchTts(speech);
-  }
+  const bool voiceReady = prepareVoice(speech, analyzeKana);
   buildResultCanvas();
   drawResult(true);
-  autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
-  if (!(ttsReady && playFetchedTts())) speakAnimalese(speech);
+  if (!(voiceReady && playPreparedVoice())) speakAnimalese(speech);
+  // sanoTTS still synthesizing: sanoPoll() shows progress and starts the
+  // scroll when the voice actually plays. Every other path plays now.
+  if (sanoExited) startResultAutoScroll();
+  else drawSanoBanner(0);
   Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
@@ -2949,7 +3385,7 @@ void setup() {
     if (selectedLang > 2) selectedLang = 0;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     voiceMode = toiPrefs.getUChar("voice", 0);
-    if (voiceMode > 1) voiceMode = 0;
+    if (voiceMode > 2) voiceMode = 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");
     nvsDeviceToken = toiPrefs.getString("dev_token", "");
@@ -2961,6 +3397,7 @@ void setup() {
   }
   M5.Speaker.setVolume(speakerVolume);
   M5.Speaker.begin();
+  sanoInit();
   applyPaBoost();
   // Hold-to-talk engages at 350ms (default 500) — the mic starts sooner
   // relative to speech onset, so first words are less likely to be lost.
@@ -3011,6 +3448,7 @@ static void debugDumpFrame() {
 
 void loop() {
   M5.update();
+  sanoPoll();
 
   if (Serial.available()) {
     const char cmd = Serial.read();

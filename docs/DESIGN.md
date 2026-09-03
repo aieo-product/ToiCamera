@@ -46,6 +46,7 @@ AI 解説のテキスト表示 + スピーカー読み上げ、という一連�
        │ WiFi(STA): 自宅 or テザリング
        └─ HTTPS POST /analyze ─▶ Cloudflare Worker ─▶ AI vision
           HTTPS POST /tts ─────▶ (API キーは Worker 秘匿) ─▶ OpenAI TTS → WAV
+          HTTPS POST /kana ────▶ LLM が かな中間表現 に変換 ─▶ 端末内 sanoTTS-jp で合成
 ```
 
 Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(AP)とクラウド
@@ -60,6 +61,7 @@ Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(A
 | AI 呼び出し | Cloudflare Worker 中継 | API キーをデバイスに置かない。プロンプト・モデル切替・TTS 差し替えを再書き込みなしで実施可能。ESP32 側の TLS/JSON 実装が単純化 |
 | 解析モデル | OpenAI 互換 API(vars `MAIN_API_BASE_URL`、既定 api.openai.com)。モデルメニューは vars `MODELS`(既定 `gpt-5.6-terra,gpt-5.6-luna`)で Worker が配信し、デバイスは `GET /config` で取得して `X-Model` で選択を返す | base URL を Cloudflare Tunnel 経由のローカル LLM(Ollama 等)に向け替え可能。モデル追加・切替は Worker 再デプロイのみでデバイス無関係 |
 | TTS | OpenAI `gpt-4o-mini-tts` → WAV 24kHz mono | M5Unified Speaker は WAV/RAW のみ(MP3 デコーダ非搭載)。品質不満時は Google TTS `ja-JP-Neural2`(LINEAR16)へ Worker 側のみで差替 |
+| 端末内 TTS(ボイス=sanoTTS、日本語のみ) | [sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp) C99 推論コア(W8A8 + ESP32-S3 PIE SIMD)を `firmware/stopwatch/lib/sanotts` に取り込み、int8 重み 654KB を app `.rodata` に埋め込み。arena 176KB(内部 DRAM、無ければ PSRAM)。合成は 22.05kHz を PSRAM に逐次書き出し、合成速度(実測レート)から再生開始タイミングを決めて `playRaw` | TTS API キー不要・往復 1 回(`/kana`)で済む。漢字→かな中間表現は端末側辞書が 13.7MB でフラッシュに入らないため Worker の LLM に委ねる(喋る文自体が LLM 出力)。重みは MIT ではなく Model License(帰属表示・用途制限。`lib/sanotts/NOTICE.md`)。日本語以外の言語では Worker TTS にフォールバック |
 | 日本語表示 | M5GFX 内蔵 `efontJA_16` | 追加フォント資材なしで UTF-8 日本語描画。品質を上げたければ VLW 変換が後続手段 |
 | デバイス→Worker TLS | `setInsecure()` | 自前 Worker のみに接続・送信物は画像+デバイストークンのみ。トレードオフを README に明記。将来はルート CA ピン留め |
 
@@ -141,6 +143,7 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` — 地名 + 最寄駅/徒歩分(取得失敗時は駅情報を空で返す) |
 | `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
 | `POST /tts` | `X-Device-Token` | `{text}` | `audio/wav`(パススルーストリーム) |
+| `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化)。撮影時は `/analyze` に `X-Kana: 1` を付けると応答に `kana` が同梱されるため、`/kana` は音声質問とフォールバック用 |
 
 シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
 バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
@@ -149,7 +152,7 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 vars: `MODELS` / `TTS_VOICE` / `TTS_MODEL` / `MAIN_API_BASE_URL`(チャット系の
 接続先。ローカル LLM に向けても STT/TTS は `AUDIO_API_BASE_URL`(既定
 api.openai.com)に接続する)/ `ANALYZE_MAX_TOKENS` / `ANALYZE_STYLE_LOW` /
-`ANALYZE_STYLE_HIGH`。
+`ANALYZE_STYLE_HIGH` / `KANA_MODEL` / `KANA_REASONING_EFFORT`(`/kana` 用。既定は解析モデル・`none`)。
 
 ### 4.4 ケース(`case/`)
 

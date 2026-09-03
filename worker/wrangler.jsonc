@@ -23,7 +23,17 @@
     // update. Style lines are appended to the analyze system prompt.
     "ANALYZE_MAX_TOKENS": "500",
     "ANALYZE_STYLE_LOW": "",
-    "ANALYZE_STYLE_HIGH": "Look closely at fine details in the image. Make `detail` 4-5 sentences with deeper observations (up to ~250 characters in ja/zh)."
+    "ANALYZE_STYLE_HIGH": "Look closely at fine details in the image. Make `detail` 4-5 sentences with deeper observations (up to ~250 characters in ja/zh).",
+    // On-device sanoTTS voice (firmware voice mode "sanoTTS"): the device
+    // needs the text as a kana intermediate representation. With
+    // KANA_BUNDLE=1 it is bundled into /analyze when the device sends
+    // X-Kana: 1; "0" makes the device fall back to POST /kana instead.
+    // Measured 2026-09-03 (gpt-5.6-terra, low detail): bundled at the model's
+    // default reasoning ~11 s, at "none" ~4.5 s (= plain /analyze), separate
+    // /analyze + /kana ~7 s. So the bundled call runs at reasoning "none".
+    "KANA_BUNDLE": "1",
+    "ANALYZE_KANA_REASONING_EFFORT": "none",
+    "KANA_REASONING_EFFORT": "none"
   }
   // Secrets (set via `npx wrangler secret put <NAME>`):
   //   TOICAMERA_MAIN_API_KEY — API key of YOUR chat/vision backend (OpenAI,

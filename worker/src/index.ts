@@ -7,6 +7,17 @@ export interface Env {
   TTS_VOICE: string;
   /** TTS model at AUDIO_API_BASE_URL (default gpt-4o-mini-tts). */
   TTS_MODEL?: string;
+  /** Model for /kana (on-device sanoTTS voice). Defaults to the X-Model /
+   *  MODELS pick; set to a small fast model to cut the wait. */
+  KANA_MODEL?: string;
+  /** reasoning_effort for /kana (default "none"; gpt-5.6 accepts none/low/medium/high/xhigh). */
+  KANA_REASONING_EFFORT?: string;
+  /** "0" ignores `X-Kana: 1` on /analyze (device then falls back to POST
+   *  /kana). Default "1" = bundle kana into the /analyze response. */
+  KANA_BUNDLE?: string;
+  /** reasoning_effort for /analyze when kana is bundled (unset = model
+   *  default). Lower values shorten the response at some analysis cost. */
+  ANALYZE_KANA_REASONING_EFFORT?: string;
   /** Comma-separated model ids offered to the device (GET /config). */
   MODELS?: string;
   /** OpenAI-compatible API base (default https://api.openai.com/v1).
@@ -55,6 +66,23 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+// Same, plus the kana intermediate representation of caption + detail for
+// the on-device sanoTTS voice. Requested with `X-Kana: 1` (ja only) so a
+// device in that voice mode skips the extra /kana round trip (~2 s).
+const RESULT_SCHEMA_KANA = {
+  type: "object",
+  properties: {
+    caption: RESULT_SCHEMA.properties.caption,
+    detail: RESULT_SCHEMA.properties.detail,
+    kana: {
+      type: "string",
+      description: "caption と detail を「。」で繋いだ全文のかな中間表現(ひらがな + アクセント記号)",
+    },
+  },
+  required: ["caption", "detail", "kana"],
+  additionalProperties: false,
+} as const;
+
 const DIGEST_SYSTEM_PROMPT: Record<Lang, string> = {
   ja: "あなたは行動ログの要約係。撮影・質問の見出しリストから、その人が今日なにをしているかを、親しみやすく少しユーモラスな日本語30字以内の1文で要約する。体言止めか『〜中』で軽快に",
   en: "Summarize what the person is doing today from the list of photo and question headlines. Write one friendly, lightly humorous English sentence of about 10 words.",
@@ -69,6 +97,70 @@ const DIGEST_SCHEMA = {
   required: ["summary"],
   additionalProperties: false,
 } as const;
+
+// --- /kana: text → kana intermediate representation for the on-device
+// sanoTTS-jp voice (firmware/stopwatch/lib/sanotts). The device has no kanji
+// dictionary (13.7 MB — does not fit next to the app in 16 MB flash), so the
+// LLM that wrote the text also spells it out. Notation (sanoTTS-jp
+// scripts/kana_g2p.py): hiragana + `[` pitch rise / `]` accent nucleus (fall
+// after this mora) / `#` accent-phrase boundary / `_` pause / `?` question
+// end / `°` devoiced vowel. Example: 今日は良い天気ですね。 →
+// きょ][おわよ][いて][んきです°ね
+const KANA_RULES = `規則:
+1. ひらがなだけを使う。漢字・カタカナ・英字・数字・記号はすべて読みのひらがなに直す(例: AI→えーあい、3時→さんじ、100%→ひゃくぱーせんと、ToiCamera→といかめら)。
+2. 発音どおりに書く: 助詞「は」→「わ」、「へ」→「え」、「を」→「お」。「おう」「えい」などの長音は「おお」「ええ」のように母音を重ねるか「ー」で書く(例: 東京→とおきょお、先生→せんせえ)。「ぢ」「づ」は「じ」「ず」。
+3. アクセント(東京式): アクセント句ごとに、ピッチが上がる拍の直前に「[」、アクセント核(下がる直前の拍)の直後に「]」を置く。平板型は「[」だけで「]」を置かない。頭高型は1拍目の直後に「]」を置く(「[」は不要)。
+4. 「、」「。」や文の切れ目はポーズ「_」に置き換える。疑問文の文末は「_」の代わりに「?」。
+5. 無声化する母音(「です」「ます」の末尾の す、無声子音に挟まれた き・く・し・す・ち・つ・ひ・ふ・ぴ・ぷ など)は、そのかなの直後に「°」を付ける。
+6. 出力に上記以外の文字(スペース・改行・句読点・漢字・カタカナ)を含めない。
+
+例:
+今日は良い天気ですね。 → きょ][おわよ][いて][んきです°ね
+電源を入れてください。 → で][んげんお[いれてくださ]い
+橋を渡ります。 → は[しお[わたりま]す°
+箸を持ちます。 → は]しお[もちま]す°
+バッテリー残量は十五パーセントです。 → ば]ってりーざ[んりょおわ_じゅ]うごぱーせ]んとです°
+これは何ですか？ → こ[れわ[な]んです°か?
+赤い花が咲いています。写真の中央に見えます。 → あ[かい[はな]が[さいていま]す°_しゃ[しんの[ちゅうおうに[みえま]す°`;
+
+const KANA_SYSTEM_PROMPT = `あなたは日本語音声合成(sanoTTS-jp)の前処理器です。入力の日本語文を「かな中間表現」に変換し、JSON {"kana": "..."} だけを返してください。
+
+${KANA_RULES}`;
+
+// Appended to the ja analyze prompt when the device asks for kana.
+const ANALYZE_KANA_ADDENDUM = `
+
+追加で kana フィールドに、caption と detail を「。」で繋いだ全文を音声合成用の「かな中間表現」に変換して入れてください。
+${KANA_RULES}`;
+
+const KANA_SCHEMA = {
+  type: "object",
+  properties: {
+    kana: { type: "string" },
+  },
+  required: ["kana"],
+  additionalProperties: false,
+} as const;
+
+// Keep only what the device-side G2P accepts: hiragana, `ー`, the marks
+// `[ ] # _ ^ $ ? ?! ?. ?~` and `°`. Katakana is folded to hiragana, Japanese
+// punctuation becomes a pause, everything else is dropped.
+function sanitizeKana(raw: string): string {
+  let out = "";
+  for (const ch of raw.normalize("NFKC")) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0x3041 && cp <= 0x3096) out += ch; // hiragana
+    else if (cp >= 0x30a1 && cp <= 0x30f6) out += String.fromCodePoint(cp - 0x60); // katakana → hiragana
+    else if (ch === "ー" || ch === "[" || ch === "]" || ch === "#" || ch === "_" || ch === "°" || ch === "?" || ch === "!" || ch === "." || ch === "~") out += ch;
+    else if (ch === "、" || ch === "。" || ch === "，" || ch === "．" || ch === ",") out += "_";
+    else if (ch === "？") out += "?";
+    else if (ch === "゛") out += ""; // stray dakuten from NFKC of odd input
+    // whitespace, kanji, latin, digits: dropped (the LLM was asked to spell them)
+  }
+  return out
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // CamS3 は SVGA〜UXGA JPEG を送る想定 (~100-500KB)
 const DEFAULT_MODELS = "gpt-5.6-terra,gpt-5.6-luna";
@@ -180,6 +272,12 @@ function pickDetail(request: Request): "low" | "high" {
   return request.headers.get("x-detail") === "high" ? "high" : "low";
 }
 
+// `X-Kana: 1` — the device is in the on-device sanoTTS voice mode and wants
+// the kana intermediate representation bundled into /analyze (ja only).
+function pickKana(request: Request, env: Env, lang: Lang): boolean {
+  return lang === "ja" && env.KANA_BUNDLE !== "0" && request.headers.get("x-kana") === "1";
+}
+
 // The device only ever sends X-Detail low|high; what that MEANS is decided
 // here, so the owner can retune output depth without touching firmware.
 function analyzeStyle(env: Env, detailLevel: "low" | "high"): string {
@@ -200,12 +298,21 @@ async function analyzeWithOpenAI(
   model: string,
   detailLevel: "low" | "high",
   lang: Lang,
+  withKana = false,
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
-    max_completion_tokens: analyzeMaxTokens(env),
+    // kana roughly doubles the output text — give it room on top of the budget
+    max_completion_tokens: analyzeMaxTokens(env) + (withKana ? 800 : 0),
+    ...(withKana && env.ANALYZE_KANA_REASONING_EFFORT
+      ? { reasoning_effort: env.ANALYZE_KANA_REASONING_EFFORT }
+      : {}),
     messages: [
-      { role: "system", content: SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) },
+      {
+        role: "system",
+        content:
+          SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) + (withKana ? ANALYZE_KANA_ADDENDUM : ""),
+      },
       {
         role: "user",
         content: [
@@ -222,7 +329,11 @@ async function analyzeWithOpenAI(
     ],
     response_format: {
       type: "json_schema",
-      json_schema: { name: "toi_result", strict: true, schema: RESULT_SCHEMA },
+      json_schema: {
+        name: "toi_result",
+        strict: true,
+        schema: withKana ? RESULT_SCHEMA_KANA : RESULT_SCHEMA,
+      },
     },
   });
 
@@ -240,9 +351,24 @@ async function analyzeWithOpenAI(
     return json(FALLBACK_RESULT);
   }
   // strict json_schema により content は RESULT_SCHEMA に適合した JSON
-  return new Response(msg.content, {
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+  if (!withKana) {
+    return new Response(msg.content, {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  // kana: reduce to what the on-device G2P accepts. An empty result just
+  // makes the device fall back to POST /kana.
+  try {
+    const parsed = JSON.parse(msg.content) as { caption: string; detail: string; kana?: unknown };
+    return json({
+      caption: parsed.caption,
+      detail: parsed.detail,
+      kana: typeof parsed.kana === "string" ? sanitizeKana(parsed.kana) : "",
+    });
+  } catch (err) {
+    console.error("[toi] analyze kana parse failed", err);
+    return json(FALLBACK_RESULT);
+  }
 }
 
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
@@ -500,6 +626,7 @@ async function handleAnalyze(
     pickModel(request, env),
     pickDetail(request),
     lang,
+    pickKana(request, env, lang),
   );
 }
 
@@ -655,6 +782,59 @@ async function handleDigest(request: Request, env: Env): Promise<Response> {
   }
 }
 
+async function handleKana(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as { text?: unknown } | null;
+  const text =
+    body && typeof body.text === "string" ? Array.from(body.text.trim()).slice(0, 500).join("") : "";
+  if (!text) {
+    return json({ error: "missing text" }, 400);
+  }
+  // Spelling out kana is transcription, not reasoning: KANA_MODEL (optional)
+  // can point at a cheaper/faster model, and reasoning effort is "none" so
+  // the device is not kept waiting (default-effort gpt-5.6 took 10–25 s).
+  const model = env.KANA_MODEL || pickModel(request, env);
+
+  try {
+    const upstream = await openaiChat(env, {
+      model,
+      reasoning_effort: env.KANA_REASONING_EFFORT || "none",
+      max_completion_tokens: 4000,
+      messages: [
+        { role: "system", content: KANA_SYSTEM_PROMPT },
+        { role: "user", content: text },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "toi_kana", strict: true, schema: KANA_SCHEMA },
+      },
+    });
+    if (!upstream.ok) {
+      const detail = await upstream.text();
+      console.error("[toi] kana upstream error", upstream.status, detail);
+      return json({ error: "kana upstream failed", status: upstream.status }, 502);
+    }
+    const data = (await upstream.json()) as {
+      choices?: { finish_reason?: string; message?: { content?: string; refusal?: string } }[];
+    };
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    if (!message?.content || message.refusal) {
+      console.error("[toi] kana empty content", choice?.finish_reason, message?.refusal);
+      return json({ error: "kana empty" }, 502);
+    }
+    const parsed = JSON.parse(message.content) as { kana?: unknown };
+    const kana = typeof parsed.kana === "string" ? sanitizeKana(parsed.kana) : "";
+    if (!kana) {
+      console.error("[toi] kana sanitized to empty", message.content.slice(0, 200));
+      return json({ error: "kana empty" }, 502);
+    }
+    return json({ kana });
+  } catch (err) {
+    console.error("[toi] kana failed", err);
+    return json({ error: "kana failed" }, 502);
+  }
+}
+
 async function handleTts(request: Request, env: Env): Promise<Response> {
   const body = (await request.json().catch(() => null)) as { text?: string } | null;
   const text = body?.text?.trim();
@@ -743,6 +923,8 @@ export default {
           return await handleDigest(request, env);
         case "/tts":
           return await handleTts(request, env);
+        case "/kana":
+          return await handleKana(request, env);
         default:
           return json({ error: "not found" }, 404);
       }
