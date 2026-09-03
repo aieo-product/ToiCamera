@@ -33,7 +33,7 @@ npx wrangler deploy
 Vars (see `wrangler.jsonc` for defaults and comments): `MODELS`,
 `MAIN_API_BASE_URL`, `AUDIO_API_BASE_URL`, `TTS_VOICE`, `TTS_MODEL`,
 `ANALYZE_MAX_TOKENS`, `ANALYZE_STYLE_LOW`, `ANALYZE_STYLE_HIGH`,
-`KANA_MODEL`, `KANA_REASONING_EFFORT`.
+`KANA_MODEL`, `KANA_REASONING_EFFORT`, `KANA_BUNDLE`, `ANALYZE_KANA_REASONING_EFFORT`.
 
 ## Testing
 
@@ -83,6 +83,15 @@ kanji dictionary does not fit in flash. `POST /kana` asks the chat model to do
 that (`KANA_MODEL` overrides the model, `KANA_REASONING_EFFORT` defaults to
 `none` for ~2 s latency; `low` gives better accents at ~10 s). The Worker
 sanitizes the reply down to what the on-device G2P accepts.
+
+When the device is in that voice mode it sends `X-Kana: 1` on `/analyze` and
+the kana is bundled into the analyze response (`KANA_BUNDLE`, default `1`),
+so no second round trip is needed; `/kana` is then only used for voice
+questions and as a fallback. The bundled call runs at
+`ANALYZE_KANA_REASONING_EFFORT` (default `none`) — measured on 2026-09-03 it
+takes ~4.5 s like a plain `/analyze`, whereas the model's default reasoning
+made it ~11 s and separate `/analyze` + `/kana` ~7 s. Set `KANA_BUNDLE=0` to
+go back to the two-call flow.
 
 ```bash
 curl -s -X POST "$BASE/kana" \

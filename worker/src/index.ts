@@ -12,6 +12,12 @@ export interface Env {
   KANA_MODEL?: string;
   /** reasoning_effort for /kana (default "none"; gpt-5.6 accepts none/low/medium/high/xhigh). */
   KANA_REASONING_EFFORT?: string;
+  /** "0" ignores `X-Kana: 1` on /analyze (device then falls back to POST
+   *  /kana). Default "1" = bundle kana into the /analyze response. */
+  KANA_BUNDLE?: string;
+  /** reasoning_effort for /analyze when kana is bundled (unset = model
+   *  default). Lower values shorten the response at some analysis cost. */
+  ANALYZE_KANA_REASONING_EFFORT?: string;
   /** Comma-separated model ids offered to the device (GET /config). */
   MODELS?: string;
   /** OpenAI-compatible API base (default https://api.openai.com/v1).
@@ -268,8 +274,8 @@ function pickDetail(request: Request): "low" | "high" {
 
 // `X-Kana: 1` — the device is in the on-device sanoTTS voice mode and wants
 // the kana intermediate representation bundled into /analyze (ja only).
-function pickKana(request: Request, lang: Lang): boolean {
-  return lang === "ja" && request.headers.get("x-kana") === "1";
+function pickKana(request: Request, env: Env, lang: Lang): boolean {
+  return lang === "ja" && env.KANA_BUNDLE !== "0" && request.headers.get("x-kana") === "1";
 }
 
 // The device only ever sends X-Detail low|high; what that MEANS is decided
@@ -298,6 +304,9 @@ async function analyzeWithOpenAI(
     model,
     // kana roughly doubles the output text — give it room on top of the budget
     max_completion_tokens: analyzeMaxTokens(env) + (withKana ? 800 : 0),
+    ...(withKana && env.ANALYZE_KANA_REASONING_EFFORT
+      ? { reasoning_effort: env.ANALYZE_KANA_REASONING_EFFORT }
+      : {}),
     messages: [
       {
         role: "system",
@@ -617,7 +626,7 @@ async function handleAnalyze(
     pickModel(request, env),
     pickDetail(request),
     lang,
-    pickKana(request, lang),
+    pickKana(request, env, lang),
   );
 }
 

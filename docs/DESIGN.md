@@ -143,7 +143,7 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` — 地名 + 最寄駅/徒歩分(取得失敗時は駅情報を空で返す) |
 | `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
 | `POST /tts` | `X-Device-Token` | `{text}` | `audio/wav`(パススルーストリーム) |
-| `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化) |
+| `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化)。撮影時は `/analyze` に `X-Kana: 1` を付けると応答に `kana` が同梱されるため、`/kana` は音声質問とフォールバック用 |
 
 シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
 バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
