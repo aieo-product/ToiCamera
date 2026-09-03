@@ -1042,6 +1042,7 @@ static void stopAnimalese() {
 }
 
 static void stopSano();
+static int sanoBannerPct = -1;   // result-screen voice progress; -1 = not shown
 
 static void stopSpeech() {
   stopAnimalese();
@@ -1745,6 +1746,7 @@ static void stopSano() {
   sanoPlaying = false;
   sanoFailed = false;
   sanoFinished = false;
+  sanoBannerPct = -1;
 }
 
 // POST /kana {text} → kana intermediate representation (empty on failure).
@@ -1845,6 +1847,10 @@ static int sanoPlanChunks(const String &kana, SanoChunk *chunks, uint8_t *arena)
       return false;
     }
     chunks[n++] = {ids, nIds, st.n_frames};
+    // saan_stream_init runs the duration model — real CPU work. This task is
+    // pinned to core 0 (the WiFi core), so yield periodically or its idle
+    // task starves and the task watchdog reboots the device mid-synthesis.
+    vTaskDelay(1);
     return true;
   };
   int start = 0;
@@ -1921,6 +1927,7 @@ static void sanoWorker(void *) {
     saan_stream st;
     saan_status s = saan_stream_init(&st, &sanoWeights, &a, chunks[i].ids,
                                      chunks[i].nIds, SAAN_S_V);
+    vTaskDelay(1);
     if (s != SAAN_OK) {
       Serial.printf("[toi] sanotts: stream_init %s\n", saan_strerror(s));
       ok = false;
@@ -1938,6 +1945,10 @@ static void sanoWorker(void *) {
       }
       pos += count;
       sanoDone = pos;
+      // Each pull is real CPU work (tens–hundreds of ms). Yield every pull so
+      // the idle task on this core (WiFi/BT live here too) keeps running —
+      // otherwise the task watchdog reboots the device mid-synthesis.
+      vTaskDelay(1);
     }
     if (s != SAAN_OK) {
       Serial.printf("[toi] sanotts: pull %s\n", saan_strerror(s));
@@ -1995,6 +2006,30 @@ static bool sanoPrepare(const String &text, const String &kanaHint) {
   return true;
 }
 
+// Result screen header (y < 90): "voice generating" progress while sanoTTS
+// synthesizes, cleared when playback starts. Auto-scroll waits for playback
+// so the text does not run away before the voice does.
+static void drawSanoBanner(int pct) {
+  if (state != AppState::Result) return;
+  if (pct == sanoBannerPct) return;
+  sanoBannerPct = pct;
+  const int x = (M5.Display.width() - kTextWidth) / 2;
+  M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
+  if (pct < 0) return;
+  M5.Display.setFont(contentFont());
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.drawString(
+      String(tr("ボイス生成中 ", "Generating voice ", "生成语音中 ")) + pct + "%",
+      M5.Display.width() / 2, 50);
+  const int barW = 220, barH = 8, bx = (M5.Display.width() - barW) / 2, by = 70;
+  M5.Display.drawRect(bx, by, barW, barH, TFT_DARKGREY);
+  M5.Display.fillRect(bx + 1, by + 1, (barW - 2) * pct / 100, barH - 2, TFT_CYAN);
+}
+
+static void startResultAutoScroll() { autoScrollAt = millis() + 2500; }
+
 // Called from loop(): start playback once synthesis is far enough ahead.
 static void sanoPoll() {
   if (sanoPlaying) return;
@@ -2003,11 +2038,17 @@ static void sanoPoll() {
     Serial.println("[toi] sanotts: failed — falling back to chirps");
     const String fallback = sanoText;
     speakAnimalese(fallback);  // stopSpeech() inside clears the sano state
+    drawSanoBanner(-1);
+    startResultAutoScroll();
     return;
   }
   const size_t done = sanoDone;
   const size_t total = sanoTotal;
-  if (!sanoPcm || total == 0 || done == 0) return;
+  if (!sanoPcm || total == 0 || done == 0) {
+    drawSanoBanner(0);  // /kana done, planning / first chunk
+    return;
+  }
+  drawSanoBanner((int)(done * 100 / total));
   bool ready = sanoFinished || done >= total;
   if (!ready) {
     // Measured synthesis rate r = seconds of compute per second of audio.
@@ -2021,6 +2062,8 @@ static void sanoPoll() {
   Serial.printf("[toi] sanotts: play at %u/%u samples (%lums)\n", (unsigned)done,
                 (unsigned)total, millis() - sanoStartedAt);
   M5.Speaker.playRaw(sanoPcm, sanoTotal, SAAN_SR, false, 1, -1, true);
+  drawSanoBanner(-1);
+  startResultAutoScroll();
 }
 
 // Voice dispatch shared by the capture and voice-question flows.
@@ -2530,8 +2573,9 @@ static void voiceQuestionFlow() {
             const bool voiceReady = prepareVoice(a);
             buildResultCanvas();
             drawResult(true);
-            autoScrollAt = millis() + 2500;
             if (!(voiceReady && playPreparedVoice())) speakAnimalese(a);
+            if (sanoExited) startResultAutoScroll();
+            else drawSanoBanner(0);
             ok = true;
           }
         }
@@ -3280,9 +3324,12 @@ static void runCaptureCycle() {
   const bool voiceReady = prepareVoice(speech, analyzeKana);
   buildResultCanvas();
   drawResult(true);
-  autoScrollAt = millis() + 2500;
   state = AppState::Result;  // interactive immediately — speech runs in a task
   if (!(voiceReady && playPreparedVoice())) speakAnimalese(speech);
+  // sanoTTS still synthesizing: sanoPoll() shows progress and starts the
+  // scroll when the voice actually plays. Every other path plays now.
+  if (sanoExited) startResultAutoScroll();
+  else drawSanoBanner(0);
   Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
