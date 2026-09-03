@@ -60,6 +60,23 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+// Same, plus the kana intermediate representation of caption + detail for
+// the on-device sanoTTS voice. Requested with `X-Kana: 1` (ja only) so a
+// device in that voice mode skips the extra /kana round trip (~2 s).
+const RESULT_SCHEMA_KANA = {
+  type: "object",
+  properties: {
+    caption: RESULT_SCHEMA.properties.caption,
+    detail: RESULT_SCHEMA.properties.detail,
+    kana: {
+      type: "string",
+      description: "caption と detail を「。」で繋いだ全文のかな中間表現(ひらがな + アクセント記号)",
+    },
+  },
+  required: ["caption", "detail", "kana"],
+  additionalProperties: false,
+} as const;
+
 const DIGEST_SYSTEM_PROMPT: Record<Lang, string> = {
   ja: "あなたは行動ログの要約係。撮影・質問の見出しリストから、その人が今日なにをしているかを、親しみやすく少しユーモラスな日本語30字以内の1文で要約する。体言止めか『〜中』で軽快に",
   en: "Summarize what the person is doing today from the list of photo and question headlines. Write one friendly, lightly humorous English sentence of about 10 words.",
@@ -83,9 +100,7 @@ const DIGEST_SCHEMA = {
 // after this mora) / `#` accent-phrase boundary / `_` pause / `?` question
 // end / `°` devoiced vowel. Example: 今日は良い天気ですね。 →
 // きょ][おわよ][いて][んきです°ね
-const KANA_SYSTEM_PROMPT = `あなたは日本語音声合成(sanoTTS-jp)の前処理器です。入力の日本語文を「かな中間表現」に変換し、JSON {"kana": "..."} だけを返してください。
-
-規則:
+const KANA_RULES = `規則:
 1. ひらがなだけを使う。漢字・カタカナ・英字・数字・記号はすべて読みのひらがなに直す(例: AI→えーあい、3時→さんじ、100%→ひゃくぱーせんと、ToiCamera→といかめら)。
 2. 発音どおりに書く: 助詞「は」→「わ」、「へ」→「え」、「を」→「お」。「おう」「えい」などの長音は「おお」「ええ」のように母音を重ねるか「ー」で書く(例: 東京→とおきょお、先生→せんせえ)。「ぢ」「づ」は「じ」「ず」。
 3. アクセント(東京式): アクセント句ごとに、ピッチが上がる拍の直前に「[」、アクセント核(下がる直前の拍)の直後に「]」を置く。平板型は「[」だけで「]」を置かない。頭高型は1拍目の直後に「]」を置く(「[」は不要)。
@@ -101,6 +116,16 @@ const KANA_SYSTEM_PROMPT = `あなたは日本語音声合成(sanoTTS-jp)の前�
 バッテリー残量は十五パーセントです。 → ば]ってりーざ[んりょおわ_じゅ]うごぱーせ]んとです°
 これは何ですか？ → こ[れわ[な]んです°か?
 赤い花が咲いています。写真の中央に見えます。 → あ[かい[はな]が[さいていま]す°_しゃ[しんの[ちゅうおうに[みえま]す°`;
+
+const KANA_SYSTEM_PROMPT = `あなたは日本語音声合成(sanoTTS-jp)の前処理器です。入力の日本語文を「かな中間表現」に変換し、JSON {"kana": "..."} だけを返してください。
+
+${KANA_RULES}`;
+
+// Appended to the ja analyze prompt when the device asks for kana.
+const ANALYZE_KANA_ADDENDUM = `
+
+追加で kana フィールドに、caption と detail を「。」で繋いだ全文を音声合成用の「かな中間表現」に変換して入れてください。
+${KANA_RULES}`;
 
 const KANA_SCHEMA = {
   type: "object",
@@ -241,6 +266,12 @@ function pickDetail(request: Request): "low" | "high" {
   return request.headers.get("x-detail") === "high" ? "high" : "low";
 }
 
+// `X-Kana: 1` — the device is in the on-device sanoTTS voice mode and wants
+// the kana intermediate representation bundled into /analyze (ja only).
+function pickKana(request: Request, lang: Lang): boolean {
+  return lang === "ja" && request.headers.get("x-kana") === "1";
+}
+
 // The device only ever sends X-Detail low|high; what that MEANS is decided
 // here, so the owner can retune output depth without touching firmware.
 function analyzeStyle(env: Env, detailLevel: "low" | "high"): string {
@@ -261,12 +292,18 @@ async function analyzeWithOpenAI(
   model: string,
   detailLevel: "low" | "high",
   lang: Lang,
+  withKana = false,
 ): Promise<Response> {
   const upstream = await openaiChat(env, {
     model,
-    max_completion_tokens: analyzeMaxTokens(env),
+    // kana roughly doubles the output text — give it room on top of the budget
+    max_completion_tokens: analyzeMaxTokens(env) + (withKana ? 800 : 0),
     messages: [
-      { role: "system", content: SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) },
+      {
+        role: "system",
+        content:
+          SYSTEM_PROMPT[lang] + analyzeStyle(env, detailLevel) + (withKana ? ANALYZE_KANA_ADDENDUM : ""),
+      },
       {
         role: "user",
         content: [
@@ -283,7 +320,11 @@ async function analyzeWithOpenAI(
     ],
     response_format: {
       type: "json_schema",
-      json_schema: { name: "toi_result", strict: true, schema: RESULT_SCHEMA },
+      json_schema: {
+        name: "toi_result",
+        strict: true,
+        schema: withKana ? RESULT_SCHEMA_KANA : RESULT_SCHEMA,
+      },
     },
   });
 
@@ -301,9 +342,24 @@ async function analyzeWithOpenAI(
     return json(FALLBACK_RESULT);
   }
   // strict json_schema により content は RESULT_SCHEMA に適合した JSON
-  return new Response(msg.content, {
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+  if (!withKana) {
+    return new Response(msg.content, {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  // kana: reduce to what the on-device G2P accepts. An empty result just
+  // makes the device fall back to POST /kana.
+  try {
+    const parsed = JSON.parse(msg.content) as { caption: string; detail: string; kana?: unknown };
+    return json({
+      caption: parsed.caption,
+      detail: parsed.detail,
+      kana: typeof parsed.kana === "string" ? sanitizeKana(parsed.kana) : "",
+    });
+  } catch (err) {
+    console.error("[toi] analyze kana parse failed", err);
+    return json(FALLBACK_RESULT);
+  }
 }
 
 // Best-effort reverse geocoding (OSM Nominatim). Coordinates are rounded to
@@ -561,6 +617,7 @@ async function handleAnalyze(
     pickModel(request, env),
     pickDetail(request),
     lang,
+    pickKana(request, lang),
   );
 }
 

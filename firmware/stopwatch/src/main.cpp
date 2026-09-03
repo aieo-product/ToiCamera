@@ -144,6 +144,7 @@ static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
 static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS, 2=sanoTTS (on-device, ja)
 static String toiVoiceName;        // TTS voice name reported by GET /config
+static String analyzeKana;         // kana bundled by /analyze (X-Kana: 1) for sanoTTS
 static bool toiConfigSettingsRetryDone = false;
 
 static TinyGPSPlus gps;
@@ -1964,13 +1965,15 @@ static void sanoWorker(void *) {
   vTaskDelete(nullptr);
 }
 
-// Kick off on-device synthesis for `text` (blocking only for the /kana call).
+// Kick off on-device synthesis for `text`. `kanaHint` is the representation
+// bundled by /analyze; when empty this blocks for one POST /kana (~2-6 s).
 // Playback is started later by sanoPoll() from loop().
-static bool sanoPrepare(const String &text) {
+static bool sanoPrepare(const String &text, const String &kanaHint) {
   stopSpeech();
   if (!sanoWeightsOk) return false;
-  const String kana = fetchKana(text);
+  const String kana = kanaHint.length() ? kanaHint : fetchKana(text);
   if (!kana.length()) return false;
+  if (kanaHint.length()) Serial.printf("[toi] kana: bundled %u B\n", (unsigned)kana.length());
   sanoKana = kana;
   sanoText = text;
   sanoStopFlag = false;
@@ -2022,10 +2025,12 @@ static void sanoPoll() {
 
 // Voice dispatch shared by the capture and voice-question flows.
 // Returns true when playPreparedVoice() has something to play.
-static bool prepareVoice(const String &text) {
+static bool prepareVoice(const String &text, const String &kanaHint = String()) {
   if (voiceMode == 2 && selectedLang == 0) {
-    drawBusy(tr("音声変換中...", "Preparing voice...", "语音转换中..."), TFT_CYAN);
-    if (sanoPrepare(text)) return true;
+    if (!kanaHint.length()) {
+      drawBusy(tr("音声変換中...", "Preparing voice...", "语音转换中..."), TFT_CYAN);
+    }
+    if (sanoPrepare(text, kanaHint)) return true;
     Serial.println("[toi] sanotts: prepare failed — trying Worker TTS");
   }
   if (voiceMode == 1 || voiceMode == 2) {
@@ -2183,6 +2188,11 @@ static bool analyzePhoto() {
     analyzeHttp.addHeader("X-Model", selectedModelName());
     analyzeHttp.addHeader("X-Detail", aiDetailHigh ? "high" : "low");
     analyzeHttp.addHeader("X-Lang", selectedLangCode());
+    // sanoTTS voice (ja): have the Worker bundle the kana intermediate
+    // representation into this response instead of a second /kana round trip.
+    const bool wantKana = voiceMode == 2 && selectedLang == 0;
+    if (wantKana) analyzeHttp.addHeader("X-Kana", "1");
+    analyzeKana = "";
     code = analyzeHttp.POST(jpegBuf, jpegLen);
     if (code == HTTP_CODE_OK) {
       JsonDocument doc;
@@ -2190,6 +2200,7 @@ static bool analyzePhoto() {
           DeserializationError::Ok) {
         caption = doc["caption"].as<String>();
         detailText = doc["detail"].as<String>();
+        if (wantKana) analyzeKana = doc["kana"].as<String>();
         ok = caption.length() > 0;
       }
     } else if (code == 429) {
@@ -3266,7 +3277,7 @@ static void runCaptureCycle() {
   recordInquiry(caption, detailText);
 
   const String speech = caption + "。" + detailText;
-  const bool voiceReady = prepareVoice(speech);
+  const bool voiceReady = prepareVoice(speech, analyzeKana);
   buildResultCanvas();
   drawResult(true);
   autoScrollAt = millis() + 2500;
