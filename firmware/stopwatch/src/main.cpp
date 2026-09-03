@@ -1698,6 +1698,19 @@ static constexpr int32_t kSanoMaxIdsPerChunk = 300;     // < SAAN_MAX_IDS (350)
 static constexpr size_t kSanoGapSamples = 2205;         // 100 ms between chunks
 static constexpr int kSanoMaxChunks = 24;
 static constexpr float kSanoRateMargin = 1.15f;
+// Output gain. The model's PCM peaks around 0.29 FS (upstream: |max| 9,627 /
+// 32,767 — it is deliberately not normalized), so at the same speaker volume
+// it sounds ~10 dB quieter than the chirps and Worker WAVs. 3.0x brings the
+// peak to ~0.9 FS; a soft knee above 0.85 FS keeps the rare louder samples
+// from clipping harshly.
+static constexpr float kSanoGain = 3.0f;
+static inline float sanoSoftClip(float x) {
+  constexpr float knee = 0.85f;
+  const float a = fabsf(x);
+  if (a <= knee) return x;
+  const float y = knee + (1.0f - knee) * tanhf((a - knee) / (1.0f - knee));
+  return x < 0 ? -y : y;
+}
 
 static saan_weights sanoWeights;
 static bool sanoWeightsOk = false;
@@ -1938,7 +1951,7 @@ static void sanoWorker(void *) {
       const size_t count = (size_t)n * SAAN_HOP;
       if (pos + count > sanoTotal) break;  // never past the planned buffer
       for (size_t k = 0; k < count; ++k) {
-        float x = chunkBuf[k] * 32767.0f;
+        float x = sanoSoftClip(chunkBuf[k] * kSanoGain) * 32767.0f;
         if (x > 32767.0f) x = 32767.0f;
         if (x < -32768.0f) x = -32768.0f;
         sanoPcm[pos + k] = static_cast<int16_t>(lrintf(x));
