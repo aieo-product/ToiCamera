@@ -10,7 +10,7 @@ Entry for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 | | |
 |---|---|
 | 📷 | **Zero-lag shutter** — the live finder frame *is* the photo |
-| 🗣 | **AI explanations** spoken out loud — cloud TTS with on-device Animal-Crossing-style chirp fallback |
+| 🗣 | **AI explanations** spoken out loud — cloud TTS, **on-device Japanese TTS ([sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp), 559K params, no audio API key)**, or Animal-Crossing-style chirps |
 | 🎤 | **Hold-to-talk Q&A** about the photo (STT → context-aware answer) |
 | 📍 | **Location-aware** — reverse-geocoded town, nearest station, place-flavored explanations |
 | ⌚ | **A real watch** — clock (NTP→RX8130), battery ring, steps, daily AI one-liner |
@@ -74,3 +74,5 @@ Demo video and write-up: coming soon.
 MIT — see [LICENSE](LICENSE). The CamS3 patches apply on top of M5Stack's open-source UnitCamS3 firmware (MIT, Copyright (c) M5Stack) — see `firmware/cams3/README.md` for provenance.
 
 Location data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL), reverse geocoding by [Nominatim](https://nominatim.org/). Nearest-station lookup by [HeartRails Express](https://express.heartrails.com/).
+
+The on-device voice uses [sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp) (inference core MIT). Its model weights are **not** MIT: they are distributed under the sanoTTS-jp Model License 1.0 with attribution and use restrictions inherited from つくよみちゃんコーパス (© 夢前黎) — see [`firmware/stopwatch/lib/sanotts/NOTICE.md`](firmware/stopwatch/lib/sanotts/NOTICE.md) (required attribution block) and `LICENSE-MODEL.md` next to it. The generated speech must not be used for attacks on people, political/religious advocacy, adult content, or redistributed as voice material.
