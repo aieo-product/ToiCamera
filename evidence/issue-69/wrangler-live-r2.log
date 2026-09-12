@@ -1,0 +1,12 @@
+[wrangler:info] POST /live 200 OK (12ms)
+[wrangler:info] POST /live 200 OK (3ms)
+[wrangler:info] POST /live 400 Bad Request (1ms)
+[wrangler:info] POST /live 200 OK (7ms)
+[wrangler:info] POST /live 200 OK (9ms)
+✘ [ERROR] [toi] live: socket closed before response.done
+▲ [WARNING] [toi] live: ending as truncated — realtime disconnected
+[wrangler:info] POST /live 200 OK (8ms)
+✘ [ERROR] [toi] live: error event {"type":"error","error":{"type":"invalid_request_error","code":"model_not_found","message":"mock failure"}}
+[wrangler:info] POST /live 200 OK (9ms)
+▲ [WARNING] [toi] live: response.done status incomplete {"type":"response.done","response":{"status":"incomplete"}}
+▲ [WARNING] [toi] live: ending as truncated — realtime incomplete

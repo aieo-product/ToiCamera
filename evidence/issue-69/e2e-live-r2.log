@@ -1,0 +1,22 @@
+### capture ja (mock ok)
+http=200 time=1.057126
+800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:15 A:4800 A:4800 A:4800 E:{"caption":"これはテストの写真です","detail":"机の上にノートパソコンがあります。","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"","status":"completed","pcmBytes":72000,"ms":1039}
+
+### capture en — caption split at sentence boundary
+http=200
+E:{"caption":"これはテストの写真です。机の上にノートパソコンがあります。","detail":"","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"","status":"completed","pcmBytes":72000,"ms":1030}
+### capture with extra bytes after JPEG → expect 400
+{"error":"capture body must be exactly the JPEG"} http=400
+### ask ja (mock ok) — E has question field
+http=200
+E:{"caption":"これはテストの写真です","detail":"机の上にノートパソコンがあります。","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"","status":"completed","pcmBytes":72000,"ms":1027}
+### mock-cut (disconnect after audio) → expect E status=truncated
+http=200
+T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 E:{"caption":"これはテストの写真です","detail":"","transcript":"これはテストの写真です。","question":"","status":"truncated","pcmBytes":24000,"ms":369}
+
+### mock-incomplete → expect E status=truncated
+http=200
+E:{"caption":"これはテストの写真です","detail":"机の上にノートパソコンがあります。","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"","status":"truncated","pcmBytes":72000,"ms":1030}
+### mock-fail (error before audio) → expect X
+http=200
+X:{"error":"realtime error"}
