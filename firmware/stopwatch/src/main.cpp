@@ -1807,6 +1807,8 @@ static String fetchKana(const String &text) {
     ttsHttp.setTimeout(30000);
     ttsHttpInit = true;
   }
+  // fetchTts() may have left the shared handle at its 45 s Realtime budget.
+  ttsHttp.setTimeout(30000);
   JsonDocument requestDoc;
   requestDoc["text"] = text;
   String body;
