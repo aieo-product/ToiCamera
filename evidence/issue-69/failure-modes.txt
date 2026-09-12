@@ -1,0 +1,3 @@
+no TOICAMERA_TTS_API_KEY -> {"error":"realtime unavailable"} [http=503]
+nothing listening upstream -> {"error":"realtime connect failed"} [http=502]
+upstream answers without a websocket -> {"error":"realtime upgrade failed","status":401} [http=502]

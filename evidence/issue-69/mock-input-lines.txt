@@ -1,0 +1,5 @@
+[mock] 2026-09-12T06:17:54.130Z response.create input: input_image 793 B jpeg no input_audio input_text="この写真を解説してください。"
+[mock] 2026-09-12T06:18:02.573Z response.create input: input_image 793 B jpeg input_audio 48000 B pcm input_text="この写真について、いまの音声の質問に答えてください。"
+[mock] 2026-09-12T06:19:47.811Z response.create input: input_image 793 B jpeg no input_audio input_text="この写真を解説してください。"
+[mock] 2026-09-12T06:20:18.868Z response.create input: input_image 793 B jpeg input_audio 48000 B pcm input_text="Answer my spoken question about this photo."
+[mock] 2026-09-12T06:20:19.936Z response.create input: input_image 793 B jpeg input_audio 48000 B pcm input_text="Answer my spoken question about this photo."
