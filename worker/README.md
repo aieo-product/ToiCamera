@@ -15,6 +15,7 @@ explanation (ja/en/zh). The device never talks to an AI provider directly.
 | `POST /digest` | `X-Device-Token` | `{"items": ["…"]}` | `{summary}` — one-line day summary |
 | `POST /tts` | `X-Device-Token` | `{"text": "...", "engine"?: "realtime"}` | `audio/wav` (24kHz mono), header `X-Voice-Engine: tts\|realtime` — `engine:"realtime"` speaks via the OpenAI Realtime API, falling back to the regular TTS engine (and then on-device chirps) on any failure |
 | `POST /kana` | `X-Device-Token` | `{"text": "..."}` | `{kana}` — kana intermediate representation (pitch-accent marks) for the on-device sanoTTS voice |
+| `POST /live` | `X-Device-Token` | headers `X-Live: capture\|ask`, `X-Jpeg-Length: N`, `X-Lang`; body = JPEG (N bytes) + WAV (`ask` only) | `application/octet-stream`, chunked — `"TOI1"` then `A`/`T`/`E`/`X` frames, header `X-Voice-Engine: realtime-live`. One Realtime session answers with speech while it is still being generated |
 
 ## Setup
 
@@ -75,8 +76,10 @@ TTS voice is `TTS_VOICE` (model `TTS_MODEL`, default OpenAI
 
 ## GPT Realtime voice
 
-The device's fourth Voice option, "GPT Realtime", asks `/tts` for
-`{"engine":"realtime"}`. The Worker opens an outbound WebSocket to the OpenAI
+With the device's fourth Voice option, "GPT Realtime", the firmware uses
+`POST /live` (one Realtime session, streamed — see below). `/tts` also accepts
+`{"engine":"realtime"}` to have any text read by the Realtime voice; that path
+is kept for other clients. For it the Worker opens an outbound WebSocket to the OpenAI
 Realtime API (`REALTIME_API_BASE_URL`, default `api.openai.com/v1`,
 `REALTIME_MODEL` default `gpt-realtime`), reusing `TOICAMERA_TTS_API_KEY` as
 the bearer token — Realtime is OpenAI-only, so it does not follow
@@ -101,6 +104,61 @@ curl -s -X POST "$BASE/tts" \
   -H "X-Device-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"text":"こんにちは、AIカメラです。","engine":"realtime"}' \
   -D - -o out.wav && afplay out.wav
+```
+
+## Live (Realtime, streaming)
+
+`POST /live` replaces `/analyze` + `/tts` (and `/ask` + `/tts`) for the device's
+"GPT Realtime" voice with a **single** Realtime session: the photo — and, for a
+voice question, the recorded audio — go up in one `response.create`, and the
+spoken answer is streamed back frame by frame as it is generated, so the device
+can start playing after the first chunk instead of waiting for a finished WAV.
+
+**Request**
+
+| Header | Value |
+|---|---|
+| `X-Live` | `capture` (explain the photo) or `ask` (answer the spoken question about it) |
+| `X-Jpeg-Length` | byte length `N` of the JPEG that starts the body (1 … 2 MB) |
+| `X-Lang` | `ja` (default) / `en` / `zh` — instructions and speech are pinned to it |
+
+Body = `N` bytes of JPEG (must start `FF D8`), then, for `ask`, a RIFF/WAVE file
+(PCM 16-bit mono, any sample rate, 4000 B … 2 MB). The Worker linearly resamples
+it to the 24 kHz mono PCM the Realtime API accepts (the device records 16 kHz).
+
+**Response** — `application/octet-stream`, chunked, `X-Voice-Engine:
+realtime-live`, `Cache-Control: no-store`. The body is the 4-byte magic `TOI1`
+followed by frames of `type (1 B) + length (uint32 LE) + payload`:
+
+| Type | Payload |
+|---|---|
+| `A` | PCM16 mono 24 kHz audio bytes — one Realtime `output_audio` delta, verbatim |
+| `T` | transcript delta (UTF-8), interleaved with the audio |
+| `E` | terminal JSON `{caption, detail, transcript, question, status, pcmBytes, ms}` — `caption` is the first sentence (≤15 chars ja/zh, ≤15 words en), `detail` the rest (empty for one-sentence answers); `question` is the transcribed spoken question (`ask`, best effort, may be empty); `status` is `"completed"`, or `"truncated"` when the Worker stopped forwarding audio (1.9 MB cap, 15 s idle gap or disconnect after audio had started) — the device treats both as a normal end |
+| `X` | error JSON `{error}` — only ever sent **before any audio frame**; the device falls back to `/analyze` + `/tts` (or `/ask`), then to chirps |
+
+Exactly one `E` or `X` frame ends the stream. Everything after the upgrade is
+reported in-band: an upstream `error`, a disconnect before `response.done`, a
+non-`completed` status, a 15 s idle gap or the 90 s hard limit produce `X` if
+no audio was sent yet, and `E` with `status:"truncated"` otherwise. Failures
+before the WebSocket is up stay plain JSON: 503 when `TOICAMERA_TTS_API_KEY`
+is missing, 502 when the Realtime upgrade fails, 400/413 for a bad header,
+body layout, JPEG or WAV. The model and voice are `REALTIME_MODEL` /
+`REALTIME_VOICE` (same vars as the `/tts` Realtime engine).
+
+```bash
+curl -s --no-buffer -X POST "$BASE/live" \
+  -H "X-Device-Token: $TOKEN" -H "X-Live: capture" -H "X-Lang: ja" \
+  -H "X-Jpeg-Length: $(stat -f%z test.jpg)" \
+  --data-binary @test.jpg -D - -o live.bin
+# live.bin: "TOI1" then T/A frames as they arrive, then one E frame
+
+# voice question: JPEG followed by the recorded WAV in one body
+cat test.jpg question.wav > ask.bin
+curl -s --no-buffer -X POST "$BASE/live" \
+  -H "X-Device-Token: $TOKEN" -H "X-Live: ask" \
+  -H "X-Jpeg-Length: $(stat -f%z test.jpg)" \
+  --data-binary @ask.bin -o live-ask.bin
 ```
 
 ## On-device voice (sanoTTS) and `/kana`

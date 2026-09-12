@@ -145,6 +145,7 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
 | `POST /tts` | `X-Device-Token` | `{text, engine?: "realtime"}` | `audio/wav`(パススルーストリーム)、応答ヘッダ `X-Voice-Engine: tts\|realtime`。`engine:"realtime"` は OpenAI Realtime API(WebSocket)で音声化し、失敗時は Worker 内で通常 TTS にフォールバックする |
 | `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化)。撮影時は `/analyze` に `X-Kana: 1` を付けると応答に `kana` が同梱されるため、`/kana` は音声質問とフォールバック用 |
+| `POST /live` | `X-Device-Token` | ヘッダ `X-Live: capture\|ask` / `X-Jpeg-Length: N` / `X-Lang`、body = JPEG(N バイト)+ WAV(`ask` のみ、PCM16 mono・Worker が 24 kHz へ線形補間) | `application/octet-stream`(chunked)。先頭 4 B の `"TOI1"` に続き `type(1 B) + len(uint32 LE) + payload` のフレーム列: `A` = PCM16 24 kHz 生バイト / `T` = transcript 差分(UTF-8)/ `E` = 終端 JSON `{caption, detail, transcript, status, pcmBytes, ms}` / `X` = エラー JSON。Realtime API 1 セッションで写真(+質問音声)から音声と文字を生成し、生成中から流す。WS 確立後の失敗は `X` フレーム、確立前は 502/503 JSON。応答ヘッダ `X-Voice-Engine: realtime-live` |
 
 シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
 バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
