@@ -164,7 +164,7 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
 | `POST /tts` | `X-Device-Token` | `{text, engine?: "realtime"}` | `audio/wav`(パススルーストリーム)、応答ヘッダ `X-Voice-Engine: tts\|realtime`。`engine:"realtime"` は OpenAI Realtime API(WebSocket)で音声化し、失敗時は Worker 内で通常 TTS にフォールバックする |
 | `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化)。撮影時は `/analyze` に `X-Kana: 1` を付けると応答に `kana` が同梱されるため、`/kana` は音声質問とフォールバック用 |
-| `POST /live` | `X-Device-Token` | ヘッダ `X-Live: capture\|ask` / `X-Jpeg-Length: N` / `X-Lang`、body = JPEG(N バイト)+ WAV(`ask` のみ、PCM16 mono・Worker が 24 kHz へ線形補間) | `application/octet-stream`(chunked)。先頭 4 B の `"TOI1"` に続き `type(1 B) + len(uint32 LE) + payload` のフレーム列: `A` = PCM16 24 kHz 生バイト / `T` = transcript 差分(UTF-8)/ `E` = 終端 JSON `{caption, detail, transcript, status, pcmBytes, ms}` / `X` = エラー JSON。Realtime API 1 セッションで写真(+質問音声)から音声と文字を生成し、生成中から流す。WS 確立後の失敗は `X` フレーム、確立前は 502/503 JSON。応答ヘッダ `X-Voice-Engine: realtime-live` |
+| `POST /live` | `X-Device-Token` | ヘッダ `X-Live: capture\|ask` / `X-Jpeg-Length: N` / `X-Lang` / `X-History-Length: B`(任意)、body = JPEG(N バイト)+ WAV(`ask` のみ、PCM16 mono・Worker が 24 kHz へ線形補間)+ 履歴 JSON(末尾 B バイト、`[{"q","a"}]` 最大 10 組・各 500 字) | `application/octet-stream`(chunked)。先頭 4 B の `"TOI1"` に続き `type(1 B) + len(uint32 LE) + payload` のフレーム列: `A` = PCM16 24 kHz 生バイト / `T` = transcript 差分(UTF-8)/ `E` = 終端 JSON `{caption, detail, transcript, question, status, pcmBytes, ms}` / `X` = エラー JSON。既定は **GPT-Live-1**(`/live/sessions`)1 セッション + Responses delegation(`LIVE_BACKEND_MODEL`、写真は `response.item.create` の `input_image` でバックエンドへ)で、音声と文字を生成中から流す。終端イベントが無いため「出力が `LIVE_END_SILENCE_MS`(既定 1500 ms)止まり、かつ delegation 完了」で `session.close` → `E`。音声が 1 バイトも出る前に GPT-Live が失敗したら同一リクエスト内で Realtime 版ドライバへフォールバック(端末からは 1 本のストリーム)、音声後の失敗は `E status:"truncated"`。WS 確立後の失敗は `X` フレーム、確立前は 502/503 JSON。応答ヘッダ `X-Voice-Engine: realtime-live` |
 
 シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
 バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
@@ -176,7 +176,13 @@ api.openai.com)に接続する)/ `ANALYZE_MAX_TOKENS` / `ANALYZE_STYLE_LOW` /
 `ANALYZE_STYLE_HIGH` / `KANA_MODEL` / `KANA_REASONING_EFFORT`(`/kana` 用。既定は解析モデル・`none`)/
 `REALTIME_MODEL`(既定 `gpt-realtime`)/ `REALTIME_VOICE`(空 = `TTS_VOICE` を流用)/
 `REALTIME_API_BASE_URL`(既定 api.openai.com。Realtime は OpenAI 専用のため
-`AUDIO_API_BASE_URL` とは独立)。
+`AUDIO_API_BASE_URL` とは独立)/ `/live` 用の `LIVE_ENGINE`(`gpt-live` 既定 /
+`realtime`)・`LIVE_MODEL`(既定 `gpt-live-1`)・`LIVE_BACKEND_MODEL`(既定
+`gpt-5.6-terra`。写真を見るのはこちらなので vision 対応必須。`gpt-5.6-luna` は安価)・
+`LIVE_BACKEND_REASONING`(バックエンドの `reasoning.effort`。空 = モデル既定)・
+`LIVE_VOICE`(既定 `marin`)・`LIVE_API_BASE_URL`(既定 api.openai.com)・
+`LIVE_END_SILENCE_MS`(既定 1500)。GPT-Live もベアラートークンは
+`TOICAMERA_TTS_API_KEY` を流用する。
 
 ### 4.4 ケース(`case/`)
 

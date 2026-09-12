@@ -36,6 +36,25 @@ export interface Env {
    *  https://api.openai.com/v1) — kept separate from AUDIO_API_BASE_URL
    *  since most OpenAI-compatible bridges do not offer Realtime. */
   REALTIME_API_BASE_URL?: string;
+  /** Upstream for POST /live: "gpt-live" (default, GPT-Live-1 + Responses
+   *  delegation to a reasoning model) or "realtime" (the older gpt-realtime
+   *  one-shot, kept as the in-request fallback). */
+  LIVE_ENGINE?: string;
+  /** GPT-Live voice model (default gpt-live-1). */
+  LIVE_MODEL?: string;
+  /** Reasoning model the GPT-Live session delegates to via Responses
+   *  (default gpt-5.6-terra; gpt-5.6-luna is the cheaper option). */
+  LIVE_BACKEND_MODEL?: string;
+  /** reasoning.effort for that backend (unset = the model's default). */
+  LIVE_BACKEND_REASONING?: string;
+  /** GPT-Live output voice (default marin). */
+  LIVE_VOICE?: string;
+  /** Base for the GPT-Live WebSocket endpoint (default
+   *  https://api.openai.com/v1). */
+  LIVE_API_BASE_URL?: string;
+  /** Output gap that ends a GPT-Live answer, in ms (default 1500) - the API
+   *  emits no authoritative turn-completed event. */
+  LIVE_END_SILENCE_MS?: string;
   /** Cap on /analyze reply tokens (default 500). */
   ANALYZE_MAX_TOKENS?: string;
   /** Style lines appended to the analyze system prompt depending on the
@@ -1304,6 +1323,544 @@ function splitCaption(transcript: string, lang: Lang): { caption: string; detail
   return { caption, detail };
 }
 
+// ---------------------------------------------------------------------------
+// /live upstream drivers
+//
+// The device contract (TOI1 + A/T/E/X frames) is owned by handleLive() below;
+// everything upstream-specific lives in a LiveDriver so the engine can be
+// swapped with a var — and swapped again mid-request when the primary fails
+// before a single audio byte reached the device.
+// ---------------------------------------------------------------------------
+
+// GPT-Live has no authoritative "turn finished" event ("There is no item ID or
+// authoritative turn-completed event" — live-conversations guide), so the end
+// of the answer is inferred from a gap in output deltas with no delegated
+// Responses call still running.
+const LIVE_END_SILENCE_MS = 1500;
+// session.started must arrive quickly — it is the first server event after
+// session.start and gates everything else. Missing it = fall back to Realtime.
+const LIVE_SESSION_START_TIMEOUT_MS = 10_000;
+// The backend may reason for a while before the voice model speaks. This is
+// the guard for "the session is alive (response.event deltas keep the idle
+// timer fed) but no audio is ever produced".
+const LIVE_FIRST_AUDIO_TIMEOUT_MS = 20_000;
+// session.close → session.closed carries the usage we log; never block the
+// device's terminal frame on it for longer than this.
+const LIVE_CLOSE_WAIT_MS = 2_000;
+// 100 ms of PCM16 mono @24 kHz, the documented append granularity.
+const LIVE_AUDIO_CHUNK_BYTES = 4800;
+// Push-to-talk has no VAD commit event, so the recording is followed by
+// silence to let the server's turn detection close the user turn.
+const LIVE_TAIL_SILENCE_MS = 800;
+const LIVE_MAX_HISTORY_PAIRS = 10;
+const LIVE_MAX_HISTORY_CHARS = 500;
+const LIVE_MAX_HISTORY_BYTES = 32 * 1024;
+
+function liveEngine(env: Env): "gpt-live" | "realtime" {
+  return env.LIVE_ENGINE === "realtime" ? "realtime" : "gpt-live";
+}
+
+function liveBase(env: Env): string {
+  return (env.LIVE_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+function liveModel(env: Env): string {
+  return env.LIVE_MODEL || "gpt-live-1";
+}
+
+function liveBackendModel(env: Env): string {
+  return env.LIVE_BACKEND_MODEL || "gpt-5.6-terra";
+}
+
+function liveVoice(env: Env): string {
+  return env.LIVE_VOICE || "marin";
+}
+
+function liveEndSilenceMs(env: Env): number {
+  const v = Number(env.LIVE_END_SILENCE_MS);
+  return Number.isFinite(v) && v >= 200 && v <= 10_000 ? v : LIVE_END_SILENCE_MS;
+}
+
+// Recent Q&A the device may append to the body (X-History-Length). Kept as a
+// plain pair list so both drivers can shape it their own way.
+type LiveHistoryPair = { q: string; a: string };
+
+function parseLiveHistory(raw: string): LiveHistoryPair[] | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data)) return null;
+  const out: LiveHistoryPair[] = [];
+  const clip = (v: unknown): string =>
+    typeof v === "string" ? Array.from(v).slice(0, LIVE_MAX_HISTORY_CHARS).join("") : "";
+  for (const entry of data.slice(-LIVE_MAX_HISTORY_PAIRS)) {
+    if (!isRecord(entry)) return null;
+    const q = clip(entry.q);
+    const a = clip(entry.a);
+    if (!q && !a) continue;
+    out.push({ q, a });
+  }
+  return out;
+}
+
+// Responses-style prior turns: what GPT-Live's session.input wants, and what
+// the Realtime driver prepends to its one-shot response.create input.
+function liveHistoryItems(history: LiveHistoryPair[]): unknown[] {
+  const items: unknown[] = [];
+  for (const { q, a } of history) {
+    if (q) items.push({ type: "message", role: "user", content: [{ type: "input_text", text: q }] });
+    if (a) items.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: a }] });
+  }
+  return items;
+}
+
+// The live (voice) model only speaks; the photo and every factual question go
+// to the delegated Responses backend. Keep these short — the live prompt
+// controls speaking behaviour, the procedure lives in the backend prompt.
+const GPT_LIVE_VOICE_INSTRUCTIONS: Record<Lang, string> = {
+  ja: `あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。
+写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。
+バックエンドの結果が届いたら、それをもとに2〜4文で話します。専門用語は避け、聞いて楽しい語り口にしてください。`,
+  en: `You are the narrator for ToiCamera, a small camera gadget. Speak in friendly, slightly humorous English, and speak only in English.
+Always delegate describing the photo and any factual or knowledge question to the backend, and wait for its result before answering — never guess it. A short acknowledgement such as "let me take a look" is fine while you wait.
+Once the backend result arrives, speak it back in 2 to 4 sentences. Avoid jargon and keep it enjoyable to hear.`,
+  zh: `你是带摄像头的小型设备“ToiCamera”的解说员。请用亲切、略带幽默的口语说话，并且只使用简体中文。
+解说照片以及任何需要事实或知识的问题，都必须委托给后端，并在结果返回之前不要猜测答案。等待时可以说一句“我看看”之类的简短应答。
+收到后端结果后，用2至4句话讲出来。避免专业术语，让解说轻松好懂。`,
+};
+
+// The delegated Responses model is the one that actually looks at the photo.
+const GPT_LIVE_BACKEND_INSTRUCTIONS: Record<Lang, string> = {
+  ja: `あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザーが撮った写真を見て答えます。
+写真の解説を求められたときは、まず主題を表す1文の見出し(15文字以内)を書き、続けて2〜3文(合計150文字以内)で内容を説明し、豆知識やちょっとした一言を添えてください。
+質問されたときは、写真を文脈として使いつつ一般知識でも補い、4文以内で質問に直接答えてください。
+出力は音声で読み上げられます。箇条書きや記号は使わず、かならず日本語で答えてください。`,
+  en: `You are the description engine for ToiCamera, a small camera gadget. You look at the photo the user took and answer from it.
+When asked to describe the photo, start with a one-sentence headline (at most 15 words) naming the main subject, then 2 to 3 sentences describing it with a fun fact or playful observation.
+When asked a question, answer it directly in at most 4 sentences, using the photo as context and filling in with general knowledge.
+Your output is read aloud: no bullet points or markup, and always reply in English.`,
+  zh: `你是带摄像头的小型设备“ToiCamera”的解说引擎。请观察用户拍摄的照片并据此回答。
+被要求解说照片时，先写一句概括主体的短标题(不超过15个字)，随后用2至3句话(合计不超过150个字)说明画面内容，并补充一个小知识或有趣点评。
+被提问时，请以照片为背景并结合一般知识，用不超过4句话直接回答问题。
+输出会被朗读出来：不要使用项目符号或标记，并且必须用简体中文回答。`,
+};
+
+// The text half of the response.item.create the backend receives with the photo.
+const GPT_LIVE_BACKEND_TEXT: Record<Lang, { capture: string; ask: string }> = {
+  ja: {
+    capture: "この写真を解説してください。",
+    ask: "ユーザーはこれからこの写真について音声で質問します。その質問に、この写真を文脈として答えてください。",
+  },
+  en: {
+    capture: "Describe this photo.",
+    ask: "The user will now ask a spoken question about this photo. Answer it, using the photo as context.",
+  },
+  zh: {
+    capture: "请解说这张照片。",
+    ask: "用户接下来会用语音询问这张照片。请以这张照片为背景回答那个问题。",
+  },
+};
+
+// Everything a driver is allowed to do to the device-facing stream. The shell
+// owns framing, timeouts, the size cap and the terminal frame; a driver only
+// reports what the upstream said.
+interface LiveCtx {
+  readonly mode: LiveMode;
+  readonly lang: Lang;
+  /** JPEG as a data: URL, ready to drop into an image content part. */
+  readonly imageUrl: string;
+  /** ask: the recorded question as base64 PCM16 mono 24 kHz (one blob). */
+  readonly audioB64: string;
+  /** ask: the same audio as samples, for drivers that stream it in chunks. */
+  readonly pcm: Int16Array | null;
+  readonly history: LiveHistoryPair[];
+  pushAudio(bytes: Uint8Array): void;
+  pushTranscript(text: string): void;
+  setQuestion(text: string): void;
+  /** Text the delegated backend produced (gpt-live). Preferred over the
+   *  spoken transcript for the on-screen caption/detail, because the voice
+   *  model may open with a filler ("let me take a look") that would
+   *  otherwise become the headline. */
+  appendBackendText(text: string): void;
+  finishCompleted(): void;
+  fail(message: string): void;
+  armIdle(): void;
+  /** Has any audio reached the device yet? (gates fallback vs. truncated) */
+  hasAudio(): boolean;
+  /** Extra key=value for the one-line completion log (e.g. upstream usage). */
+  note(text: string): void;
+}
+
+interface LiveDriver {
+  readonly name: string;
+  /** Opens the upstream socket. null = could not connect (already logged). */
+  connect(): Promise<WebSocket | null>;
+  /** Called right after the socket is accepted. */
+  onOpen(ws: WebSocket, ctx: LiveCtx): void;
+  onMessage(ws: WebSocket, msg: Record<string, unknown>, ctx: LiveCtx): void;
+  /** Upstream hung up before the shell finished. */
+  onSocketClose?(ctx: LiveCtx): void;
+  /** Drop any driver-owned timers (the shell is done with this driver). */
+  stop?(): void;
+}
+
+// Workers open outbound WebSockets with an https URL + `Upgrade: websocket`
+// (a wss:// URL is rejected by the Workers fetch()).
+async function liveConnect(url: string, env: Env, label: string): Promise<WebSocket | null> {
+  try {
+    const upstream = await fetch(url, {
+      headers: { Upgrade: "websocket", Authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}` },
+    });
+    const socket = upstream.webSocket;
+    if (!socket) {
+      console.error(`[toi] live: ${label} no websocket in upstream response`, upstream.status);
+      await upstream.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    socket.accept();
+    return socket;
+  } catch (err) {
+    console.error(`[toi] live: ${label} connect failed`, err);
+    return null;
+  }
+}
+
+// --- Realtime (gpt-realtime) — the #69 implementation, now a fallback ------
+function realtimeLiveDriver(env: Env): LiveDriver {
+  const model = env.REALTIME_MODEL || "gpt-realtime";
+  return {
+    name: "realtime",
+    connect() {
+      return liveConnect(
+        `${realtimeBase(env)}/realtime?model=${encodeURIComponent(model)}`,
+        env,
+        "realtime",
+      );
+    },
+    onOpen() {
+      // Realtime speaks first: everything is sent on session.created.
+    },
+    onMessage(ws, msg, ctx) {
+      const type = msg.type;
+      if (type === "session.created") {
+        ws.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              type: "realtime",
+              output_modalities: ["audio"],
+              instructions: LIVE_INSTRUCTIONS[ctx.lang][ctx.mode],
+              audio: {
+                // turn_detection: null — one shot, the Worker decides when
+                // the turn ends (the audio is sent complete, in the request).
+                input: {
+                  format: { type: "audio/pcm", rate: LIVE_RATE },
+                  turn_detection: null,
+                  // ask only: transcribe the spoken question so the device
+                  // can log "Q: …" (best effort; may not arrive for
+                  // out-of-band input — then `question` stays empty). Kept
+                  // off the capture path so an API rejection of this field
+                  // could never take photo narration down with it.
+                  ...(ctx.mode === "ask"
+                    ? { transcription: { model: "gpt-4o-mini-transcribe" } }
+                    : {}),
+                },
+                output: { voice: realtimeVoice(env), format: { type: "audio/pcm", rate: LIVE_RATE } },
+              },
+            },
+          }),
+        );
+        const content: unknown[] = [{ type: "input_image", image_url: ctx.imageUrl }];
+        if (ctx.audioB64) content.push({ type: "input_audio", audio: ctx.audioB64 });
+        content.push({ type: "input_text", text: LIVE_USER_TEXT[ctx.lang][ctx.mode] });
+        ws.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              conversation: "none",
+              output_modalities: ["audio"],
+              // Prior Q&A first, then this turn's photo (+ audio).
+              input: [
+                ...liveHistoryItems(ctx.history),
+                { type: "message", role: "user", content },
+              ],
+            },
+          }),
+        );
+      } else if (type === "response.output_audio.delta" || type === "response.audio.delta") {
+        const delta = msg.delta;
+        if (typeof delta !== "string" || !delta) return;
+        let bytes: Uint8Array;
+        try {
+          bytes = base64ToBytes(delta);
+        } catch (err) {
+          console.error("[toi] live: bad audio delta", err);
+          ctx.fail("realtime bad audio delta");
+          return;
+        }
+        ctx.pushAudio(bytes);
+      } else if (
+        type === "response.output_audio_transcript.delta" ||
+        type === "response.audio_transcript.delta"
+      ) {
+        const delta = msg.delta;
+        if (typeof delta !== "string" || !delta) return;
+        ctx.pushTranscript(delta);
+      } else if (type === "conversation.item.input_audio_transcription.completed") {
+        const t = msg.transcript;
+        if (typeof t === "string" && t.trim()) ctx.setQuestion(t.trim());
+      } else if (type === "response.done") {
+        const status = (msg.response as { status?: unknown } | undefined)?.status;
+        if (status !== "completed") {
+          console.warn("[toi] live: response.done status", status, JSON.stringify(msg).slice(0, 300));
+          ctx.fail(`realtime ${String(status)}`);
+          return;
+        }
+        ctx.finishCompleted();
+      } else if (type === "error" || type === "response.error") {
+        console.error("[toi] live: error event", JSON.stringify(msg).slice(0, 300));
+        ctx.fail("realtime error");
+      }
+    },
+    onSocketClose(ctx) {
+      console.error("[toi] live: socket closed before response.done");
+      ctx.fail("realtime disconnected");
+    },
+  };
+}
+
+// --- GPT-Live-1 (voice) + Responses delegation (reasoning) -----------------
+function gptLiveDriver(env: Env): LiveDriver {
+  const model = liveModel(env);
+  const backend = liveBackendModel(env);
+  const silenceMs = liveEndSilenceMs(env);
+  let startTimer: ReturnType<typeof setTimeout> | undefined;
+  let audioTimer: ReturnType<typeof setTimeout> | undefined;
+  let endTimer: ReturnType<typeof setInterval> | undefined;
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  let started = false;
+  let closing = false;
+  let terminalSeen = false;
+  let lastOutputAt = 0;
+  // Delegated Responses calls still running — the answer is not over while
+  // the backend is still thinking, however quiet the voice channel is.
+  const inflight = new Set<string>();
+  const loggedTypes = new Set<string>();
+  let questionBuf = "";
+
+  const clearTimers = () => {
+    if (startTimer) clearTimeout(startTimer);
+    if (audioTimer) clearTimeout(audioTimer);
+    if (endTimer) clearInterval(endTimer);
+    if (closeTimer) clearTimeout(closeTimer);
+    startTimer = audioTimer = closeTimer = undefined;
+    endTimer = undefined;
+  };
+
+  // Graceful end: ask for session.close, log the usage it answers with, then
+  // hand the terminal frame to the shell (never waiting on it for long).
+  const beginClose = (ws: WebSocket, ctx: LiveCtx) => {
+    if (closing) return;
+    closing = true;
+    if (startTimer) clearTimeout(startTimer);
+    if (audioTimer) clearTimeout(audioTimer);
+    if (endTimer) clearInterval(endTimer);
+    startTimer = audioTimer = undefined;
+    endTimer = undefined;
+    try {
+      ws.send(JSON.stringify({ type: "session.close" }));
+    } catch {
+      // socket already gone — the terminal frame still goes out below
+    }
+    closeTimer = setTimeout(() => {
+      console.warn("[toi] live: gpt-live no session.closed within", LIVE_CLOSE_WAIT_MS, "ms");
+      ctx.finishCompleted();
+    }, LIVE_CLOSE_WAIT_MS);
+  };
+
+  const maybeEnd = (ws: WebSocket, ctx: LiveCtx) => {
+    if (closing || !ctx.hasAudio() || inflight.size > 0) return;
+    if (!terminalSeen && Date.now() - lastOutputAt < silenceMs) return;
+    beginClose(ws, ctx);
+  };
+
+  const markOutput = (ws: WebSocket, ctx: LiveCtx) => {
+    lastOutputAt = Date.now();
+    if (!endTimer) endTimer = setInterval(() => maybeEnd(ws, ctx), 250);
+  };
+
+  // The photo (and what to do with it) goes to the delegated backend, not to
+  // the voice model: gpt-live-1 does not look at images itself.
+  const sendPhoto = (ws: WebSocket, ctx: LiveCtx) => {
+    const item = {
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_image", image_url: ctx.imageUrl },
+        { type: "input_text", text: GPT_LIVE_BACKEND_TEXT[ctx.lang][ctx.mode] },
+      ],
+    };
+    ws.send(JSON.stringify({ type: "response.item.create", event_id: "toi_photo", item }));
+  };
+
+  // Push-to-talk: the whole recording, then silence so the server's turn
+  // detection sees the end of the user's turn.
+  const sendAudio = (ws: WebSocket, ctx: LiveCtx) => {
+    if (!ctx.pcm) return;
+    const bytes = int16ToLeBytes(ctx.pcm);
+    let sent = 0;
+    for (let off = 0; off < bytes.length; off += LIVE_AUDIO_CHUNK_BYTES) {
+      const chunk = bytes.subarray(off, Math.min(off + LIVE_AUDIO_CHUNK_BYTES, bytes.length));
+      ws.send(JSON.stringify({ type: "session.input_audio.append", audio: bytesToBase64(chunk) }));
+      sent += chunk.length;
+    }
+    const silence = new Uint8Array(LIVE_AUDIO_CHUNK_BYTES); // zeros = PCM16 silence
+    const silenceChunks = Math.round((LIVE_TAIL_SILENCE_MS * LIVE_RATE * 2) / 1000 / LIVE_AUDIO_CHUNK_BYTES);
+    const silenceB64 = bytesToBase64(silence);
+    for (let i = 0; i < silenceChunks; i++) {
+      ws.send(JSON.stringify({ type: "session.input_audio.append", audio: silenceB64 }));
+    }
+    console.log(
+      `[toi] live: gpt-live sent ${sent} B pcm + ${silenceChunks * LIVE_AUDIO_CHUNK_BYTES} B silence`,
+    );
+  };
+
+  return {
+    name: "gpt-live",
+    connect() {
+      return liveConnect(`${liveBase(env)}/live/sessions`, env, "gpt-live");
+    },
+    onOpen(ws, ctx) {
+      const session: Record<string, unknown> = {
+        model,
+        instructions: GPT_LIVE_VOICE_INSTRUCTIONS[ctx.lang],
+        audio: {
+          format: { type: "audio/pcm", rate: LIVE_RATE },
+          output: { voice: liveVoice(env) },
+        },
+        delegation: {
+          type: "responses",
+          responses: {
+            model: backend,
+            instructions: GPT_LIVE_BACKEND_INSTRUCTIONS[ctx.lang],
+            ...(env.LIVE_BACKEND_REASONING ? { reasoning: { effort: env.LIVE_BACKEND_REASONING } } : {}),
+            max_output_tokens: 400,
+          },
+        },
+      };
+      const history = liveHistoryItems(ctx.history);
+      if (history.length) session.input = history;
+      ws.send(JSON.stringify({ type: "session.start", event_id: "toi_start", session }));
+      startTimer = setTimeout(() => {
+        ctx.fail("gpt-live no session.started");
+      }, LIVE_SESSION_START_TIMEOUT_MS);
+    },
+    onMessage(ws, msg, ctx) {
+      const type = typeof msg.type === "string" ? msg.type : "";
+      if (type === "session.started") {
+        if (started) return;
+        started = true;
+        if (startTimer) clearTimeout(startTimer);
+        startTimer = undefined;
+        console.log("[toi] live: gpt-live session.started", JSON.stringify(msg).slice(0, 300));
+        sendPhoto(ws, ctx);
+        if (ctx.mode === "ask") sendAudio(ws, ctx);
+        audioTimer = setTimeout(() => {
+          ctx.fail("gpt-live no audio");
+        }, LIVE_FIRST_AUDIO_TIMEOUT_MS);
+      } else if (type === "session.output_audio.delta") {
+        const delta = msg.delta;
+        if (typeof delta !== "string" || !delta) return;
+        let bytes: Uint8Array;
+        try {
+          bytes = base64ToBytes(delta);
+        } catch (err) {
+          console.error("[toi] live: gpt-live bad audio delta", err);
+          ctx.fail("gpt-live bad audio delta");
+          return;
+        }
+        if (audioTimer) {
+          clearTimeout(audioTimer);
+          audioTimer = undefined;
+        }
+        ctx.pushAudio(bytes);
+        markOutput(ws, ctx);
+      } else if (type === "session.output_transcript.delta") {
+        const delta = msg.delta;
+        if (typeof delta !== "string" || !delta) return;
+        ctx.pushTranscript(delta);
+        markOutput(ws, ctx);
+      } else if (type === "session.input_transcript.delta") {
+        const delta = msg.delta;
+        if (typeof delta === "string") questionBuf += delta;
+      } else if (type === "session.input_transcript.done") {
+        const t = typeof msg.transcript === "string" ? msg.transcript : questionBuf;
+        if (t.trim()) ctx.setQuestion(t.trim());
+      } else if (type === "session.output_transcript.done" || type === "session.output_audio.done") {
+        // Undocumented as of 2026-09-13 — honoured if the server does emit it.
+        terminalSeen = true;
+        markOutput(ws, ctx);
+        maybeEnd(ws, ctx);
+      } else if (type === "response.event") {
+        // Delegated Responses stream. Only the lifecycle matters here: the
+        // text itself comes back to the device as spoken audio.
+        const inner = isRecord(msg.event) ? msg.event : undefined;
+        const innerType = typeof inner?.type === "string" ? inner.type : "";
+        const id = typeof msg.delegation_id === "string" ? msg.delegation_id : "delegation";
+        if (innerType === "response.output_text.delta" && typeof inner?.delta === "string") {
+          ctx.appendBackendText(inner.delta);
+        }
+        if (innerType === "response.created" || innerType === "response.in_progress") {
+          inflight.add(id);
+        } else if (
+          innerType === "response.completed" ||
+          innerType === "response.done" ||
+          innerType === "response.failed" ||
+          innerType === "response.incomplete"
+        ) {
+          inflight.delete(id);
+        }
+        if (!loggedTypes.has(`response.event:${innerType}`)) {
+          loggedTypes.add(`response.event:${innerType}`);
+          console.log("[toi] live: gpt-live response.event", innerType, `backend=${backend}`);
+        }
+      } else if (type === "session.usage.updated") {
+        if (msg.usage !== undefined) ctx.note(`usage=${JSON.stringify(msg.usage)}`);
+      } else if (type === "session.closed") {
+        if (msg.usage !== undefined) ctx.note(`usage=${JSON.stringify(msg.usage)}`);
+        console.log("[toi] live: gpt-live session.closed", JSON.stringify(msg).slice(0, 300));
+        clearTimers();
+        if (closing || ctx.hasAudio()) ctx.finishCompleted();
+        else ctx.fail("gpt-live closed before audio");
+      } else if (type === "error") {
+        console.error("[toi] live: gpt-live error event", JSON.stringify(msg).slice(0, 400));
+        ctx.fail("gpt-live error");
+      } else if (type === "session.updated" || type === "session.input_audio.committed") {
+        // Acknowledgements — nothing to do, the idle timer was already fed.
+      } else if (!loggedTypes.has(type)) {
+        // The API is days old: never drop an unknown event silently.
+        loggedTypes.add(type);
+        console.log("[toi] gpt-live event", type);
+      }
+    },
+    onSocketClose(ctx) {
+      clearTimers();
+      if (closing || ctx.hasAudio()) {
+        // We asked for the close, or we already have playable speech.
+        if (closing) console.log("[toi] live: gpt-live socket closed after session.close");
+        ctx.finishCompleted();
+        return;
+      }
+      console.error("[toi] live: gpt-live socket closed before audio");
+      ctx.fail("gpt-live disconnected");
+    },
+    stop: clearTimers,
+  };
+}
+
 async function handleLive(request: Request, env: Env): Promise<Response> {
   const mode = request.headers.get("x-live") as LiveMode | null;
   if (mode !== "capture" && mode !== "ask") {
@@ -1314,19 +1871,45 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
   if (!rawLength || !Number.isInteger(jpegLength) || jpegLength < 1 || jpegLength > LIVE_MAX_JPEG_BYTES) {
     return json({ error: "X-Jpeg-Length missing or out of range" }, 400);
   }
+  // Optional third body section: recent Q&A pairs as JSON, appended after the
+  // JPEG (+ WAV) so the device never has to buffer a multipart request.
+  const rawHistoryLength = request.headers.get("x-history-length");
+  let historyLength = 0;
+  if (rawHistoryLength !== null) {
+    historyLength = Number(rawHistoryLength);
+    if (
+      !Number.isInteger(historyLength) ||
+      historyLength < 0 ||
+      historyLength > LIVE_MAX_HISTORY_BYTES
+    ) {
+      return json({ error: "X-History-Length out of range" }, 400);
+    }
+  }
   if (!env.TOICAMERA_TTS_API_KEY) {
     return json({ error: "realtime unavailable" }, 503);
   }
-
   // Bound the body before reading it (X-Jpeg-Length only bounds the JPEG).
+  const maxBody = LIVE_MAX_JPEG_BYTES + LIVE_MAX_WAV_BYTES + LIVE_MAX_HISTORY_BYTES;
   const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > LIVE_MAX_JPEG_BYTES + LIVE_MAX_WAV_BYTES) {
+  if (declared > maxBody) {
     return json({ error: "body too large" }, 413);
   }
-  const body = new Uint8Array(await request.arrayBuffer());
-  if (body.length > LIVE_MAX_JPEG_BYTES + LIVE_MAX_WAV_BYTES) {
+  const raw = new Uint8Array(await request.arrayBuffer());
+  if (raw.length > maxBody) {
     return json({ error: "body too large" }, 413);
   }
+  if (raw.length < historyLength) {
+    return json({ error: "body shorter than X-History-Length" }, 400);
+  }
+  let history: LiveHistoryPair[] = [];
+  if (historyLength > 0) {
+    const parsed = parseLiveHistory(
+      new TextDecoder().decode(raw.subarray(raw.length - historyLength)),
+    );
+    if (!parsed) return json({ error: "X-History-Length section is not [{q,a}] JSON" }, 400);
+    history = parsed;
+  }
+  const body = raw.subarray(0, raw.length - historyLength);
   if (body.length < jpegLength) {
     return json({ error: "body shorter than X-Jpeg-Length" }, 400);
   }
@@ -1339,49 +1922,54 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
   }
 
   let audioB64 = "";
+  let pcm: Int16Array | null = null;
   if (mode === "ask") {
     const wav = body.subarray(jpegLength);
     if (wav.length < LIVE_MIN_WAV_BYTES) return json({ error: "audio too short" }, 400);
     if (wav.length > LIVE_MAX_WAV_BYTES) return json({ error: "audio too large" }, 413);
-    const pcm = wavToPcm24k(wav);
+    pcm = wavToPcm24k(wav);
     if (!pcm) return json({ error: "unsupported wav (PCM 16-bit mono expected)" }, 400);
     audioB64 = bytesToBase64(int16ToLeBytes(pcm));
   }
 
   const lang = pickLang(request);
   const imageUrl = `data:image/jpeg;base64,${bytesToBase64(jpeg)}`;
-  const model = env.REALTIME_MODEL || "gpt-realtime";
-  const voice = realtimeVoice(env);
 
-  // Workers open outbound WebSockets with an https URL + `Upgrade: websocket`
-  // (a wss:// URL is rejected by the Workers fetch()).
-  let ws: WebSocket;
-  try {
-    const upstream = await fetch(
-      `${realtimeBase(env)}/realtime?model=${encodeURIComponent(model)}`,
-      { headers: { Upgrade: "websocket", Authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}` } },
+  // Primary engine, then the Realtime driver as the in-request fallback. With
+  // LIVE_ENGINE=realtime there is only ever the one driver (#69 behaviour).
+  const drivers: LiveDriver[] =
+    liveEngine(env) === "realtime"
+      ? [realtimeLiveDriver(env)]
+      : [gptLiveDriver(env), realtimeLiveDriver(env)];
+
+  // Connect before the response starts so a dead upstream is still a plain
+  // HTTP error (the device retries its old path), not a TOI1 stream with an X.
+  let driverIndex = 0;
+  let socket = await drivers[0].connect();
+  if (!socket && drivers.length > 1) {
+    console.log(
+      `[toi] live: gpt-live failed before audio (connect failed) — falling back to realtime`,
     );
-    const socket = upstream.webSocket;
-    if (!socket) {
-      console.error("[toi] live: no websocket in upstream response", upstream.status);
-      await upstream.body?.cancel().catch(() => undefined);
-      return json({ error: "realtime upgrade failed", status: upstream.status }, 502);
-    }
-    socket.accept();
-    ws = socket;
-  } catch (err) {
-    console.error("[toi] live: connect failed", err);
-    return json({ error: "realtime connect failed" }, 502);
+    driverIndex = 1;
+    socket = await drivers[1].connect();
+  }
+  if (!socket) {
+    return json({ error: `${drivers[driverIndex].name} connect failed` }, 502);
   }
 
   const encoder = new TextEncoder();
   const startedAt = Date.now();
   let transcript = "";
-  let question = ""; // ask: what the user said (Realtime input transcription)
+  let backendText = "";
+  let question = ""; // ask: what the user said (upstream input transcription)
   let pcmBytes = 0;
   let firstAudioMs = -1;
   let capped = false;
   let settled = false;
+  let notes: string[] = [];
+  let generation = 0;
+  let ws: WebSocket = socket;
+  let driver: LiveDriver = drivers[driverIndex];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -1407,6 +1995,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         settled = true;
         if (timer) clearTimeout(timer);
         if (hardTimer) clearTimeout(hardTimer);
+        driver.stop?.();
         push(frame);
         try {
           controller.close();
@@ -1416,102 +2005,74 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         closeSocket();
       };
       const endFrame = (status: "completed" | "truncated"): Uint8Array => {
-        const { caption, detail } = splitCaption(transcript, lang);
+        // Screen text comes from the backend's own answer when there is one;
+        // the spoken transcript may start with a filler sentence.
+        const { caption, detail } = splitCaption(backendText.trim() || transcript, lang);
         const ms = Date.now() - startedAt;
+        const backend = driver.name === "gpt-live" ? liveBackendModel(env) : "-";
         console.log(
-          `[toi] live: ${mode} ${lang} ${status} ${pcmBytes} B pcm, ${ms} ms, first audio at ${firstAudioMs} ms`,
+          `[toi] live: ${driver.name} ${mode} ${lang} ${status} ${pcmBytes} B pcm, ${ms} ms, first audio at ${firstAudioMs} ms, backend=${backend}, ${notes.join(" ") || "usage=-"}`,
+        );
+        // Answer quality is judged from the logs on device tests.
+        console.log(
+          `[toi] live: question=${JSON.stringify(question)} transcript=${JSON.stringify(transcript.slice(0, 120))}`,
         );
         return liveFrame(
           "E",
           encoder.encode(JSON.stringify({ caption, detail, transcript, question, status, pcmBytes, ms })),
         );
       };
-      // Before any audio: X → the device falls back to the old path. After
-      // audio started: E(truncated) → the device keeps what it already played
-      // instead of narrating the same photo twice.
-      const fail = (message: string) => {
-        if (pcmBytes > 0) {
-          console.warn("[toi] live: ending as truncated —", message);
-          finish(endFrame("truncated"));
-        } else {
-          finish(liveFrame("X", encoder.encode(JSON.stringify({ error: message }))));
-        }
-      };
       const armIdle = () => {
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           console.error("[toi] live: idle timeout waiting for upstream");
-          fail("realtime timeout");
+          ctx.fail(`${driver.name} timeout`);
         }, LIVE_IDLE_TIMEOUT_MS);
       };
 
-      push(encoder.encode(LIVE_MAGIC));
-      armIdle();
-      hardTimer = setTimeout(() => {
-        console.error("[toi] live: hard timeout");
-        fail("realtime timeout");
-      }, LIVE_MAX_TOTAL_MS);
-
-      ws.addEventListener("message", (event: MessageEvent) => {
-        if (settled || typeof event.data !== "string") return;
-        armIdle();
-        let msg: Record<string, unknown>;
-        try {
-          msg = JSON.parse(event.data);
-        } catch {
+      // Swap to the Realtime driver mid-stream. The device is already reading
+      // TOI1 and has heard nothing yet, so it sees one continuous response.
+      const fallbackToRealtime = async (reason: string) => {
+        console.log(`[toi] live: gpt-live failed before audio (${reason}) — falling back to realtime`);
+        generation++;
+        driver.stop?.();
+        closeSocket();
+        // Nothing was played, but transcript deltas may already be on the
+        // wire; the E frame carries the authoritative text either way.
+        transcript = "";
+        question = "";
+        notes = [];
+        driverIndex = 1;
+        const next = drivers[1];
+        const sock = await next.connect();
+        if (settled) {
+          try {
+            sock?.close();
+          } catch {
+            // already closing/closed
+          }
           return;
         }
-        const type = msg.type;
-        if (type === "session.created") {
-          ws.send(
-            JSON.stringify({
-              type: "session.update",
-              session: {
-                type: "realtime",
-                output_modalities: ["audio"],
-                instructions: LIVE_INSTRUCTIONS[lang][mode],
-                audio: {
-                  // turn_detection: null — one shot, the Worker decides when
-                  // the turn ends (the audio is sent complete, in the request).
-                  input: {
-                    format: { type: "audio/pcm", rate: LIVE_RATE },
-                    turn_detection: null,
-                    // ask only: transcribe the spoken question so the device
-                    // can log "Q: …" (best effort; may not arrive for
-                    // out-of-band input — then `question` stays empty). Kept
-                    // off the capture path so an API rejection of this field
-                    // could never take photo narration down with it.
-                    ...(mode === "ask" ? { transcription: { model: "gpt-4o-mini-transcribe" } } : {}),
-                  },
-                  output: { voice, format: { type: "audio/pcm", rate: LIVE_RATE } },
-                },
-              },
-            }),
-          );
-          const content: unknown[] = [{ type: "input_image", image_url: imageUrl }];
-          if (audioB64) content.push({ type: "input_audio", audio: audioB64 });
-          content.push({ type: "input_text", text: LIVE_USER_TEXT[lang][mode] });
-          ws.send(
-            JSON.stringify({
-              type: "response.create",
-              response: {
-                conversation: "none",
-                output_modalities: ["audio"],
-                input: [{ type: "message", role: "user", content }],
-              },
-            }),
-          );
-        } else if (type === "response.output_audio.delta" || type === "response.audio.delta") {
-          const delta = msg.delta;
-          if (typeof delta !== "string" || !delta) return;
-          let bytes: Uint8Array;
-          try {
-            bytes = base64ToBytes(delta);
-          } catch (err) {
-            console.error("[toi] live: bad audio delta", err);
-            fail("realtime bad audio delta");
-            return;
-          }
+        if (!sock) {
+          finish(liveFrame("X", encoder.encode(JSON.stringify({ error: "realtime connect failed" }))));
+          return;
+        }
+        driver = next;
+        ws = sock;
+        bind(sock, generation);
+        armIdle();
+        next.onOpen(sock, ctx);
+      };
+
+      const ctx: LiveCtx = {
+        mode,
+        lang,
+        imageUrl,
+        audioB64,
+        pcm,
+        history,
+        pushAudio(bytes) {
+          if (settled || !bytes.length) return;
           if (firstAudioMs < 0) firstAudioMs = Date.now() - startedAt;
           if (pcmBytes + bytes.length > LIVE_MAX_PCM_BYTES) {
             // Keep the session running to the terminal frame, just stop
@@ -1524,46 +2085,90 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
           }
           pcmBytes += bytes.length;
           push(liveFrame("A", bytes));
-        } else if (
-          type === "response.output_audio_transcript.delta" ||
-          type === "response.audio_transcript.delta"
-        ) {
-          const delta = msg.delta;
-          if (typeof delta !== "string" || !delta) return;
-          transcript += delta;
-          push(liveFrame("T", encoder.encode(delta)));
-        } else if (type === "conversation.item.input_audio_transcription.completed") {
-          const t = msg.transcript;
-          if (typeof t === "string" && t.trim()) question = t.trim();
-        } else if (type === "response.done") {
-          const status = (msg.response as { status?: unknown } | undefined)?.status;
-          if (status !== "completed") {
-            console.warn("[toi] live: response.done status", status, JSON.stringify(msg).slice(0, 300));
-            fail(`realtime ${String(status)}`);
+        },
+        pushTranscript(text) {
+          if (settled || !text) return;
+          transcript += text;
+          push(liveFrame("T", encoder.encode(text)));
+        },
+        appendBackendText(text) {
+          if (settled || !text) return;
+          backendText += text;
+        },
+        setQuestion(text) {
+          if (text) question = text;
+        },
+        finishCompleted() {
+          if (settled) return;
+          finish(endFrame(capped ? "truncated" : "completed"));
+        },
+        // Before any audio: X → the device falls back to the old path (or, for
+        // gpt-live, the Realtime driver takes over first). After audio
+        // started: E(truncated) → the device keeps what it already played
+        // instead of narrating the same photo twice.
+        fail(message) {
+          if (settled) return;
+          if (pcmBytes > 0) {
+            console.warn("[toi] live: ending as truncated —", message);
+            finish(endFrame("truncated"));
             return;
           }
-          finish(endFrame(capped ? "truncated" : "completed"));
-        } else if (type === "error" || type === "response.error") {
-          console.error("[toi] live: error event", JSON.stringify(msg).slice(0, 300));
-          fail("realtime error");
-        }
-      });
-      ws.addEventListener("close", () => {
-        if (settled) return;
-        console.error("[toi] live: socket closed before response.done");
-        fail("realtime disconnected");
-      });
-      ws.addEventListener("error", (event: ErrorEvent) => {
-        if (settled) return; // our own close() after finish() also lands here
-        console.error("[toi] live: socket error", event.message || event);
-        fail("realtime socket error");
-      });
+          if (driverIndex === 0 && drivers.length > 1) {
+            void fallbackToRealtime(message);
+            return;
+          }
+          finish(liveFrame("X", encoder.encode(JSON.stringify({ error: message }))));
+        },
+        armIdle,
+        hasAudio: () => pcmBytes > 0,
+        note(text) {
+          notes.push(text);
+        },
+      };
+
+      const bind = (sock: WebSocket, gen: number) => {
+        sock.addEventListener("message", (event: MessageEvent) => {
+          if (settled || gen !== generation || typeof event.data !== "string") return;
+          armIdle();
+          let msg: Record<string, unknown>;
+          try {
+            msg = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+          driver.onMessage(sock, msg, ctx);
+        });
+        sock.addEventListener("close", () => {
+          if (settled || gen !== generation) return;
+          if (driver.onSocketClose) driver.onSocketClose(ctx);
+          else ctx.fail(`${driver.name} disconnected`);
+        });
+        sock.addEventListener("error", (event: ErrorEvent) => {
+          // our own close() after finish() also lands here
+          if (settled || gen !== generation) return;
+          console.error("[toi] live: socket error", event.message || event);
+          ctx.fail(`${driver.name} socket error`);
+        });
+      };
+
+      push(encoder.encode(LIVE_MAGIC));
+      armIdle();
+      hardTimer = setTimeout(() => {
+        console.error("[toi] live: hard timeout");
+        // Past the point of falling back: whatever we have is the answer.
+        if (pcmBytes > 0) finish(endFrame("truncated"));
+        else finish(liveFrame("X", encoder.encode(JSON.stringify({ error: "live timeout" }))));
+      }, LIVE_MAX_TOTAL_MS);
+
+      bind(ws, generation);
+      driver.onOpen(ws, ctx);
     },
     cancel() {
       // Device hung up (fallback path, power off): stop the upstream session.
       settled = true;
       if (timer) clearTimeout(timer);
       if (hardTimer) clearTimeout(hardTimer);
+      driver.stop?.();
       try {
         ws.close();
       } catch {

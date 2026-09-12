@@ -44,7 +44,28 @@
     // cedar); empty = reuse TTS_VOICE.
     "REALTIME_MODEL": "gpt-realtime",
     "REALTIME_VOICE": "marin",
-    "REALTIME_API_BASE_URL": "https://api.openai.com/v1"
+    "REALTIME_API_BASE_URL": "https://api.openai.com/v1",
+    // POST /live (the device's "GPT Realtime" voice mode): one upstream
+    // session turns the photo (+ the recorded question) into streamed speech.
+    // LIVE_ENGINE picks the upstream:
+    //   "gpt-live"  (default) GPT-Live-1 on /v1/live/sessions. The voice model
+    //               only speaks; the photo and every factual question are
+    //               delegated to LIVE_BACKEND_MODEL over Responses, so the
+    //               answer is actually reasoned about.
+    //   "realtime"  the older gpt-realtime one-shot (REALTIME_* vars above).
+    // With "gpt-live", a GPT-Live failure BEFORE any audio reached the device
+    // falls back to the Realtime driver inside the same request, so the device
+    // never hears silence. Reuses TOICAMERA_TTS_API_KEY as the bearer token.
+    // LIVE_BACKEND_MODEL must be vision-capable (it is the one that sees the
+    // JPEG); gpt-5.6-luna is the cheaper backend. LIVE_BACKEND_REASONING is
+    // reasoning.effort for it ("" = the model's default; none/low/medium/high).
+    // LIVE_VOICE must be a GPT-Live voice name.
+    "LIVE_ENGINE": "gpt-live",
+    "LIVE_MODEL": "gpt-live-1",
+    "LIVE_BACKEND_MODEL": "gpt-5.6-terra",
+    "LIVE_BACKEND_REASONING": "",
+    "LIVE_VOICE": "marin",
+    "LIVE_API_BASE_URL": "https://api.openai.com/v1"
   }
   // Secrets (set via `npx wrangler secret put <NAME>`):
   //   TOICAMERA_MAIN_API_KEY — API key of YOUR chat/vision backend (OpenAI,
