@@ -58,14 +58,18 @@
     // never hears silence. Reuses TOICAMERA_TTS_API_KEY as the bearer token.
     // LIVE_BACKEND_MODEL must be vision-capable (it is the one that sees the
     // JPEG); gpt-5.6-luna is the cheaper backend. LIVE_BACKEND_REASONING is
-    // reasoning.effort for it ("" = the model's default; none/low/medium/high).
+    // reasoning.effort for it (default low; none/low/medium/high — reasoning
+    // tokens share max_output_tokens=2000 with the answer).
     // LIVE_VOICE must be a GPT-Live voice name.
     "LIVE_ENGINE": "gpt-live",
     "LIVE_MODEL": "gpt-live-1",
     "LIVE_BACKEND_MODEL": "gpt-5.6-terra",
-    "LIVE_BACKEND_REASONING": "",
+    "LIVE_BACKEND_REASONING": "low",
     "LIVE_VOICE": "marin",
-    "LIVE_API_BASE_URL": "https://api.openai.com/v1"
+    "LIVE_API_BASE_URL": "https://api.openai.com/v1",
+    // ms of upstream silence (after the delegated answer completed) that ends
+    // a /live answer. Raise it if answers get cut between sentences.
+    "LIVE_END_SILENCE_MS": "1500"
   }
   // Secrets (set via `npx wrangler secret put <NAME>`):
   //   TOICAMERA_MAIN_API_KEY — API key of YOUR chat/vision backend (OpenAI,

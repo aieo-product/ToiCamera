@@ -1337,6 +1337,9 @@ function splitCaption(transcript: string, lang: Lang): { caption: string; detail
 // of the answer is inferred from a gap in output deltas with no delegated
 // Responses call still running.
 const LIVE_END_SILENCE_MS = 1500;
+// When no delegation was ever observed (unexpected on this endpoint), be
+// more patient before deciding the voice model is done.
+const LIVE_END_SILENCE_NO_DELEGATION_MS = 4000;
 // session.started must arrive quickly — it is the first server event after
 // session.start and gates everything else. Missing it = fall back to Realtime.
 const LIVE_SESSION_START_TIMEOUT_MS = 10_000;
@@ -1643,7 +1646,11 @@ function gptLiveDriver(env: Env): LiveDriver {
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
   let started = false;
   let closing = false;
-  let terminalSeen = false;
+  // Delegations seen / completed so far. The answer cannot be over while the
+  // backend is still thinking, and the voice model may pause for more than
+  // the silence window between its acknowledgement and the real answer.
+  let delegationsSeen = 0;
+  let delegationsDone = 0;
   let lastOutputAt = 0;
   // Delegated Responses calls still running — the answer is not over while
   // the backend is still thinking, however quiet the voice channel is.
@@ -1683,7 +1690,13 @@ function gptLiveDriver(env: Env): LiveDriver {
 
   const maybeEnd = (ws: WebSocket, ctx: LiveCtx) => {
     if (closing || !ctx.hasAudio() || inflight.size > 0) return;
-    if (!terminalSeen && Date.now() - lastOutputAt < silenceMs) return;
+    // A delegation was observed but has not completed yet (created event not
+    // seen either) — wait; if none was ever observed, wait a longer window so
+    // an acknowledgement followed by a delegated answer is not cut in two.
+    const gated = delegationsSeen > 0 && delegationsDone < delegationsSeen;
+    if (gated) return;
+    const window = delegationsSeen > 0 ? silenceMs : Math.max(silenceMs, LIVE_END_SILENCE_NO_DELEGATION_MS);
+    if (Date.now() - lastOutputAt < window) return;
     beginClose(ws, ctx);
   };
 
@@ -1746,8 +1759,10 @@ function gptLiveDriver(env: Env): LiveDriver {
           responses: {
             model: backend,
             instructions: GPT_LIVE_BACKEND_INSTRUCTIONS[ctx.lang],
-            ...(env.LIVE_BACKEND_REASONING ? { reasoning: { effort: env.LIVE_BACKEND_REASONING } } : {}),
-            max_output_tokens: 400,
+            // Reasoning tokens count against max_output_tokens on gpt-5.6, so
+            // keep the effort low by default and the budget generous.
+            reasoning: { effort: env.LIVE_BACKEND_REASONING || "low" },
+            max_output_tokens: 2000,
           },
         },
       };
@@ -1800,10 +1815,10 @@ function gptLiveDriver(env: Env): LiveDriver {
         const t = typeof msg.transcript === "string" ? msg.transcript : questionBuf;
         if (t.trim()) ctx.setQuestion(t.trim());
       } else if (type === "session.output_transcript.done" || type === "session.output_audio.done") {
-        // Undocumented as of 2026-09-13 — honoured if the server does emit it.
-        terminalSeen = true;
+        // Undocumented as of 2026-09-13, and if they exist they are probably
+        // per-utterance — so they only count as output activity, never as
+        // "the answer is over" (silence + delegation state decide that).
         markOutput(ws, ctx);
-        maybeEnd(ws, ctx);
       } else if (type === "response.event") {
         // Delegated Responses stream. Only the lifecycle matters here: the
         // text itself comes back to the device as spoken audio.
@@ -1814,6 +1829,7 @@ function gptLiveDriver(env: Env): LiveDriver {
           ctx.appendBackendText(inner.delta);
         }
         if (innerType === "response.created" || innerType === "response.in_progress") {
+          if (!inflight.has(id)) delegationsSeen++;
           inflight.add(id);
         } else if (
           innerType === "response.completed" ||
@@ -1821,7 +1837,10 @@ function gptLiveDriver(env: Env): LiveDriver {
           innerType === "response.failed" ||
           innerType === "response.incomplete"
         ) {
-          inflight.delete(id);
+          if (inflight.delete(id)) delegationsDone++;
+          if (innerType === "response.incomplete" || innerType === "response.failed") {
+            console.warn("[toi] live: gpt-live backend", innerType, JSON.stringify(inner).slice(0, 300));
+          }
         }
         if (!loggedTypes.has(`response.event:${innerType}`)) {
           loggedTypes.add(`response.event:${innerType}`);
@@ -1836,8 +1855,12 @@ function gptLiveDriver(env: Env): LiveDriver {
         if (closing || ctx.hasAudio()) ctx.finishCompleted();
         else ctx.fail("gpt-live closed before audio");
       } else if (type === "error") {
-        console.error("[toi] live: gpt-live error event", JSON.stringify(msg).slice(0, 400));
-        ctx.fail("gpt-live error");
+        const clientEvent = typeof msg.client_event_id === "string" ? msg.client_event_id : "";
+        console.error(
+          `[toi] live: gpt-live error event${clientEvent ? ` (rejected ${clientEvent})` : ""}`,
+          JSON.stringify(msg).slice(0, 400),
+        );
+        ctx.fail(clientEvent ? `gpt-live rejected ${clientEvent}` : "gpt-live error");
       } else if (type === "session.updated" || type === "session.input_audio.committed") {
         // Acknowledgements — nothing to do, the idle timer was already fed.
       } else if (!loggedTypes.has(type)) {
@@ -2040,6 +2063,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         // Nothing was played, but transcript deltas may already be on the
         // wire; the E frame carries the authoritative text either way.
         transcript = "";
+        backendText = "";
         question = "";
         notes = [];
         driverIndex = 1;
