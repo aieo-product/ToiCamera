@@ -58,7 +58,7 @@
     // never hears silence. Reuses TOICAMERA_TTS_API_KEY as the bearer token.
     // LIVE_BACKEND_MODEL must be vision-capable (it is the one that sees the
     // JPEG); gpt-5.6-luna is the cheaper backend. LIVE_BACKEND_REASONING is
-    // reasoning.effort for it (default low; none/low/medium/high — reasoning
+    // reasoning.effort for it (default low; none/low/medium/high, "off" omits it; reasoning
     // tokens share max_output_tokens=2000 with the answer).
     // LIVE_VOICE must be a GPT-Live voice name.
     "LIVE_ENGINE": "gpt-live",

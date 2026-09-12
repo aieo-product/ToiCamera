@@ -1340,6 +1340,9 @@ const LIVE_END_SILENCE_MS = 1500;
 // When no delegation was ever observed (unexpected on this endpoint), be
 // more patient before deciding the voice model is done.
 const LIVE_END_SILENCE_NO_DELEGATION_MS = 4000;
+// A delegated backend call that never reports completion is assumed done
+// after this long (see the watchdog in gptLiveDriver).
+const LIVE_DELEGATION_TIMEOUT_MS = 30_000;
 // session.started must arrive quickly — it is the first server event after
 // session.start and gates everything else. Missing it = fall back to Realtime.
 const LIVE_SESSION_START_TIMEOUT_MS = 10_000;
@@ -1651,6 +1654,10 @@ function gptLiveDriver(env: Env): LiveDriver {
   // the silence window between its acknowledgement and the real answer.
   let delegationsSeen = 0;
   let delegationsDone = 0;
+  // Watchdog for a delegation that never reports completion: after this long
+  // it is treated as finished and the normal silence rule takes over (the
+  // 90 s hard limit would otherwise be the only way out).
+  let delegationTimer: ReturnType<typeof setTimeout> | undefined;
   let lastOutputAt = 0;
   // Delegated Responses calls still running — the answer is not over while
   // the backend is still thinking, however quiet the voice channel is.
@@ -1663,8 +1670,19 @@ function gptLiveDriver(env: Env): LiveDriver {
     if (audioTimer) clearTimeout(audioTimer);
     if (endTimer) clearInterval(endTimer);
     if (closeTimer) clearTimeout(closeTimer);
-    startTimer = audioTimer = closeTimer = undefined;
+    if (delegationTimer) clearTimeout(delegationTimer);
+    startTimer = audioTimer = closeTimer = delegationTimer = undefined;
     endTimer = undefined;
+  };
+  const armDelegationWatchdog = () => {
+    if (delegationTimer) clearTimeout(delegationTimer);
+    delegationTimer = setTimeout(() => {
+      delegationTimer = undefined;
+      if (!inflight.size) return;
+      console.warn(`[toi] live: gpt-live delegation watchdog — ${inflight.size} still open after ${LIVE_DELEGATION_TIMEOUT_MS} ms`);
+      delegationsDone += inflight.size;
+      inflight.clear();
+    }, LIVE_DELEGATION_TIMEOUT_MS);
   };
 
   // Graceful end: ask for session.close, log the usage it answers with, then
@@ -1689,12 +1707,10 @@ function gptLiveDriver(env: Env): LiveDriver {
   };
 
   const maybeEnd = (ws: WebSocket, ctx: LiveCtx) => {
+    // Never end while a delegation is in flight (the watchdog bounds that).
     if (closing || !ctx.hasAudio() || inflight.size > 0) return;
-    // A delegation was observed but has not completed yet (created event not
-    // seen either) — wait; if none was ever observed, wait a longer window so
-    // an acknowledgement followed by a delegated answer is not cut in two.
-    const gated = delegationsSeen > 0 && delegationsDone < delegationsSeen;
-    if (gated) return;
+    // If no delegation was ever observed, wait a longer window so an
+    // acknowledgement followed by a delegated answer is not cut in two.
     const window = delegationsSeen > 0 ? silenceMs : Math.max(silenceMs, LIVE_END_SILENCE_NO_DELEGATION_MS);
     if (Date.now() - lastOutputAt < window) return;
     beginClose(ws, ctx);
@@ -1761,7 +1777,10 @@ function gptLiveDriver(env: Env): LiveDriver {
             instructions: GPT_LIVE_BACKEND_INSTRUCTIONS[ctx.lang],
             // Reasoning tokens count against max_output_tokens on gpt-5.6, so
             // keep the effort low by default and the budget generous.
-            reasoning: { effort: env.LIVE_BACKEND_REASONING || "low" },
+            // "off" omits the field for backends without reasoning support.
+            ...(env.LIVE_BACKEND_REASONING === "off"
+              ? {}
+              : { reasoning: { effort: env.LIVE_BACKEND_REASONING || "low" } }),
             max_output_tokens: 2000,
           },
         },
@@ -1829,8 +1848,11 @@ function gptLiveDriver(env: Env): LiveDriver {
           ctx.appendBackendText(inner.delta);
         }
         if (innerType === "response.created" || innerType === "response.in_progress") {
-          if (!inflight.has(id)) delegationsSeen++;
-          inflight.add(id);
+          if (!inflight.has(id)) {
+            delegationsSeen++;
+            inflight.add(id);
+            armDelegationWatchdog();
+          }
         } else if (
           innerType === "response.completed" ||
           innerType === "response.done" ||
@@ -1838,6 +1860,10 @@ function gptLiveDriver(env: Env): LiveDriver {
           innerType === "response.incomplete"
         ) {
           if (inflight.delete(id)) delegationsDone++;
+          if (!inflight.size && delegationTimer) {
+            clearTimeout(delegationTimer);
+            delegationTimer = undefined;
+          }
           if (innerType === "response.incomplete" || innerType === "response.failed") {
             console.warn("[toi] live: gpt-live backend", innerType, JSON.stringify(inner).slice(0, 300));
           }
