@@ -1297,8 +1297,11 @@ function splitCaption(transcript: string, lang: Lang): { caption: string; detail
       ? Array.from(v.split(/\s+/).filter(Boolean).slice(0, 15).join(" ")).slice(0, 80).join("")
       : Array.from(v).slice(0, 15).join("");
   // One-sentence answers: the whole text is the headline, no body (the device
-  // shows the caption alone rather than the same sentence twice).
-  return { caption: truncate(head || text), detail: rest };
+  // shows the caption alone rather than the same sentence twice). Without any
+  // terminator the caption is a cut-off prefix, so keep the full text as body.
+  const caption = truncate(head || text);
+  const detail = at >= 0 ? rest : caption === text ? "" : text;
+  return { caption, detail };
 }
 
 async function handleLive(request: Request, env: Env): Promise<Response> {
@@ -1473,10 +1476,12 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
                   input: {
                     format: { type: "audio/pcm", rate: LIVE_RATE },
                     turn_detection: null,
-                    // Transcribe the spoken question so the device can log
-                    // "Q: …" in its history (best effort; may not arrive for
-                    // out-of-band input — then `question` stays empty).
-                    transcription: { model: "gpt-4o-mini-transcribe" },
+                    // ask only: transcribe the spoken question so the device
+                    // can log "Q: …" (best effort; may not arrive for
+                    // out-of-band input — then `question` stays empty). Kept
+                    // off the capture path so an API rejection of this field
+                    // could never take photo narration down with it.
+                    ...(mode === "ask" ? { transcription: { model: "gpt-4o-mini-transcribe" } } : {}),
                   },
                   output: { voice, format: { type: "audio/pcm", rate: LIVE_RATE } },
                 },

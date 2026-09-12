@@ -138,7 +138,11 @@ followed by frames of `type (1 B) + length (uint32 LE) + payload`:
 Exactly one `E` or `X` frame ends the stream. Everything after the upgrade is
 reported in-band: an upstream `error`, a disconnect before `response.done`, a
 non-`completed` status, a 15 s idle gap or the 90 s hard limit produce `X` if
-no audio was sent yet, and `E` with `status:"truncated"` otherwise.
+no audio was sent yet, and `E` with `status:"truncated"` otherwise. Failures
+before the WebSocket is up stay plain JSON: 503 when `TOICAMERA_TTS_API_KEY`
+is missing, 502 when the Realtime upgrade fails, 400/413 for a bad header,
+body layout, JPEG or WAV. The model and voice are `REALTIME_MODEL` /
+`REALTIME_VOICE` (same vars as the `/tts` Realtime engine).
 
 ```bash
 curl -s --no-buffer -X POST "$BASE/live" \
