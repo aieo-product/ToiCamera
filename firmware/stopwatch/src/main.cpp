@@ -2164,7 +2164,7 @@ static size_t liveBodyLen = 0;
 static size_t liveJpegLen = 0;
 static uint8_t *liveWav = nullptr;   // recorded question, kept for a fallback
 static size_t liveWavLen = 0;
-static int16_t *livePendingFree = nullptr;  // freed once the task has left
+static int16_t *volatile livePendingFree = nullptr;  // freed once the task has left
 static int liveBannerPct = -1;
 
 // Append PCM16 bytes to the session buffer. Single writer (the task); the
@@ -2373,7 +2373,9 @@ class LiveSink : public Stream {
 class LiveDechunk {
  public:
   LiveDechunk(LiveSink &sink, bool chunked, uint32_t contentLen)
-      : sink_(sink), chunked_(chunked), left_(chunked ? 0 : contentLen) {}
+      : sink_(sink), chunked_(chunked), left_(chunked ? 0 : contentLen) {
+    if (!chunked && contentLen == 0) done_ = true;  // empty 200: fail fast
+  }
 
   bool finished() const { return done_; }
 
