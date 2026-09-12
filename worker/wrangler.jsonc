@@ -33,7 +33,18 @@
     // /analyze + /kana ~7 s. So the bundled call runs at reasoning "none".
     "KANA_BUNDLE": "1",
     "ANALYZE_KANA_REASONING_EFFORT": "none",
-    "KANA_REASONING_EFFORT": "none"
+    "KANA_REASONING_EFFORT": "none",
+    // "GPT Realtime" voice mode: /tts with {"engine":"realtime"} is spoken by
+    // the OpenAI Realtime API (WebSocket) instead of /audio/speech. Reuses
+    // TOICAMERA_TTS_API_KEY as the bearer token — Realtime is OpenAI-only, so
+    // this does not follow AUDIO_API_BASE_URL (an https:// base; the Worker
+    // upgrades it to a WebSocket itself). Falls back to the regular TTS engine
+    // (and then chirps on-device) if Realtime fails. REALTIME_VOICE must be a
+    // Realtime voice (alloy/ash/ballad/coral/echo/sage/shimmer/verse/marin/
+    // cedar); empty = reuse TTS_VOICE.
+    "REALTIME_MODEL": "gpt-realtime",
+    "REALTIME_VOICE": "marin",
+    "REALTIME_API_BASE_URL": "https://api.openai.com/v1"
   }
   // Secrets (set via `npx wrangler secret put <NAME>`):
   //   TOICAMERA_MAIN_API_KEY — API key of YOUR chat/vision backend (OpenAI,

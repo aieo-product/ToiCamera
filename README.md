@@ -10,7 +10,7 @@ Entry for the [M5Stack Global Innovation Contest 2026](https://m5stack.com/globa
 | | |
 |---|---|
 | 📷 | **Zero-lag shutter** — the live finder frame *is* the photo |
-| 🗣 | **AI explanations** spoken out loud — cloud TTS, **on-device Japanese TTS ([sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp), 559K params, no audio API key)**, or Animal-Crossing-style chirps |
+| 🗣 | **AI explanations** spoken out loud — cloud TTS, **GPT Realtime voice**, **on-device Japanese TTS ([sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp), 559K params, no audio API key)**, or Animal-Crossing-style chirps |
 | 🎤 | **Hold-to-talk Q&A** about the photo (STT → context-aware answer) |
 | 📍 | **Location-aware** — reverse-geocoded town, nearest station, place-flavored explanations |
 | ⌚ | **A real watch** — clock (NTP→RX8130), battery ring, steps, daily AI one-liner |

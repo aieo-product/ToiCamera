@@ -3,8 +3,9 @@
 // Yellow button (KEYA/G2): capture -> show photo -> AI explanation
 // Blue button   (KEYB/G1): home (finder), sleep (home), back (result/error)
 // Blue hold                 : re-pair the camera from the live finder
-// Speech: on-device animalese chirps, Worker-generated TTS, or on-device
-//         sanoTTS-jp synthesis (Japanese; see lib/sanotts)
+// Speech: on-device animalese chirps, Worker-generated TTS, on-device
+//         sanoTTS-jp synthesis (Japanese; see lib/sanotts), or GPT Realtime
+//         (Worker relays the OpenAI Realtime API voice as WAV)
 // Touch drag             : scroll explanation text
 // Home screen            : clock, place, steps; camera stream is stopped
 // Idle screen            : live viewfinder (continuous QVGA preview)
@@ -142,8 +143,9 @@ static String toiFallbackModels[2] = {"gpt-5.6-terra", "gpt-5.6-luna"};
 static uint8_t selectedModel = 0;
 static uint8_t selectedLang = 0;
 static bool aiDetailHigh = false;  // X-Detail: low|high for /analyze
-static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS, 2=sanoTTS (on-device, ja)
+static uint8_t voiceMode = 0;      // 0=animalese chirps, 1=Worker TTS, 2=sanoTTS (on-device, ja), 3=GPT Realtime (Worker)
 static String toiVoiceName;        // TTS voice name reported by GET /config
+static String toiRealtimeVoiceName;  // GPT Realtime voice name reported by GET /config
 static String analyzeKana;         // kana bundled by /analyze (X-Kana: 1) for sanoTTS
 static bool toiConfigSettingsRetryDone = false;
 
@@ -834,6 +836,26 @@ static void drawPageHistory() {
 // Seven spacious items: model / volume / quality / AI detail / voice / WiFi /
 // language.
 // Items use 78px content-space bands inside the clipped y=128..431 viewport.
+// Settings row text for the current voice mode (see voiceMode).
+static String voiceModeLabel() {
+  switch (voiceMode) {
+    case 0:
+      return String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"));
+    case 2:
+      return String(tr("sanoTTS(端末内・日本語)", "sanoTTS (on-device, ja)",
+                       "sanoTTS(设备端·日语)"));
+    case 3:
+      return toiRealtimeVoiceName.length()
+                 ? String("Realtime(") + toiRealtimeVoiceName + ")"
+                 : String(tr("Realtime(GPT)", "Realtime (GPT)", "Realtime(GPT)"));
+    default:
+      return toiVoiceName.length()
+                 ? String("TTS(") + toiVoiceName + ")"
+                 : String(tr("TTS(Workerの声)", "TTS (Worker voice)",
+                             "TTS(Worker语音)"));
+  }
+}
+
 static void drawPageSettings() {
   homeCanvas.setFont(contentFont());
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
@@ -913,19 +935,7 @@ static void drawPageSettings() {
                               screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
-        homeCanvas.drawString(
-            voiceMode == 0
-                ? String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"))
-                : voiceMode == 2
-                      ? String(tr("sanoTTS(端末内・日本語)",
-                                  "sanoTTS (on-device, ja)",
-                                  "sanoTTS(设备端·日语)"))
-                      : (toiVoiceName.length()
-                             ? String("TTS(") + toiVoiceName + ")"
-                             : String(tr("TTS(Workerの声)",
-                                         "TTS (Worker voice)",
-                                         "TTS(Worker语音)"))),
-            90, screenItemTop + 46);
+        homeCanvas.drawString(voiceModeLabel(), 90, screenItemTop + 46);
         break;
       case 5: {
         homeCanvas.drawString("WiFi", 90, screenItemTop + 18);
@@ -1608,6 +1618,11 @@ static bool fetchWorkerConfig() {
     toiVoiceName = nextVoice;
     if (toiPrefsReady) toiPrefs.putString("voiceName", toiVoiceName);
   }
+  const String nextRealtimeVoice = doc["realtimeVoice"].as<String>();
+  if (nextRealtimeVoice.length() && nextRealtimeVoice != toiRealtimeVoiceName) {
+    toiRealtimeVoiceName = nextRealtimeVoice;
+    if (toiPrefsReady) toiPrefs.putString("rtVoice", toiRealtimeVoiceName);
+  }
   // One-shot per boot: release the socket and its ~50KB TLS context — keeping
   // it alive starves later analyze/tts TLS handshakes of internal heap.
   configHttp.end();
@@ -1629,8 +1644,11 @@ static void retryWorkerConfigOnSettingsEntry() {
 }
 
 // Fetch the TTS WAV for `text` into ttsBuf (blocking, up to ~30s).
+// `realtime` requests the GPT Realtime engine (Worker falls back to the
+// regular TTS engine on its own if that fails — this call still returns a
+// playable buffer either way, or false only if both fail).
 // Returns true when a playable buffer is ready.
-static bool fetchTts(const String &text) {
+static bool fetchTts(const String &text, bool realtime = false) {
   stopSpeech();
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[toi] tts: WiFi unavailable");
@@ -1643,9 +1661,21 @@ static bool fetchTts(const String &text) {
     ttsHttp.setTimeout(30000);
     ttsHttpInit = true;
   }
+  // Which engine actually answered (the Worker falls back on its own). The
+  // collected-header list persists across requests, so set it once.
+  static bool ttsEngineHeaderSet = false;
+  if (!ttsEngineHeaderSet) {
+    static const char *kEngineHeader[] = {"X-Voice-Engine"};
+    ttsHttp.collectHeaders(kEngineHeader, 1);
+    ttsEngineHeaderSet = true;
+  }
+  // Realtime may take up to 15 s and then be re-rendered by the regular TTS
+  // inside the Worker — allow both attempts to fit.
+  ttsHttp.setTimeout(realtime ? 45000 : 30000);
 
   JsonDocument requestDoc;
   requestDoc["text"] = text;
+  if (realtime) requestDoc["engine"] = "realtime";
   String body;
   serializeJson(requestDoc, body);
 
@@ -1657,13 +1687,15 @@ static bool fetchTts(const String &text) {
     if (code == HTTP_CODE_OK) {
       constexpr size_t kMaxTtsWav = 2 * 1024 * 1024;
       const int contentLen = ttsHttp.getSize();
+      const String engine = ttsHttp.header("X-Voice-Engine");
       if (contentLen > 0 && static_cast<size_t>(contentLen) <= kMaxTtsWav) {
         ttsBuf = readBody(ttsHttp, kMaxTtsWav, ttsLen);
         if (ttsBuf && ttsLen == static_cast<size_t>(contentLen)) {
           // Body fully buffered — release the socket and TLS context now.
           ttsHttp.end();
           ttsClient.stop();
-          Serial.printf("[toi] tts: fetched %u bytes\n", (unsigned)ttsLen);
+          Serial.printf("[toi] tts: fetched %u bytes engine=%s\n", (unsigned)ttsLen,
+                        engine.length() ? engine.c_str() : "tts");
           return true;  // ttsBuf stays alive until stopSpeech() is called.
         }
       } else {
@@ -1775,6 +1807,8 @@ static String fetchKana(const String &text) {
     ttsHttp.setTimeout(30000);
     ttsHttpInit = true;
   }
+  // fetchTts() may have left the shared handle at its 45 s Realtime budget.
+  ttsHttp.setTimeout(30000);
   JsonDocument requestDoc;
   requestDoc["text"] = text;
   String body;
@@ -2089,11 +2123,11 @@ static bool prepareVoice(const String &text, const String &kanaHint = String()) 
     if (sanoPrepare(text, kanaHint)) return true;
     Serial.println("[toi] sanotts: prepare failed — trying Worker TTS");
   }
-  if (voiceMode == 1 || voiceMode == 2) {
+  if (voiceMode == 1 || voiceMode == 2 || voiceMode == 3) {
     // Generate the voice first so the result screen appears WITH sound —
     // otherwise the freshly drawn screen sits frozen during the fetch.
     drawBusy(tr("音声生成中...", "Generating voice...", "生成语音中..."), TFT_CYAN);
-    return fetchTts(text);
+    return fetchTts(text, voiceMode == 3);
   }
   return false;
 }
@@ -3196,11 +3230,14 @@ static void homeTouchTick() {
         if (toiPrefsReady) toiPrefs.putUChar("aidetail", aiDetailHigh ? 1 : 0);
         Serial.printf("[toi] ai detail: %s\n", aiDetailHigh ? "high" : "low");
       } else if (releasedRow == 4) {
-        voiceMode = (voiceMode + 1) % 3;
+        voiceMode = (voiceMode + 1) % 4;
         if (toiPrefsReady) toiPrefs.putUChar("voice", voiceMode);
         Serial.printf("[toi] voice: %s\n",
-                      voiceMode == 0 ? "chirps"
-                                     : (voiceMode == 1 ? "tts" : "sanotts"));
+                      voiceMode == 0
+                          ? "chirps"
+                          : (voiceMode == 1
+                                 ? "tts"
+                                 : (voiceMode == 2 ? "sanotts" : "realtime")));
       } else if (releasedRow == 5) {
         enterWifiSetup();
       } else if (releasedRow == 6) {
@@ -3381,11 +3418,12 @@ void setup() {
     if (captureQuality > 1) captureQuality = 0;
     loadModelSettings();
     toiVoiceName = toiPrefs.getString("voiceName", "");
+    toiRealtimeVoiceName = toiPrefs.getString("rtVoice", "");
     selectedLang = toiPrefs.getUChar("lang", 0);
     if (selectedLang > 2) selectedLang = 0;
     aiDetailHigh = toiPrefs.getUChar("aidetail", 0) != 0;
     voiceMode = toiPrefs.getUChar("voice", 0);
-    if (voiceMode > 2) voiceMode = 0;
+    if (voiceMode > 3) voiceMode = 0;
     nvsWifiSsid = toiPrefs.getString("wifi_ssid", "");
     nvsWifiPass = toiPrefs.getString("wifi_pass", "");
     nvsDeviceToken = toiPrefs.getString("dev_token", "");
