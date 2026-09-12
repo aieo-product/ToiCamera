@@ -1,0 +1,52 @@
+[wrangler:info] Ready on http://localhost:8799
+[wrangler:info] POST /tts 200 OK (20ms)
+[wrangler:info] Ready on http://localhost:8799
+✘ [ERROR] [toi] realtime: bad audio delta DOMException {
+    code: 5,
+    name: 'InvalidCharacterError',
+    message: "atob() called with invalid base64-encoded data. (Only whitespace, '+', '/', alphanumeric ASCII, and up to two terminal '=' signs when the input data length is divisible by 4 are allowed.)",
+    stack: "InvalidCharacterError: atob() called with invalid base64-encoded data. (Only whitespace, '+', '/', alphanumeric ASCII, and up to two terminal '=' signs when the input data length is divisible by 4 are allowed.)\n" +
+      '    at base64ToBytes (file:///Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/toiCamera-wt66/worker/src/index.ts:889:18)\n' +
+      '    at WebSocket.<anonymous> (file:///Volumes/AIWorkSSD/AIWorkSpace/github/aieo-product/toiCamera-wt66/worker/src/index.ts:998:23)'
+  }
+▲ [WARNING] [toi] tts: realtime failed, falling back to tts
+✘ [ERROR] TTS upstream error 403 {
+      "error": {
+          "message": "Project `proj_noOkTrUmHwmJaGeVfCeU3wjn` does not have access to model `gpt-4o-mini-tts`",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "model_not_found"
+      }
+  }
+  
+[wrangler:info] POST /tts 502 Bad Gateway (304ms)
+🪵  Logs were written to "/Users/otanitakehiro/Library/Preferences/.wrangler/logs/wrangler-2026-09-12_03-07-19_825.log"
+[wrangler:info] Ready on http://localhost:8799
+✘ [ERROR] [toi] realtime: socket closed before response.done
+▲ [WARNING] [toi] tts: realtime failed, falling back to tts
+✘ [ERROR] TTS upstream error 403 {
+      "error": {
+          "message": "Project `proj_noOkTrUmHwmJaGeVfCeU3wjn` does not have access to model `gpt-4o-mini-tts`",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "model_not_found"
+      }
+  }
+  
+[wrangler:info] POST /tts 502 Bad Gateway (1255ms)
+🪵  Logs were written to "/Users/otanitakehiro/Library/Preferences/.wrangler/logs/wrangler-2026-09-12_03-07-22_219.log"
+[wrangler:info] Ready on http://localhost:8799
+▲ [WARNING] [toi] realtime: response.done status incomplete {"type":"response.done","response":{"status":"incomplete"}}
+▲ [WARNING] [toi] tts: realtime failed, falling back to tts
+✘ [ERROR] TTS upstream error 403 {
+      "error": {
+          "message": "Project `proj_noOkTrUmHwmJaGeVfCeU3wjn` does not have access to model `gpt-4o-mini-tts`",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "model_not_found"
+      }
+  }
+  
+[wrangler:info] POST /tts 502 Bad Gateway (580ms)
+[wrangler:info] GET /config 200 OK (1ms)
+🪵  Logs were written to "/Users/otanitakehiro/Library/Preferences/.wrangler/logs/wrangler-2026-09-12_03-07-25_558.log"

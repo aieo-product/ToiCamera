@@ -1,0 +1,32 @@
+l-esptoolpy @ 2.41100.0 (4.11.0) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 38 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- M5Unified @ 0.2.21
+|-- ArduinoJson @ 7.4.3
+|-- TinyGPSPlus @ 1.1.0
+|-- sanotts @ 0.2.0+a478680
+|-- HTTPClient @ 2.0.0
+|-- Preferences @ 2.0.0
+|-- WebServer @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- WiFiClientSecure @ 2.0.0
+Building in release mode
+Compiling .pio/build/stopwatch/src/main.cpp.o
+Linking .pio/build/stopwatch/firmware.elf
+Retrieving maximum program size .pio/build/stopwatch/firmware.elf
+Checking size .pio/build/stopwatch/firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [==        ]  16.6% (used 54348 bytes from 327680 bytes)
+Flash: [====      ]  41.7% (used 2732653 bytes from 6553600 bytes)
+Building .pio/build/stopwatch/firmware.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+========================= [SUCCESS] Took 14.33 seconds =========================
+exit=0

@@ -1,0 +1,25 @@
+### [gpt-realtime] success path — expect 200, x-voice-engine: realtime
+HTTP/1.1 200 OK
+Content-Length: 72044
+x-voice-engine: realtime
+real 0.03
+
+  Duration: 00:00:01.50, bitrate: 384 kb/s
+
+### [mock-baddelta] malformed base64 delta — expect immediate fallback (502 with this key), no 15 s hang
+HTTP/1.1 502 Bad Gateway
+Content-Length: 44
+real 0.31
+
+### [mock-cut] socket closed mid-response — expect partial audio discarded → fallback
+HTTP/1.1 502 Bad Gateway
+Content-Length: 44
+real 1.26
+
+### [mock-incomplete] response.done status=incomplete — expect fallback
+HTTP/1.1 502 Bad Gateway
+Content-Length: 44
+real 0.59
+
+### GET /config
+{"models":["gpt-5.6-terra","gpt-5.6-luna"],"voice":"marin","tts":true,"realtime":true,"realtimeVoice":"marin"}

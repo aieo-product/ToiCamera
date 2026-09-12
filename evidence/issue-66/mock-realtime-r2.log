@@ -1,0 +1,21 @@
+[mock] 2026-09-12T03:07:13.246Z listening on :8798
+[mock] 2026-09-12T03:07:18.349Z upgrade /v1/realtime model=gpt-realtime auth=bearer
+[mock] 2026-09-12T03:07:18.352Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"audio":{"output":{"voice":"marin","format":{"type":"audio/pcm","rate":24000}}}}}
+[mock] 2026-09-12T03:07:18.352Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"instructions":"You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.","input":[{"type":"message","role":"user","co
+[mock] 2026-09-12T03:07:18.355Z sent 15 deltas, 72000 B pcm
+[mock] 2026-09-12T03:07:18.360Z client closed
+[mock] 2026-09-12T03:07:20.477Z upgrade /v1/realtime model=mock-baddelta auth=bearer
+[mock] 2026-09-12T03:07:20.477Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"audio":{"output":{"voice":"marin","format":{"type":"audio/pcm","rate":24000}}}}}
+[mock] 2026-09-12T03:07:20.477Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"instructions":"You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.","input":[{"type":"message","role":"user","co
+[mock] 2026-09-12T03:07:20.478Z sent 15 deltas, 72000 B pcm
+[mock] 2026-09-12T03:07:20.552Z client closed
+[mock] 2026-09-12T03:07:22.878Z upgrade /v1/realtime model=mock-cut auth=bearer
+[mock] 2026-09-12T03:07:22.879Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"audio":{"output":{"voice":"marin","format":{"type":"audio/pcm","rate":24000}}}}}
+[mock] 2026-09-12T03:07:22.879Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"instructions":"You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.","input":[{"type":"message","role":"user","co
+[mock] 2026-09-12T03:07:22.879Z closing socket mid-response
+[mock] 2026-09-12T03:07:22.883Z client closed
+[mock] 2026-09-12T03:07:26.204Z upgrade /v1/realtime model=mock-incomplete auth=bearer
+[mock] 2026-09-12T03:07:26.205Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"audio":{"output":{"voice":"marin","format":{"type":"audio/pcm","rate":24000}}}}}
+[mock] 2026-09-12T03:07:26.205Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"instructions":"You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.","input":[{"type":"message","role":"user","co
+[mock] 2026-09-12T03:07:26.206Z sent 15 deltas, 72000 B pcm
+[mock] 2026-09-12T03:07:26.209Z client closed
