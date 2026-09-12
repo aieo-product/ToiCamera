@@ -15,6 +15,7 @@ explanation (ja/en/zh). The device never talks to an AI provider directly.
 | `POST /digest` | `X-Device-Token` | `{"items": ["…"]}` | `{summary}` — one-line day summary |
 | `POST /tts` | `X-Device-Token` | `{"text": "...", "engine"?: "realtime"}` | `audio/wav` (24kHz mono), header `X-Voice-Engine: tts\|realtime` — `engine:"realtime"` speaks via the OpenAI Realtime API, falling back to the regular TTS engine (and then on-device chirps) on any failure |
 | `POST /kana` | `X-Device-Token` | `{"text": "..."}` | `{kana}` — kana intermediate representation (pitch-accent marks) for the on-device sanoTTS voice |
+| `POST /live` | `X-Device-Token` | headers `X-Live: capture\|ask`, `X-Jpeg-Length: N`, `X-Lang`; body = JPEG (N bytes) + WAV (`ask` only) | `application/octet-stream`, chunked — `"TOI1"` then `A`/`T`/`E`/`X` frames, header `X-Voice-Engine: realtime-live`. One Realtime session answers with speech while it is still being generated |
 
 ## Setup
 
@@ -101,6 +102,62 @@ curl -s -X POST "$BASE/tts" \
   -H "X-Device-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"text":"こんにちは、AIカメラです。","engine":"realtime"}' \
   -D - -o out.wav && afplay out.wav
+```
+
+## Live (Realtime, streaming)
+
+`POST /live` replaces `/analyze` + `/tts` (and `/ask` + `/tts`) for the device's
+"GPT Realtime" voice with a **single** Realtime session: the photo — and, for a
+voice question, the recorded audio — go up in one `response.create`, and the
+spoken answer is streamed back frame by frame as it is generated, so the device
+can start playing after the first chunk instead of waiting for a finished WAV.
+
+**Request**
+
+| Header | Value |
+|---|---|
+| `X-Live` | `capture` (explain the photo) or `ask` (answer the spoken question about it) |
+| `X-Jpeg-Length` | byte length `N` of the JPEG that starts the body (1 … 2 MB) |
+| `X-Lang` | `ja` (default) / `en` / `zh` — instructions and speech are pinned to it |
+
+Body = `N` bytes of JPEG (must start `FF D8`), then, for `ask`, a RIFF/WAVE file
+(PCM 16-bit mono, any sample rate, 4 KB … 2 MB). The Worker linearly resamples
+it to the 24 kHz mono PCM the Realtime API accepts (the device records 16 kHz).
+
+**Response** — `application/octet-stream`, chunked, `X-Voice-Engine:
+realtime-live`, `Cache-Control: no-store`. The body is the 4-byte magic `TOI1`
+followed by frames of `type (1 B) + length (uint32 LE) + payload`:
+
+| Type | Payload |
+|---|---|
+| `A` | PCM16 mono 24 kHz audio bytes — one Realtime `output_audio` delta, verbatim |
+| `T` | transcript delta (UTF-8), interleaved with the audio |
+| `E` | terminal JSON `{caption, detail, transcript, status:"completed", pcmBytes, ms}` — `caption` is the first sentence (≤15 chars ja/zh, ≤15 words en), `detail` the rest |
+| `X` | error JSON `{error}` — the device falls back to `/analyze` + `/tts`, then to chirps |
+
+Exactly one `E` or `X` frame ends the stream. Everything after the upgrade is
+reported inside the stream: a Realtime `error` event, a disconnect before
+`response.done`, a non-`completed` status, or the 30 s timeout all produce `X`.
+Failures *before* the WebSocket opens are plain JSON instead — 503
+`{"error":"realtime unavailable"}` when `TOICAMERA_TTS_API_KEY` is unset, 502 on
+an upgrade or connect failure, 400/413 on a malformed body. Audio is capped at
+1.9 MB (~40 s); past that the stream stops forwarding `A` frames but still ends
+with `E`. Model and voice are `REALTIME_MODEL` / `REALTIME_VOICE`, same as
+`/tts engine:"realtime"`.
+
+```bash
+curl -s --no-buffer -X POST "$BASE/live" \
+  -H "X-Device-Token: $TOKEN" -H "X-Live: capture" -H "X-Lang: ja" \
+  -H "X-Jpeg-Length: $(stat -f%z test.jpg)" \
+  --data-binary @test.jpg -D - -o live.bin
+# live.bin: "TOI1" then T/A frames as they arrive, then one E frame
+
+# voice question: JPEG followed by the recorded WAV in one body
+cat test.jpg question.wav > ask.bin
+curl -s --no-buffer -X POST "$BASE/live" \
+  -H "X-Device-Token: $TOKEN" -H "X-Live: ask" \
+  -H "X-Jpeg-Length: $(stat -f%z test.jpg)" \
+  --data-binary @ask.bin -o live-ask.bin
 ```
 
 ## On-device voice (sanoTTS) and `/kana`

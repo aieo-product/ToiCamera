@@ -230,14 +230,17 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-function toBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   const CHUNK = 0x8000; // String.fromCharCode の引数上限を避けてチャンク変換
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
   return btoa(binary);
+}
+
+function toBase64(buf: ArrayBuffer): string {
+  return bytesToBase64(new Uint8Array(buf));
 }
 
 const FALLBACK_RESULT = {
@@ -1135,6 +1138,389 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// --- POST /live: one Realtime session (photo [+ question audio] → streamed
+// speech + transcript). The device plays the audio while it arrives instead
+// of waiting for a finished WAV (/analyze + /tts took ~10 s to first sound).
+//
+// Wire format (application/octet-stream, chunked): the 4-byte magic "TOI1",
+// then frames of `type(1 B) + len(uint32 LE) + payload`:
+//   A  PCM16 mono 24 kHz audio bytes (a Realtime output_audio delta, verbatim)
+//   T  transcript delta (UTF-8)
+//   E  terminal JSON {caption, detail, transcript, status, pcmBytes, ms}
+//   X  error JSON {error} — the device falls back to /analyze + /tts
+const LIVE_MAGIC = "TOI1";
+// The device allows ~30 s for the whole exchange; Realtime normally starts
+// speaking in ~1 s, so this is a runaway guard, not a budget.
+const LIVE_TIMEOUT_MS = 30_000;
+// ~40 s of 24 kHz mono PCM16 (same guard as /tts).
+const LIVE_MAX_PCM_BYTES = 1_900_000;
+const LIVE_MAX_JPEG_BYTES = 2 * 1024 * 1024;
+const LIVE_MAX_WAV_BYTES = 2 * 1024 * 1024;
+const LIVE_MIN_WAV_BYTES = 4000;
+const LIVE_RATE = 24000;
+
+type LiveMode = "capture" | "ask";
+
+function liveFrame(type: "A" | "T" | "E" | "X", payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(5 + payload.length);
+  out[0] = type.charCodeAt(0);
+  new DataView(out.buffer).setUint32(1, payload.length, true);
+  out.set(payload, 5);
+  return out;
+}
+
+function int16ToLeBytes(pcm: Int16Array): Uint8Array {
+  const out = new Uint8Array(pcm.length * 2);
+  const dv = new DataView(out.buffer);
+  for (let i = 0; i < pcm.length; i++) dv.setInt16(i * 2, pcm[i], true);
+  return out;
+}
+
+// RIFF/WAVE (PCM16 mono, any sample rate) → PCM16 mono at 24 kHz, the only
+// input format the Realtime API documents. The device records 16 kHz, so this
+// is usually a 2:3 linear interpolation. Returns null on anything it cannot
+// read, so the caller can answer 400 instead of sending garbage upstream.
+function wavToPcm24k(bytes: Uint8Array): Int16Array | null {
+  if (bytes.length < 44) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tag = (o: number): string =>
+    String.fromCharCode(bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]);
+  if (tag(0) !== "RIFF" || tag(8) !== "WAVE") return null;
+
+  let format = 0;
+  let channels = 0;
+  let rate = 0;
+  let bits = 0;
+  let dataOffset = -1;
+  let dataLength = 0;
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const id = tag(offset);
+    const size = dv.getUint32(offset + 4, true);
+    const body = offset + 8;
+    const avail = bytes.length - body;
+    if (id === "fmt " && size >= 16 && avail >= 16) {
+      format = dv.getUint16(body, true);
+      channels = dv.getUint16(body + 2, true);
+      rate = dv.getUint32(body + 4, true);
+      bits = dv.getUint16(body + 14, true);
+    } else if (id === "data") {
+      dataOffset = body;
+      // Streaming writers leave 0 / 0xFFFFFFFF placeholders: take the rest.
+      dataLength = size === 0 || size > avail ? avail : size;
+      break;
+    }
+    if (size === 0 || size > avail) break; // malformed/placeholder size
+    offset = body + size + (size % 2); // chunks are word-aligned
+  }
+
+  if (format !== 1 || channels !== 1 || bits !== 16) return null;
+  if (dataOffset < 0 || dataLength < 2) return null;
+  if (rate < 4000 || rate > 192000) return null;
+
+  const count = Math.floor(dataLength / 2);
+  const src = new Int16Array(count);
+  for (let i = 0; i < count; i++) src[i] = dv.getInt16(dataOffset + i * 2, true);
+  if (rate === LIVE_RATE) return src;
+
+  const outCount = Math.floor((count * LIVE_RATE) / rate);
+  if (outCount < 1) return null;
+  const out = new Int16Array(outCount);
+  const step = rate / LIVE_RATE;
+  for (let i = 0; i < outCount; i++) {
+    const pos = i * step;
+    const i0 = Math.floor(pos);
+    const i1 = i0 + 1 < count ? i0 + 1 : count - 1;
+    const frac = pos - i0;
+    out[i] = Math.round(src[i0] * (1 - frac) + src[i1] * frac);
+  }
+  return out;
+}
+
+// Spoken-narrator version of SYSTEM_PROMPT: the Realtime model both writes
+// and speaks, so the shape of the answer is asked for in prose instead of a
+// JSON schema. The first sentence doubles as the on-screen caption.
+const LIVE_INSTRUCTIONS: Record<Lang, { capture: string; ask: string }> = {
+  ja: {
+    capture: `あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。撮影された写真に写っているものを、親しみやすく少しユーモラスな話し言葉で声に出して解説します。
+最初の1文は写真の主題を表す短い見出し(15文字以内)にして、そのあとに2〜3文(合計150文字以内)の解説を続けてください。写っているものの説明に、豆知識やちょっとした一言を添えます。
+専門用語は避け、聞いて楽しい語り口で。かならず日本語だけで話してください。`,
+    ask: `あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。ユーザーが撮った写真と、その写真についての音声の質問が届きます。
+写真の内容を踏まえて、親しみやすく少しユーモラスな話し言葉で、2文以内で声に出して答えてください。音声が聞き取れないときは、その旨を一言だけ伝えます。
+専門用語は避け、かならず日本語だけで話してください。`,
+  },
+  en: {
+    capture: `You are the narrator for ToiCamera, a small camera gadget. Speak aloud about what appears in the photo in friendly, slightly humorous English.
+Make the first sentence a short headline of at most 15 words naming the main subject, then continue with 2 to 3 sentences describing it and adding a fun fact or playful observation.
+Avoid jargon and keep it enjoyable to hear. Speak only in English.`,
+    ask: `You are the narrator for ToiCamera, a small camera gadget. You receive a photo the user took and a spoken question about it.
+Answer aloud in friendly, slightly humorous English in at most 2 sentences, based on what the photo shows. If the audio is unintelligible, say so briefly.
+Avoid jargon. Speak only in English.`,
+  },
+  zh: {
+    capture: `你是带摄像头的小型设备“ToiCamera”的解说员。请用亲切、略带幽默的口语朗读解说照片中的内容。
+第一句是概括照片主体的短标题(不超过15个字)，随后用2至3句话(合计不超过150个字)说明画面内容，并补充一个小知识或有趣点评。
+避免专业术语，让解说轻松好懂。请只使用简体中文说话。`,
+    ask: `你是带摄像头的小型设备“ToiCamera”的解说员。你会收到用户拍摄的照片和一段关于这张照片的语音提问。
+请结合照片内容，用亲切、略带幽默的口语在2句话以内朗读回答。如果听不清语音，就简短说明一下。
+避免专业术语，请只使用简体中文说话。`,
+  },
+};
+
+const LIVE_USER_TEXT: Record<Lang, { capture: string; ask: string }> = {
+  ja: { capture: "この写真を解説してください。", ask: "この写真について、いまの音声の質問に答えてください。" },
+  en: { capture: "Describe this photo.", ask: "Answer my spoken question about this photo." },
+  zh: { capture: "请解说这张照片。", ask: "请回答我刚才关于这张照片的语音提问。" },
+};
+
+// The transcript arrives as one spoken paragraph; the device's result screen
+// wants a headline + body, so cut at the first sentence terminator.
+function splitCaption(transcript: string, lang: Lang): { caption: string; detail: string } {
+  const text = transcript.trim();
+  if (!text) return { caption: "", detail: "" };
+  const at = text.search(/[。．.!?！？]/);
+  const head = at >= 0 ? text.slice(0, at).trim() : text;
+  const rest = at >= 0 ? text.slice(at + 1).trim() : "";
+  let caption: string;
+  if (lang === "en") {
+    caption = head.split(/\s+/).filter(Boolean).slice(0, 15).join(" ");
+  } else {
+    caption = Array.from(head).slice(0, 15).join("");
+  }
+  return { caption: caption || text, detail: rest || text };
+}
+
+async function handleLive(request: Request, env: Env): Promise<Response> {
+  const mode = request.headers.get("x-live") as LiveMode | null;
+  if (mode !== "capture" && mode !== "ask") {
+    return json({ error: "X-Live must be capture or ask" }, 400);
+  }
+  const rawLength = request.headers.get("x-jpeg-length");
+  const jpegLength = Number(rawLength);
+  if (!rawLength || !Number.isInteger(jpegLength) || jpegLength < 1 || jpegLength > LIVE_MAX_JPEG_BYTES) {
+    return json({ error: "X-Jpeg-Length missing or out of range" }, 400);
+  }
+  if (!env.TOICAMERA_TTS_API_KEY) {
+    return json({ error: "realtime unavailable" }, 503);
+  }
+
+  const body = new Uint8Array(await request.arrayBuffer());
+  if (body.length < jpegLength) {
+    return json({ error: "body shorter than X-Jpeg-Length" }, 400);
+  }
+  const jpeg = body.subarray(0, jpegLength);
+  if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+    return json({ error: "not a JPEG" }, 400);
+  }
+
+  let audioB64 = "";
+  if (mode === "ask") {
+    const wav = body.subarray(jpegLength);
+    if (wav.length < LIVE_MIN_WAV_BYTES) return json({ error: "audio too short" }, 400);
+    if (wav.length > LIVE_MAX_WAV_BYTES) return json({ error: "audio too large" }, 413);
+    const pcm = wavToPcm24k(wav);
+    if (!pcm) return json({ error: "unsupported wav (PCM 16-bit mono expected)" }, 400);
+    audioB64 = bytesToBase64(int16ToLeBytes(pcm));
+  }
+
+  const lang = pickLang(request);
+  const imageUrl = `data:image/jpeg;base64,${bytesToBase64(jpeg)}`;
+  const model = env.REALTIME_MODEL || "gpt-realtime";
+  const voice = realtimeVoice(env);
+
+  // Workers open outbound WebSockets with an https URL + `Upgrade: websocket`
+  // (a wss:// URL is rejected by the Workers fetch()).
+  let ws: WebSocket;
+  try {
+    const upstream = await fetch(
+      `${realtimeBase(env)}/realtime?model=${encodeURIComponent(model)}`,
+      { headers: { Upgrade: "websocket", Authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}` } },
+    );
+    const socket = upstream.webSocket;
+    if (!socket) {
+      console.error("[toi] live: no websocket in upstream response", upstream.status);
+      await upstream.body?.cancel().catch(() => undefined);
+      return json({ error: "realtime upgrade failed", status: upstream.status }, 502);
+    }
+    socket.accept();
+    ws = socket;
+  } catch (err) {
+    console.error("[toi] live: connect failed", err);
+    return json({ error: "realtime connect failed" }, 502);
+  }
+
+  const encoder = new TextEncoder();
+  const startedAt = Date.now();
+  let transcript = "";
+  let pcmBytes = 0;
+  let firstAudioMs = 0;
+  let capped = false;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // The client can disconnect at any time; enqueueing then throws.
+      const push = (chunk: Uint8Array) => {
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          // stream already closed by the client
+        }
+      };
+      const closeSocket = () => {
+        try {
+          ws.close();
+        } catch {
+          // already closing/closed
+        }
+      };
+      const finish = (frame: Uint8Array) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        push(frame);
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+        closeSocket();
+      };
+      const fail = (message: string) =>
+        finish(liveFrame("X", encoder.encode(JSON.stringify({ error: message }))));
+
+      push(encoder.encode(LIVE_MAGIC));
+      timer = setTimeout(() => {
+        console.error("[toi] live: timed out waiting for response.done");
+        fail("realtime timeout");
+      }, LIVE_TIMEOUT_MS);
+
+      ws.addEventListener("message", (event: MessageEvent) => {
+        if (settled || typeof event.data !== "string") return;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const type = msg.type;
+        if (type === "session.created") {
+          ws.send(
+            JSON.stringify({
+              type: "session.update",
+              session: {
+                type: "realtime",
+                output_modalities: ["audio"],
+                instructions: LIVE_INSTRUCTIONS[lang][mode],
+                audio: {
+                  // turn_detection: null — one shot, the Worker decides when
+                  // the turn ends (the audio is sent complete, in the request).
+                  input: { format: { type: "audio/pcm", rate: LIVE_RATE }, turn_detection: null },
+                  output: { voice, format: { type: "audio/pcm", rate: LIVE_RATE } },
+                },
+              },
+            }),
+          );
+          const content: unknown[] = [{ type: "input_image", image_url: imageUrl }];
+          if (audioB64) content.push({ type: "input_audio", audio: audioB64 });
+          content.push({ type: "input_text", text: LIVE_USER_TEXT[lang][mode] });
+          ws.send(
+            JSON.stringify({
+              type: "response.create",
+              response: {
+                conversation: "none",
+                output_modalities: ["audio"],
+                input: [{ type: "message", role: "user", content }],
+              },
+            }),
+          );
+        } else if (type === "response.output_audio.delta" || type === "response.audio.delta") {
+          const delta = msg.delta;
+          if (typeof delta !== "string" || !delta) return;
+          let bytes: Uint8Array;
+          try {
+            bytes = base64ToBytes(delta);
+          } catch (err) {
+            console.error("[toi] live: bad audio delta", err);
+            fail("realtime bad audio delta");
+            return;
+          }
+          if (!firstAudioMs) firstAudioMs = Date.now() - startedAt;
+          if (pcmBytes + bytes.length > LIVE_MAX_PCM_BYTES) {
+            // Keep the session running to the terminal frame, just stop
+            // forwarding audio the device has no room for.
+            if (!capped) {
+              capped = true;
+              console.warn("[toi] live: hit max PCM size, dropping further audio");
+            }
+            return;
+          }
+          pcmBytes += bytes.length;
+          push(liveFrame("A", bytes));
+        } else if (
+          type === "response.output_audio_transcript.delta" ||
+          type === "response.audio_transcript.delta"
+        ) {
+          const delta = msg.delta;
+          if (typeof delta !== "string" || !delta) return;
+          transcript += delta;
+          push(liveFrame("T", encoder.encode(delta)));
+        } else if (type === "response.done") {
+          const status = (msg.response as { status?: unknown } | undefined)?.status;
+          const ms = Date.now() - startedAt;
+          if (status !== "completed") {
+            console.warn("[toi] live: response.done status", status, JSON.stringify(msg).slice(0, 300));
+            fail(`realtime ${String(status)}`);
+            return;
+          }
+          const { caption, detail } = splitCaption(transcript, lang);
+          console.log(
+            `[toi] live: ${mode} ${lang} ${pcmBytes} B pcm, ${ms} ms, first audio at ${firstAudioMs} ms`,
+          );
+          finish(
+            liveFrame(
+              "E",
+              encoder.encode(JSON.stringify({ caption, detail, transcript, status: "completed", pcmBytes, ms })),
+            ),
+          );
+        } else if (type === "error" || type === "response.error") {
+          console.error("[toi] live: error event", JSON.stringify(msg).slice(0, 300));
+          fail("realtime error");
+        }
+      });
+      ws.addEventListener("close", () => {
+        if (settled) return;
+        console.error("[toi] live: socket closed before response.done");
+        fail("realtime disconnected");
+      });
+      ws.addEventListener("error", (event: ErrorEvent) => {
+        if (settled) return; // our own close() after finish() also lands here
+        console.error("[toi] live: socket error", event.message || event);
+        fail("realtime socket error");
+      });
+    },
+    cancel() {
+      // Device hung up (fallback path, power off): stop the upstream session.
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // already closing/closed
+      }
+    },
+  });
+
+  return new Response(readable, {
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-voice-engine": "realtime-live",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -1179,6 +1565,8 @@ export default {
           return await handleDigest(request, env);
         case "/tts":
           return await handleTts(request, env);
+        case "/live":
+          return await handleLive(request, env);
         case "/kana":
           return await handleKana(request, env);
         default:
