@@ -15,7 +15,7 @@ explanation (ja/en/zh). The device never talks to an AI provider directly.
 | `POST /digest` | `X-Device-Token` | `{"items": ["…"]}` | `{summary}` — one-line day summary |
 | `POST /tts` | `X-Device-Token` | `{"text": "...", "engine"?: "realtime"}` | `audio/wav` (24kHz mono), header `X-Voice-Engine: tts\|realtime` — `engine:"realtime"` speaks via the OpenAI Realtime API, falling back to the regular TTS engine (and then on-device chirps) on any failure |
 | `POST /kana` | `X-Device-Token` | `{"text": "..."}` | `{kana}` — kana intermediate representation (pitch-accent marks) for the on-device sanoTTS voice |
-| `POST /live` | `X-Device-Token` | headers `X-Live: capture\|ask`, `X-Jpeg-Length: N`, `X-Lang`; body = JPEG (N bytes) + WAV (`ask` only) | `application/octet-stream`, chunked — `"TOI1"` then `A`/`T`/`E`/`X` frames, header `X-Voice-Engine: realtime-live`. One Realtime session answers with speech while it is still being generated |
+| `POST /live` | `X-Device-Token` | headers `X-Live: capture\|ask`, `X-Jpeg-Length: N`, `X-Lang`, `X-History-Length` (optional); body = JPEG (N bytes) + WAV (`ask` only) + history JSON (optional) | `application/octet-stream`, chunked — `"TOI1"` then `A`/`T`/`E`/`X` frames, header `X-Voice-Engine: realtime-live`. One GPT-Live-1 session (reasoning delegated to `LIVE_BACKEND_MODEL`) answers with speech while it is still being generated |
 
 ## Setup
 
@@ -106,13 +106,25 @@ curl -s -X POST "$BASE/tts" \
   -D - -o out.wav && afplay out.wav
 ```
 
-## Live (Realtime, streaming)
+## Live (GPT-Live-1 + Responses delegation, streaming)
 
 `POST /live` replaces `/analyze` + `/tts` (and `/ask` + `/tts`) for the device's
-"GPT Realtime" voice with a **single** Realtime session: the photo — and, for a
-voice question, the recorded audio — go up in one `response.create`, and the
-spoken answer is streamed back frame by frame as it is generated, so the device
-can start playing after the first chunk instead of waiting for a finished WAV.
+"GPT Realtime" voice with a **single** upstream session: the photo — and, for a
+voice question, the recorded audio — go up once, and the spoken answer is
+streamed back frame by frame as it is generated, so the device can start playing
+after the first chunk instead of waiting for a finished WAV.
+
+The upstream is **GPT-Live-1** (`LIVE_API_BASE_URL` + `/live/sessions`, model
+`LIVE_MODEL`, default `gpt-live-1`), reusing `TOICAMERA_TTS_API_KEY` as the
+bearer token. GPT-Live-1 is a voice layer, not a reasoning model: the session is
+opened with a **Responses delegation** to `LIVE_BACKEND_MODEL` (default
+`gpt-5.6-terra`; `gpt-5.6-luna` is cheaper, `LIVE_BACKEND_REASONING` sets its
+`reasoning.effort`), and the JPEG is queued *for that backend* as a
+`response.item.create` image item — so the model that looks at the photo and
+answers a factual question is the reasoning one, while `gpt-live-1` only speaks
+(voice `LIVE_VOICE`, default `marin`). The live-side instructions tell it to
+delegate and wait rather than guess; a short "let me look" while waiting is
+allowed.
 
 **Request**
 
@@ -121,10 +133,20 @@ can start playing after the first chunk instead of waiting for a finished WAV.
 | `X-Live` | `capture` (explain the photo) or `ask` (answer the spoken question about it) |
 | `X-Jpeg-Length` | byte length `N` of the JPEG that starts the body (1 … 2 MB) |
 | `X-Lang` | `ja` (default) / `en` / `zh` — instructions and speech are pinned to it |
+| `X-History-Length` | optional byte length of a JSON history section appended **after** the JPEG (+ WAV), see below |
 
 Body = `N` bytes of JPEG (must start `FF D8`), then, for `ask`, a RIFF/WAVE file
 (PCM 16-bit mono, any sample rate, 4000 B … 2 MB). The Worker linearly resamples
-it to the 24 kHz mono PCM the Realtime API accepts (the device records 16 kHz).
+it to the 24 kHz mono PCM both upstreams accept (the device records 16 kHz).
+
+**History (optional).** With `X-History-Length: B`, the **last `B` bytes** of the
+body are UTF-8 JSON `[{"q":"…","a":"…"}, …]` — the most recent question/answer
+pairs — and are stripped before the JPEG/WAV are parsed. At most the last 10
+pairs are used, each string cut to 500 characters, 32 KB total; anything that is
+not such an array is a 400. They are sent as prior `user`/`assistant` messages in
+the GPT-Live `session.start` `input` (and prepended to the Realtime driver's
+one-shot input), so a follow-up question can refer back to the last answer. The
+firmware does not send this section yet.
 
 **Response** — `application/octet-stream`, chunked, `X-Voice-Engine:
 realtime-live`, `Cache-Control: no-store`. The body is the 4-byte magic `TOI1`
@@ -138,13 +160,40 @@ followed by frames of `type (1 B) + length (uint32 LE) + payload`:
 | `X` | error JSON `{error}` — only ever sent **before any audio frame**; the device falls back to `/analyze` + `/tts` (or `/ask`), then to chirps |
 
 Exactly one `E` or `X` frame ends the stream. Everything after the upgrade is
-reported in-band: an upstream `error`, a disconnect before `response.done`, a
+reported in-band: an upstream `error`, a disconnect before the answer is over, a
 non-`completed` status, a 15 s idle gap or the 90 s hard limit produce `X` if
 no audio was sent yet, and `E` with `status:"truncated"` otherwise. Failures
 before the WebSocket is up stay plain JSON: 503 when `TOICAMERA_TTS_API_KEY`
-is missing, 502 when the Realtime upgrade fails, 400/413 for a bad header,
-body layout, JPEG or WAV. The model and voice are `REALTIME_MODEL` /
-`REALTIME_VOICE` (same vars as the `/tts` Realtime engine).
+is missing, 502 when the upgrade fails, 400/413 for a bad header, body layout,
+JPEG or WAV.
+
+**End of the answer.** GPT-Live emits no authoritative turn-completed event, so
+the Worker ends the turn when no output delta has arrived for
+`LIVE_END_SILENCE_MS` (default 1500) *and* no delegated Responses call is still
+running (tracked from the `response.event` lifecycle), then sends `session.close`
+and waits up to 2 s for `session.closed` to log its usage before emitting `E`.
+
+**Engine and fallback.** `LIVE_ENGINE` picks the upstream: `gpt-live` (default)
+or `realtime` — the latter restores the older one-shot `gpt-realtime` behaviour
+using `REALTIME_MODEL` / `REALTIME_VOICE` / `REALTIME_API_BASE_URL`. With
+`gpt-live`, a failure **before any audio reached the device** (connect refused,
+no `session.started` within 10 s, an `error` event, no audio within 20 s) is
+logged as `[toi] live: gpt-live failed before audio (…) — falling back to
+realtime` and the Realtime driver takes over **inside the same request**: the
+device sees one continuous `TOI1` stream and never hears silence. After audio
+has started there is no fallback — the stream ends with `E status:"truncated"`.
+Each request logs one summary line: `[toi] live: <engine> <mode> <lang> <status>
+<pcmBytes> B pcm, <ms> ms, first audio at <ms>, backend=<model>, usage=<json>`.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `LIVE_ENGINE` | `gpt-live` | `gpt-live` or `realtime` |
+| `LIVE_MODEL` | `gpt-live-1` | GPT-Live voice model |
+| `LIVE_BACKEND_MODEL` | `gpt-5.6-terra` | delegated Responses model (must be vision-capable); `gpt-5.6-luna` is cheaper |
+| `LIVE_BACKEND_REASONING` | `` | `reasoning.effort` for the backend (`none`/`low`/`medium`/`high`); empty = model default |
+| `LIVE_VOICE` | `marin` | GPT-Live output voice |
+| `LIVE_API_BASE_URL` | `https://api.openai.com/v1` | base for `/live/sessions` |
+| `LIVE_END_SILENCE_MS` | `1500` | output gap that ends the answer |
 
 ```bash
 curl -s --no-buffer -X POST "$BASE/live" \
