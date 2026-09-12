@@ -1,0 +1,6 @@
+--- (a) capture, final build
+time 2.985105s
+T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:15 A:4800 A:4800 A:4800 E:{"caption":"これはテストの写真です","detail":"机の上にノートパソコンがあります。","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"","status":"completed","pcmBytes":72000,"ms":2979}
+--- (b) ask + history, final build
+time 2.995433s
+T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:15 A:4800 A:4800 A:4800 E:{"caption":"これはテストの写真です","detail":"机の上にノートパソコンがあります。","transcript":"これはテストの写真です。机の上にノートパソコンがあります。","question":"これは何?","status":"completed","pcmBytes":72000,"ms":2979}

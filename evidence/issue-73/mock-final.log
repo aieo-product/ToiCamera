@@ -1,0 +1,88 @@
+[mock] 2026-09-12T16:21:02.199Z listening on :8798
+[mock] 2026-09-12T16:21:27.819Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:21:27.860Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:21:27.860Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=0 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:21:27.883Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:21:27.883Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:21:28.063Z audio input received: 0 appends, 0 B
+[mock] 2026-09-12T16:21:29.159Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:21:30.842Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:21:30.842Z session.close after 0 appends / 0 B pcm
+[mock] 2026-09-12T16:21:30.846Z live client closed
+[mock] 2026-09-12T16:21:46.750Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:21:46.751Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:21:46.751Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=4 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:21:46.751Z session.start.input: [{"type":"message","role":"user","content":[{"type":"input_text","text":"これは何ですか?"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ノートパソコンです。"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"誰の?"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"たぶんあなたのです。"}]}]
+[mock] 2026-09-12T16:21:46.751Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:21:46.752Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="ユーザーはこれからこの写真について音声で質問します。その質問に、この写真を文脈として答えてください。"
+[mock] 2026-09-12T16:21:46.953Z audio input received: 18 appends, 86400 B
+[mock] 2026-09-12T16:21:48.042Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:21:49.729Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:21:49.730Z session.close after 18 appends / 86400 B pcm
+[mock] 2026-09-12T16:21:49.734Z live client closed
+[mock] 2026-09-12T16:22:17.244Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:22:17.245Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:22:17.245Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=0 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:22:17.245Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:22:17.245Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:22:17.445Z audio input received: 0 appends, 0 B
+[mock] 2026-09-12T16:22:18.534Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:22:20.216Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:22:20.217Z session.close after 0 appends / 0 B pcm
+[mock] 2026-09-12T16:22:20.217Z live client closed
+[mock] 2026-09-12T16:22:50.256Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:22:50.257Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"mock-live-fail","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜
+[mock] 2026-09-12T16:22:50.257Z session.start: model=mock-live-fail voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=0 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:22:50.259Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:22:50.259Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:22:50.290Z sending error (fallback test)
+[mock] 2026-09-12T16:22:50.297Z live client closed
+[mock] 2026-09-12T16:22:50.299Z upgrade /v1/realtime model=gpt-realtime auth=bearer
+[mock] 2026-09-12T16:22:50.300Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。撮影された写真に写っているものを、親しみやすく少しユーモラスな話し言葉で声に出して解説します。\n最初の1文は写真の主題を表す短い見出し(15文字以内)にして、そのあとに2〜3文(合計150文字以内)の解説を続けてください。写っているものの説明に、豆知識やちょっとした一言を添えます。\n専門用語は避け、聞いて楽しい語り口で。かならず日本語だけで話してください。","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":nul
+[mock] 2026-09-12T16:22:50.300Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmA
+[mock] 2026-09-12T16:22:50.300Z response.create input: input_image 793 B jpeg no input_audio input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:22:51.346Z sent 15 deltas, 72000 B pcm, 5 transcript deltas
+[mock] 2026-09-12T16:22:51.350Z client closed
+[mock] 2026-09-12T16:23:32.772Z upgrade /v1/realtime model=gpt-realtime auth=bearer
+[mock] 2026-09-12T16:23:32.774Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。撮影された写真に写っているものを、親しみやすく少しユーモラスな話し言葉で声に出して解説します。\n最初の1文は写真の主題を表す短い見出し(15文字以内)にして、そのあとに2〜3文(合計150文字以内)の解説を続けてください。写っているものの説明に、豆知識やちょっとした一言を添えます。\n専門用語は避け、聞いて楽しい語り口で。かならず日本語だけで話してください。","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":nul
+[mock] 2026-09-12T16:23:32.775Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmA
+[mock] 2026-09-12T16:23:32.775Z response.create input: input_image 793 B jpeg no input_audio input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:23:33.817Z sent 15 deltas, 72000 B pcm, 5 transcript deltas
+[mock] 2026-09-12T16:23:33.821Z client closed
+[mock] 2026-09-12T16:23:33.908Z upgrade /v1/realtime model=gpt-realtime auth=bearer
+[mock] 2026-09-12T16:23:33.909Z client event: session.update {"type":"session.update","session":{"type":"realtime","output_modalities":["audio"],"instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。ユーザーが撮った写真と、その写真についての音声の質問が届きます。\n写真の内容を踏まえて、親しみやすく少しユーモラスな話し言葉で、2文以内で声に出して答えてください。音声が聞き取れないときは、その旨を一言だけ伝えます。\n専門用語は避け、かならず日本語だけで話してください。","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":null,"transcription":{"model":"gpt-4o-mini-tran
+[mock] 2026-09-12T16:23:33.909Z client event: response.create {"type":"response.create","response":{"conversation":"none","output_modalities":["audio"],"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmA
+[mock] 2026-09-12T16:23:33.909Z response.create input: input_image 793 B jpeg input_audio 48000 B pcm input_text="この写真について、いまの音声の質問に答えてください。"
+[mock] 2026-09-12T16:23:34.946Z sent 15 deltas, 72000 B pcm, 5 transcript deltas
+[mock] 2026-09-12T16:23:34.950Z client closed
+[mock] 2026-09-12T16:24:16.837Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:24:16.838Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:24:16.838Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=0 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:24:16.840Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:24:16.840Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:24:17.041Z audio input received: 0 appends, 0 B
+[mock] 2026-09-12T16:24:18.139Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:24:19.815Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:24:19.815Z session.close after 0 appends / 0 B pcm
+[mock] 2026-09-12T16:24:19.818Z live client closed
+[mock] 2026-09-12T16:24:19.899Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:24:19.900Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:24:19.900Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=4 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:24:19.900Z session.start.input: [{"type":"message","role":"user","content":[{"type":"input_text","text":"これは何ですか?"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ノートパソコンです。"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"誰の?"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"たぶんあなたのです。"}]}]
+[mock] 2026-09-12T16:24:19.900Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:24:19.900Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="ユーザーはこれからこの写真について音声で質問します。その質問に、この写真を文脈として答えてください。"
+[mock] 2026-09-12T16:24:20.103Z audio input received: 18 appends, 86400 B
+[mock] 2026-09-12T16:24:21.195Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:24:22.877Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:24:22.877Z session.close after 18 appends / 86400 B pcm
+[mock] 2026-09-12T16:24:22.879Z live client closed
+[mock] 2026-09-12T16:24:22.979Z upgrade /v1/live/sessions model=null auth=bearer
+[mock] 2026-09-12T16:24:22.979Z live client event: session.start {"type":"session.start","event_id":"toi_start","session":{"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かならずバックエンドに委任し、その結果が返ってくるまで答えを推測しないでください。待っている間は「ちょっと見てみますね」程度の短い相づちを入れてもかまいません。\nバックエンドの結果が届いたら、それをもとに2〜4文で話
+[mock] 2026-09-12T16:24:22.979Z session.start: model=gpt-live-1 voice=marin format={"type":"audio/pcm","rate":24000} backend=gpt-5.6-terra reasoning=undefined max_output_tokens=400 input=0 messages instructions="あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみや" backend_instructions="あなたはカメラ付き小型ガジェット「ToiCamera」の解説エンジンです。ユーザ"
+[mock] 2026-09-12T16:24:22.979Z live client event: response.item.create {"type":"response.item.create","event_id":"toi_photo","item":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UG
+[mock] 2026-09-12T16:24:22.980Z response.item.create: event_id=toi_photo role=user types=[input_image,input_text] input_image 793 B jpeg input_text="この写真を解説してください。"
+[mock] 2026-09-12T16:24:23.180Z audio input received: 0 appends, 0 B
+[mock] 2026-09-12T16:24:24.270Z live sent 15 audio deltas, 72000 B pcm — now going quiet (no terminal event)
+[mock] 2026-09-12T16:24:25.949Z live client event: session.close {"type":"session.close"}
+[mock] 2026-09-12T16:24:25.950Z session.close after 0 appends / 0 B pcm
+[mock] 2026-09-12T16:24:25.955Z live client closed
