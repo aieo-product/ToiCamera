@@ -76,8 +76,10 @@ TTS voice is `TTS_VOICE` (model `TTS_MODEL`, default OpenAI
 
 ## GPT Realtime voice
 
-The device's fourth Voice option, "GPT Realtime", asks `/tts` for
-`{"engine":"realtime"}`. The Worker opens an outbound WebSocket to the OpenAI
+With the device's fourth Voice option, "GPT Realtime", the firmware uses
+`POST /live` (one Realtime session, streamed — see below). `/tts` also accepts
+`{"engine":"realtime"}` to have any text read by the Realtime voice; that path
+is kept for other clients. For it the Worker opens an outbound WebSocket to the OpenAI
 Realtime API (`REALTIME_API_BASE_URL`, default `api.openai.com/v1`,
 `REALTIME_MODEL` default `gpt-realtime`), reusing `TOICAMERA_TTS_API_KEY` as
 the bearer token — Realtime is OpenAI-only, so it does not follow
