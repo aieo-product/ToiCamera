@@ -1,0 +1,7 @@
+first byte of headers at +0.003 s
+HTTP/1.1 200 OK | Transfer-Encoding: chunked | Content-Type: application/octet-stream | Cache-Control: no-store | x-voice-engine: realtime-live
+first A frame at +0.055 s (4800 B)
+E frame at +1.037 s: {"caption": "これはテストの写真です", "detail": "机の上にノートパソコンがあります。", "transcript": "これはテストの写真です。机の上にノートパソコンがあります。", "status": "completed", "pcmBytes": 72000, "ms": 1029}
+A frames: 15, last byte at +6.035 s
+network chunks: 35 (first 4 B at +0.003 s)
+chunk timeline: +0.003s/4B +0.003s/23B +0.055s/4122B +0.055s/683B +0.106s/4805B +0.157s/4122B +0.157s/683B +0.209s/23B +0.261s/4122B +0.261s/683B +0.312s/26B +0.312s/4779B ...

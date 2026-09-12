@@ -1,0 +1,4 @@
+[mock] 2026-09-12T06:21:04.954Z upgrade /v1/realtime model=gpt-realtime auth=bearer
+[mock] 2026-09-12T06:21:04.956Z response.create input: input_image 793 B jpeg no input_audio input_text="この写真を解説してください。"
+[mock] 2026-09-12T06:21:05.984Z sent 15 deltas, 72000 B pcm, 5 transcript deltas
+[mock] 2026-09-12T06:21:05.990Z client closed

@@ -1,0 +1,13 @@
+magic: TOI1 (4 B), total 72457 B
+frames: T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:18 A:4800 A:4800 A:4800 T:15 A:4800 A:4800 A:4800 E:261
+counts: {'T': 5, 'A': 15, 'E': 1} payload bytes: {'T': 87, 'A': 72000, 'E': 261}
+transcript deltas: これはテストの写真です。机の上にノートパソコンがあります。
+E frame JSON: {
+  "caption": "これはテストの写真です",
+  "detail": "机の上にノートパソコンがあります。",
+  "transcript": "これはテストの写真です。机の上にノートパソコンがあります。",
+  "status": "completed",
+  "pcmBytes": 72000,
+  "ms": 1025
+}
+trailing bytes: 0

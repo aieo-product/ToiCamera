@@ -1,0 +1,8 @@
+magic: TOI1 (4 B), total 35 B
+frames: X:26
+counts: {'X': 1} payload bytes: {'X': 26}
+transcript deltas: 
+X frame JSON: {
+  "error": "realtime error"
+}
+trailing bytes: 0
