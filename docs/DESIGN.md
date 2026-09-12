@@ -88,6 +88,22 @@ RESULT / ERROR --[KEYB 青]--> IDLE
 - HOME は RTC/NTP 時計・バッテリー・GPS 地名/最寄駅・ソフトウェア歩数を表示し、
   1 分ごとまたは表示データ更新時だけ M5Canvas から再描画する
 - バッファは全て PSRAM(`ps_malloc`): JPEG ≤2MB、WAV ≤4MB。撮影サイクル毎に解放
+- ボイス=GPT Realtime(`voiceMode==3`)では撮影も音声質問も `/analyze`+`/tts`
+  (音声質問は `/ask`+`/tts`)を呼ばず、JPEG(音声質問は録音 WAV も連結)を
+  `POST /live` に 1 回投げ、`liveWorker` タスクが `writeToStream()` で
+  `TOI1` フレーム列(`A` PCM16 24kHz / `T` transcript 差分 / `E` 終端 JSON /
+  `X` エラー)を受信する。`LiveSink` が音声を 45 秒分の PSRAM バッファに追記し、
+  `livePoll()` が 1.5 秒先行した時点から専用チャネルへ 200ms 単位で `playRaw`
+  投入してギャップレス再生、`E` で caption/detail・履歴・結果画面を更新する
+- `E` の `status` は `completed` / `truncated` のどちらも正常終了として扱う
+  (`truncated` = Worker が途中で転送を打ち切っただけなので受信済みを再生し、
+  caption/detail と履歴もそのまま反映する)。音声質問の `E` には `question` も
+  含まれ、`Q: <質問>`(空なら固定ラベル)を caption にする
+- フォールバックは **音声フレームが 1 つも届いていない場合だけ**(`X` フレーム・
+  HTTP エラー・接続前のタイムアウト・PSRAM 確保失敗)。`livePoll()` が検知して
+  従来経路(撮影=`/analyze`→`prepareVoice`、音声質問=`/ask`)へ 1 回だけ切り替える。
+  音声受信後にストリームが壊れた場合は二重再生を避け、受信済み音声と
+  transcript をそのまま結果にする
 - 表示: `drawJpg`(scale-to-fit)、解説文は 320px 幅の 8bit `M5Canvas` に禁則付き
   折返し描画し、タッチドラッグ+自動スクロール
 - WiFi は 2 スロット(自宅 + テザリング)をビルドフラグ(`secrets.ini`、gitignore)で注入

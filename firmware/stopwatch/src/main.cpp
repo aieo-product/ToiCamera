@@ -1052,12 +1052,14 @@ static void stopAnimalese() {
 }
 
 static void stopSano();
+static void stopLive();
 static int sanoBannerPct = -1;   // result-screen voice progress; -1 = not shown
 
 static void stopSpeech() {
   stopAnimalese();
   M5.Speaker.stop();
   stopSano();
+  stopLive();
   if (ttsBuf) {
     free(ttsBuf);
     ttsBuf = nullptr;
@@ -2113,6 +2115,411 @@ static void sanoPoll() {
   startResultAutoScroll();
 }
 
+// ------------------------------------------------- GPT Realtime (/live)
+// Voice mode 3: the photo (plus the recorded question for hold-to-talk) goes
+// to the Worker's POST /live in ONE request; the Worker runs a single OpenAI
+// Realtime turn and streams "TOI1" frames back — 'A' raw PCM16 mono 24 kHz,
+// 'T' transcript deltas, 'E' the terminal {caption,detail,transcript,status}
+// JSON, 'X' an error. liveWorker() parks in HTTPClient::writeToStream() and
+// feeds LiveSink, which appends the audio into one pre-allocated PSRAM buffer
+// (never realloc'd, so the segments already handed to the speaker stay valid).
+// livePoll() on the main loop queues fresh samples into a dedicated speaker
+// channel, so the voice starts long before the answer is finished.
+static constexpr uint32_t kLiveRate = 24000;                    // Realtime PCM
+static constexpr size_t kLiveMaxSamples = kLiveRate * 45;       // 45 s ceiling
+static constexpr size_t kLiveStartSamples = kLiveRate * 3 / 2;  // 1.5 s ahead
+static constexpr size_t kLiveChunkSamples = 4800;               // 200 ms/queue
+// Fixed channel: tone() and playRaw(-1) pick the highest free channel, so a
+// low one never collides with the chirps/sfx that play over the same screen.
+static constexpr uint8_t kLiveCh = 0;
+static constexpr size_t kLiveTextMax = 8192;       // per-frame text/JSON cap
+static constexpr size_t kLiveTranscriptMax = 2048;
+
+static int16_t *livePcm = nullptr;         // PSRAM, whole answer, never moved
+static volatile size_t liveWritten = 0;    // samples received (task writes)
+static size_t liveQueued = 0;              // samples handed to the speaker
+static volatile bool liveDone = false;     // terminal 'E' frame seen
+static volatile bool liveFailed = false;
+static volatile bool liveExited = true;    // task has left (safe to free)
+static volatile bool liveStopFlag = false;
+static volatile bool liveOverflow = false;
+static volatile bool liveResultPending = false;  // 'E' not applied to the UI
+static volatile uint32_t liveFirstAudioAt = 0;
+static bool liveActive = false;    // a session is running or its result is due
+static bool livePlaying = false;
+static bool liveHoldPhoto = false;  // result canvas is stale until 'E' lands
+static bool liveAsk = false;        // false = capture, true = voice question
+static uint32_t liveStartedAt = 0;
+static String liveCaption;
+static String liveDetail;
+static String liveTranscript;
+static String liveQuestion;  // 'E' frame, ask only — empty when not transcribed
+static uint8_t *liveBody = nullptr;  // request body (JPEG [+ WAV]), task-owned
+static size_t liveBodyLen = 0;
+static size_t liveJpegLen = 0;
+static uint8_t *liveWav = nullptr;   // recorded question, kept for a fallback
+static size_t liveWavLen = 0;
+static int16_t *livePendingFree = nullptr;  // freed once the task has left
+static int liveBannerPct = -1;
+
+// Append PCM16 bytes to the session buffer. Single writer (the task); the
+// sample count is published only after the bytes are in place.
+static void liveAppendPcm(const uint8_t *data, size_t bytes) {
+  int16_t *pcm = livePcm;  // stopLive() may null this out; the buffer itself
+  if (!pcm || bytes < 2) return;  // is only released after liveExited
+  if (!liveFirstAudioAt) liveFirstAudioAt = millis();
+  const size_t samples = bytes / 2;
+  const size_t room = kLiveMaxSamples - liveWritten;
+  const size_t n = samples > room ? room : samples;
+  if (n < samples) liveOverflow = true;
+  if (!n) return;
+  memcpy(pcm + liveWritten, data, n * 2);
+  liveWritten += n;
+}
+
+// Terminal frame without caption/detail: first sentence of the transcript
+// becomes the caption, the rest the body.
+static void liveSplitTranscript() {
+  String t = liveTranscript;
+  t.trim();
+  if (!t.length()) return;
+  static const char *kEnders[] = {"。", "！", "？", ".", "!", "?"};
+  int cut = -1;
+  for (auto e : kEnders) {
+    const int p = t.indexOf(e);
+    if (p >= 0 && (cut < 0 || p < cut)) cut = p + (int)strlen(e);
+  }
+  if (cut < 0 || cut > 60) cut = (int)(t.length() < 60 ? t.length() : 60);
+  liveCaption = t.substring(0, cut);
+  liveDetail = t.substring(cut);
+  liveDetail.trim();
+  if (!liveDetail.length()) liveDetail = t;
+}
+
+// Frame parser fed by HTTPClient::writeToStream() (which de-chunks for us).
+// Returning 0 from write() aborts the transfer — that is how stopLive() gets
+// the task out of a blocking stream read.
+class LiveSink : public Stream {
+ public:
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  size_t write(uint8_t b) override { return write(&b, 1); }
+  size_t write(const uint8_t *data, size_t len) override {
+    if (liveStopFlag || liveFailed) return 0;
+    size_t i = 0;
+    while (i < len) {
+      switch (stage_) {
+        case 0:  // "TOI1" magic, once per response
+          hdr_[hdrGot_++] = data[i++];
+          if (hdrGot_ == 4) {
+            hdrGot_ = 0;
+            if (memcmp(hdr_, "TOI1", 4) != 0) {
+              Serial.println("[toi] live: bad stream magic");
+              liveFailed = true;
+              return 0;
+            }
+            stage_ = 1;
+          }
+          break;
+        case 1:  // frame type
+          type_ = (char)data[i++];
+          hdrGot_ = 0;
+          stage_ = 2;
+          break;
+        case 2:  // uint32 LE payload length
+          hdr_[hdrGot_++] = data[i++];
+          if (hdrGot_ == 4) {
+            hdrGot_ = 0;
+            left_ = (uint32_t)hdr_[0] | ((uint32_t)hdr_[1] << 8) |
+                    ((uint32_t)hdr_[2] << 16) | ((uint32_t)hdr_[3] << 24);
+            text_ = "";
+            carry_ = false;
+            stage_ = 3;
+            if (left_ == 0) endFrame();
+          }
+          break;
+        default: {  // payload
+          size_t take = len - i;
+          if (take > left_) take = left_;
+          payload(data + i, take);
+          i += take;
+          left_ -= take;
+          if (left_ == 0) endFrame();
+          break;
+        }
+      }
+    }
+    return len;
+  }
+
+ private:
+  void payload(const uint8_t *data, size_t len) {
+    if (!len) return;
+    if (type_ == 'A') {
+      // PCM16: a frame can be split anywhere, so a lone trailing byte is
+      // carried over and re-paired — samples never lose their alignment.
+      size_t i = 0;
+      if (carry_) {
+        const uint8_t pair[2] = {carryByte_, data[0]};
+        carry_ = false;
+        i = 1;
+        liveAppendPcm(pair, 2);
+        if (len == 1) return;
+      }
+      size_t n = len - i;
+      if (n & 1) {
+        carryByte_ = data[len - 1];
+        carry_ = true;
+        --n;
+      }
+      liveAppendPcm(data + i, n);
+      return;
+    }
+    if (text_.length() >= kLiveTextMax) return;
+    if (text_.length() + len > kLiveTextMax) len = kLiveTextMax - text_.length();
+    text_.concat((const char *)data, len);
+  }
+
+  void endFrame() {
+    switch (type_) {
+      case 'A':
+        break;
+      case 'T':
+        if (liveTranscript.length() < kLiveTranscriptMax) liveTranscript += text_;
+        break;
+      case 'E': {
+        JsonDocument doc;
+        String status;
+        if (deserializeJson(doc, text_) == DeserializationError::Ok) {
+          liveCaption = doc["caption"].as<String>();
+          liveDetail = doc["detail"].as<String>();
+          liveQuestion = doc["question"].as<String>();
+          status = doc["status"].as<String>();
+          const String full = doc["transcript"].as<String>();
+          if (full.length()) liveTranscript = full;
+        } else {
+          Serial.println("[toi] live: end frame is not JSON");
+        }
+        // status "truncated" only means the Worker stopped forwarding early;
+        // everything received is valid, so it ends exactly like "completed".
+        Serial.printf("[toi] live: end frame status=%s\n",
+                      status.length() ? status.c_str() : "?");
+        if (!liveCaption.length()) liveSplitTranscript();
+        if (!liveCaption.length() && !liveDetail.length() && !liveWritten) {
+          // Neither text nor audio: fall back instead of drawing a blank.
+          Serial.println("[toi] live: empty end frame");
+          liveFailed = true;
+          break;
+        }
+        liveResultPending = true;
+        liveDone = true;  // set last: livePoll() reads the result after this
+        break;
+      }
+      case 'X':
+        Serial.printf("[toi] live: error frame %s\n", text_.c_str());
+        liveFailed = true;
+        break;
+      default:
+        Serial.printf("[toi] live: unknown frame type 0x%02X\n", (uint8_t)type_);
+        break;
+    }
+    text_ = "";
+    carry_ = false;
+    hdrGot_ = 0;
+    stage_ = 1;
+  }
+
+  uint8_t stage_ = 0;
+  uint8_t hdr_[4] = {0, 0, 0, 0};
+  uint8_t hdrGot_ = 0;
+  char type_ = 0;
+  uint32_t left_ = 0;
+  bool carry_ = false;
+  uint8_t carryByte_ = 0;
+  String text_;
+};
+
+static void liveWorker(void *) {
+  const uint32_t t0 = millis();
+  LiveSink sink;
+  int code = -1;
+  int written = 0;
+  if (!ttsHttpInit) {
+    ttsClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
+    ttsHttp.setReuse(true);
+    ttsHttp.setConnectTimeout(5000);
+    ttsHttpInit = true;
+  }
+  // Reads block until the next chunk arrives; 15 s covers a slow first token
+  // and still bounds a dead connection.
+  ttsHttp.setTimeout(15000);
+  if (ttsHttp.begin(ttsClient, String(WORKER_URL) + "/live")) {
+    ttsHttp.addHeader("Content-Type", "application/octet-stream");
+    ttsHttp.addHeader("X-Device-Token", deviceToken());
+    ttsHttp.addHeader("X-Live", liveAsk ? "ask" : "capture");
+    ttsHttp.addHeader("X-Lang", selectedLangCode());
+    ttsHttp.addHeader("X-Jpeg-Length", String((unsigned)liveJpegLen));
+    code = ttsHttp.POST(liveBody, liveBodyLen);
+    Serial.printf("[toi] live: POST %d after %lums\n", code,
+                  (unsigned long)(millis() - t0));
+    if (code == HTTP_CODE_OK) written = ttsHttp.writeToStream(&sink);
+  }
+  ttsHttp.end();
+  ttsClient.stop();  // release the TLS context right away (see #61)
+  if (liveBody) {
+    free(liveBody);
+    liveBody = nullptr;
+    liveBodyLen = 0;
+  }
+  if (!liveDone) liveFailed = true;
+  Serial.printf(
+      "[toi] live: %s HTTP %d, %d B streamed, %.1f s audio, first audio %lums, "
+      "total %lums%s\n",
+      liveDone ? "done" : "FAILED", code, written, liveWritten / (float)kLiveRate,
+      (unsigned long)(liveFirstAudioAt ? liveFirstAudioAt - liveStartedAt : 0),
+      (unsigned long)(millis() - t0), liveOverflow ? " (audio truncated!)" : "");
+  liveExited = true;
+  vTaskDelete(nullptr);
+}
+
+// Result-screen header while /live streams, in the same band as the sanoTTS
+// banner. pct < 0 clears it.
+static void drawLiveBanner(int pct) {
+  if (state != AppState::Result) return;
+  if (pct == liveBannerPct) return;
+  liveBannerPct = pct;
+  const int x = (M5.Display.width() - kTextWidth) / 2;
+  M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
+  if (pct < 0) return;
+  M5.Display.setFont(contentFont());
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+  M5.Display.drawString(
+      String(tr("リアルタイム応答中 ", "Realtime ", "实时应答中 ")) + pct + "%",
+      M5.Display.width() / 2, 50);
+  const int barW = 220, barH = 8, bx = (M5.Display.width() - barW) / 2, by = 70;
+  M5.Display.drawRect(bx, by, barW, barH, TFT_DARKGREY);
+  M5.Display.fillRect(bx + 1, by + 1, (barW - 2) * pct / 100, barH - 2, TFT_CYAN);
+}
+
+// Stop the session: abort the stream, silence the channel, release the
+// buffers. Safe to call when nothing is running (stopSpeech() always does).
+static void stopLive() {
+  if (!liveExited) {
+    liveStopFlag = true;  // LiveSink::write() returns 0 -> writeToStream aborts
+    for (int i = 0; i < 1000 && !liveExited; ++i) delay(10);
+  }
+  M5.Speaker.stop(kLiveCh);
+  if (liveExited) {
+    if (livePcm) {
+      free(livePcm);
+      livePcm = nullptr;
+    }
+    if (liveBody) {
+      free(liveBody);
+      liveBody = nullptr;
+      liveBodyLen = 0;
+    }
+  } else if (livePcm) {
+    // The task is stuck in a stalled read and may still write into the PCM
+    // buffer, so hand it to livePoll(), which frees it once the task is gone.
+    // Only one session exists at a time, so there is never a second orphan.
+    livePendingFree = livePcm;
+    livePcm = nullptr;
+  }
+  if (liveWav) {
+    free(liveWav);
+    liveWav = nullptr;
+    liveWavLen = 0;
+  }
+  liveWritten = 0;
+  liveQueued = 0;
+  liveDone = false;
+  liveFailed = false;
+  liveStopFlag = false;
+  liveOverflow = false;
+  liveResultPending = false;
+  liveFirstAudioAt = 0;
+  livePlaying = false;
+  liveActive = false;
+  liveHoldPhoto = false;
+  liveCaption = "";
+  liveDetail = "";
+  liveTranscript = "";
+  liveQuestion = "";
+  liveBannerPct = -1;
+}
+
+// Kick off a /live session for the current photo. `extra` is the recorded
+// question WAV appended right after the JPEG (ask only). Returns false when
+// the caller must run the classic /analyze + /tts path instead.
+static bool startLive(bool ask, const uint8_t *extra, size_t extraLen) {
+  stopSpeech();  // also clears any previous live session
+  if (WiFi.status() != WL_CONNECTED || !jpegBuf || !jpegLen) return false;
+  if (!liveExited) {
+    Serial.println("[toi] live: previous session still running");
+    return false;
+  }
+  livePcm = (int16_t *)ps_malloc(kLiveMaxSamples * sizeof(int16_t));
+  if (!livePcm) {
+    Serial.println("[toi] live: PCM buffer alloc failed");
+    return false;
+  }
+  liveBodyLen = jpegLen + extraLen;
+  liveBody = (uint8_t *)ps_malloc(liveBodyLen);
+  if (!liveBody) {
+    free(livePcm);
+    livePcm = nullptr;
+    liveBodyLen = 0;
+    Serial.println("[toi] live: request body alloc failed");
+    return false;
+  }
+  memcpy(liveBody, jpegBuf, jpegLen);
+  if (extra && extraLen) memcpy(liveBody + jpegLen, extra, extraLen);
+  liveJpegLen = jpegLen;
+  liveWritten = 0;
+  liveQueued = 0;
+  liveDone = false;
+  liveFailed = false;
+  liveStopFlag = false;
+  liveOverflow = false;
+  liveResultPending = false;
+  liveFirstAudioAt = 0;
+  livePlaying = false;
+  liveCaption = "";
+  liveDetail = "";
+  liveTranscript = "";
+  liveQuestion = "";
+  liveAsk = ask;
+  liveHoldPhoto = !ask;  // the captured photo stays up until 'E' lands
+  liveActive = true;
+  liveStartedAt = millis();
+  liveBannerPct = -1;
+  liveExited = false;
+  TaskHandle_t task = nullptr;
+  // Core 0 (the WiFi core) like sanotts, so the UI loop on core 1 keeps
+  // running while the task blocks in writeToStream().
+  if (xTaskCreatePinnedToCore(liveWorker, "live", 16384, nullptr, 2, &task, 0) !=
+      pdPASS) {
+    Serial.println("[toi] live: task create failed");
+    liveExited = true;
+    liveActive = false;
+    liveHoldPhoto = false;
+    free(liveBody);
+    liveBody = nullptr;
+    liveBodyLen = 0;
+    free(livePcm);
+    livePcm = nullptr;
+    return false;
+  }
+  Serial.printf("[toi] live: started %s, %u B body\n", ask ? "ask" : "capture",
+                (unsigned)liveBodyLen);
+  drawLiveBanner(0);
+  return true;
+}
+
 // Voice dispatch shared by the capture and voice-question flows.
 // Returns true when playPreparedVoice() has something to play.
 static bool prepareVoice(const String &text, const String &kanaHint = String()) {
@@ -2522,6 +2929,8 @@ static String urlenc(const String &in) {
   return out;
 }
 
+static bool askViaWorker(uint8_t *wav, size_t wavLen);
+
 // Hold-to-talk: record from the built-in mic while KEYA is held, wrap as WAV,
 // send to the Worker (/ask) with the current explanation as context, then
 // show + speak the answer.
@@ -2586,6 +2995,27 @@ static void voiceQuestionFlow() {
   memcpy(wav + 36, "data", 4);
   *(uint32_t *)(wav + 40) = dataLen;
 
+  if (voiceMode == 3 && WiFi.status() == WL_CONNECTED) {
+    // GPT Realtime: one /live round trip brings the answer audio back while
+    // it is still being generated; livePoll() shows and speaks it.
+    drawResult(true);  // clear the recording banner before the live banner
+    if (startLive(true, wav, 44 + dataLen)) {
+      liveWav = wav;  // kept alive in case livePoll() has to fall back
+      liveWavLen = 44 + dataLen;
+      return;
+    }
+  }
+  const bool asked = askViaWorker(wav, 44 + dataLen);
+  free(pcm);
+  if (!asked) {
+    sfxError();
+    drawResult(true);  // restore previous explanation view
+  }
+}
+
+// POST the recorded question to /ask with the current explanation as context,
+// then show + speak the answer. Returns false when nothing was shown.
+static bool askViaWorker(uint8_t *wav, size_t wavLen) {
   drawBusy(tr("考え中...", "Thinking...", "思考中..."), TFT_CYAN);
   const uint32_t ta = millis();
   bool ok = false;
@@ -2604,7 +3034,7 @@ static void voiceQuestionFlow() {
       analyzeHttp.addHeader("X-Device-Token", deviceToken());
       analyzeHttp.addHeader("X-Model", selectedModelName());
       analyzeHttp.addHeader("X-Lang", selectedLangCode());
-      const int code = analyzeHttp.POST(wav, 44 + dataLen);
+      const int code = analyzeHttp.POST(wav, wavLen);
       if (code == HTTP_CODE_OK) {
         JsonDocument doc;
         if (deserializeJson(doc, analyzeHttp.getString()) ==
@@ -2638,10 +3068,164 @@ static void voiceQuestionFlow() {
       }
     }
   }
-  free(pcm);
-  if (!ok) {
+  return ok;
+}
+
+
+static void enterError(const String &msg);
+
+// Classic capture tail: /analyze -> voice -> result screen. Shared by the
+// normal capture cycle and by the /live fallback.
+static void captureClassicTail() {
+  state = AppState::Analyzing;
+  drawBusy(tr("AI解析中...", "AI analyzing...", "AI解析中..."), TFT_CYAN);
+  if (!analyzePhoto()) {
     sfxError();
-    drawResult(true);  // restore previous explanation view
+    enterError(lastError.length()
+                   ? lastError
+                   : String(tr("解析に失敗しました", "Analysis failed",
+                               "解析失败")));
+    return;
+  }
+
+  recordInquiry(caption, detailText);
+
+  const String speech = caption + "。" + detailText;
+  const bool voiceReady = prepareVoice(speech, analyzeKana);
+  buildResultCanvas();
+  drawResult(true);
+  state = AppState::Result;  // interactive immediately — speech runs in a task
+  if (!(voiceReady && playPreparedVoice())) speakAnimalese(speech);
+  // sanoTTS still synthesizing: sanoPoll() shows progress and starts the
+  // scroll when the voice actually plays. Every other path plays now.
+  if (sanoExited) startResultAutoScroll();
+  else drawSanoBanner(0);
+}
+
+// Called from loop(): drive the /live session — queue the audio that arrived,
+// show the terminal result, fall back when the stream failed.
+static void livePoll() {
+  // stopLive() gave up waiting on a stalled task: that buffer is only safe to
+  // release once the task has actually left.
+  if (livePendingFree && liveExited) {
+    free(livePendingFree);
+    livePendingFree = nullptr;
+  }
+  if (!liveActive) return;
+
+  // An 'X' frame or an HTTP error only ever arrives before the first audio
+  // frame, so a failure with audio already in hand is a broken stream: keep
+  // what was received instead of speaking the whole answer a second time.
+  if (liveFailed && liveExited && liveWritten) {
+    Serial.println("[toi] live: stream broke after audio — keeping it");
+    liveFailed = false;
+    if (!liveCaption.length()) liveSplitTranscript();
+    if (!liveCaption.length() && !liveDetail.length()) {
+      liveCaption = tr("リアルタイム応答", "Realtime answer", "实时应答");
+    }
+    liveResultPending = true;
+    liveDone = true;
+  }
+
+  if (liveFailed) {
+    // The fallback reuses ttsHttp/ttsClient, so never start it while the
+    // streaming task may still be holding that connection.
+    if (!liveExited) return;
+    Serial.println("[toi] live: failed — falling back to the classic path");
+    const bool ask = liveAsk;
+    uint8_t *wav = liveWav;  // ownership moves to the fallback
+    const size_t wavLen = liveWavLen;
+    liveWav = nullptr;
+    liveWavLen = 0;
+    drawLiveBanner(-1);
+    stopLive();  // clears liveActive, so the fallback can never run twice
+    if (ask) {
+      const bool ok = wav && wavLen && askViaWorker(wav, wavLen);
+      free(wav);
+      if (!ok) {
+        sfxError();
+        drawResult(true);  // restore the previous explanation view
+      }
+    } else {
+      captureClassicTail();
+    }
+    return;
+  }
+
+  // Terminal frame: caption/detail, history entry, real result screen.
+  if (liveResultPending) {
+    liveResultPending = false;
+    if (liveAsk) {
+      // Same shape as the classic /ask path: the transcribed question as the
+      // caption, the spoken answer as the body. The Worker sends an empty
+      // question when it could not transcribe one.
+      caption = liveQuestion.length()
+                    ? "Q: " + liveQuestion
+                    : String(tr("Q: (音声の質問)", "Q: (spoken question)",
+                                "Q: (语音提问)"));
+      detailText = liveTranscript;
+      detailText.trim();
+      if (!detailText.length()) {
+        detailText = liveCaption;
+        if (liveDetail.length()) {
+          if (detailText.length()) detailText += "\n";
+          detailText += liveDetail;
+        }
+      }
+    } else {
+      caption = liveCaption;
+      detailText = liveDetail;
+    }
+    recordInquiry(caption, detailText);
+    drawLiveBanner(-1);
+    buildResultCanvas();
+    drawResult(true);
+    liveHoldPhoto = false;
+    startResultAutoScroll();  // scroll along with the voice, as /analyze does
+    Serial.printf("[toi] live: result after %lums: %s\n",
+                  (unsigned long)(millis() - liveStartedAt), caption.c_str());
+  }
+
+  // Start once enough audio is banked that the stream stays ahead.
+  if (!livePlaying && (liveWritten >= kLiveStartSamples || liveDone)) {
+    livePlaying = true;
+    Serial.printf("[toi] live: playback starts at %u samples (%lums)\n",
+                  (unsigned)liveWritten,
+                  (unsigned long)(millis() - liveStartedAt));
+  }
+  if (!livePlaying) {
+    int pct = (int)(liveWritten * 100 / kLiveStartSamples);
+    if (pct > 99) pct = 99;
+    drawLiveBanner(pct);
+  } else if (liveBannerPct >= 0) {
+    drawLiveBanner(-1);
+  }
+
+  // Feed the speaker: two queued slots per channel, so top it up whenever
+  // there is room. playRaw() does not copy — livePcm stays put for the whole
+  // session, so every queued segment remains valid.
+  if (livePlaying && livePcm) {
+    while (M5.Speaker.isPlaying(kLiveCh) < 2) {
+      const size_t have = liveWritten;
+      const size_t n = have - liveQueued;
+      if (n == 0 || (n < kLiveChunkSamples && !liveDone)) break;
+      if (!M5.Speaker.playRaw(livePcm + liveQueued, n, kLiveRate, false, 1,
+                              kLiveCh, false)) {
+        break;
+      }
+      liveQueued += n;
+    }
+  }
+
+  // Finished: the task is gone, everything received has been queued, and the
+  // speaker has drained it.
+  if (liveDone && liveExited && liveQueued >= liveWritten &&
+      M5.Speaker.isPlaying(kLiveCh) == 0) {
+    Serial.printf("[toi] live: finished %.1f s audio, %lums total\n",
+                  liveWritten / (float)kLiveRate,
+                  (unsigned long)(millis() - liveStartedAt));
+    drawLiveBanner(-1);
+    stopLive();  // frees livePcm now that nothing plays from it
   }
 }
 
@@ -3357,29 +3941,19 @@ static void runCaptureCycle() {
     Serial.printf("[toi] drawJpg: %lums\n", millis() - t0);
   }
 
-  state = AppState::Analyzing;
-  drawBusy(tr("AI解析中...", "AI analyzing...", "AI解析中..."), TFT_CYAN);
-  if (!analyzePhoto()) {
-    sfxError();
-    enterError(lastError.length()
-                   ? lastError
-                   : String(tr("解析に失敗しました", "Analysis failed",
-                               "解析失败")));
-    return;
+  if (voiceMode == 3 && WiFi.status() == WL_CONNECTED) {
+    // GPT Realtime: skip /analyze + /tts entirely — POST /live streams the
+    // voice while it is generated and livePoll() drives the result screen.
+    state = AppState::Result;  // the photo stays up until the 'E' frame lands
+    if (startLive(false, nullptr, 0)) {
+      Serial.printf("[toi] cycle to live: %lums\n",
+                    (unsigned long)(millis() - cycleStart));
+      return;
+    }
+    state = AppState::Analyzing;  // live unavailable — classic path below
   }
 
-  recordInquiry(caption, detailText);
-
-  const String speech = caption + "。" + detailText;
-  const bool voiceReady = prepareVoice(speech, analyzeKana);
-  buildResultCanvas();
-  drawResult(true);
-  state = AppState::Result;  // interactive immediately — speech runs in a task
-  if (!(voiceReady && playPreparedVoice())) speakAnimalese(speech);
-  // sanoTTS still synthesizing: sanoPoll() shows progress and starts the
-  // scroll when the voice actually plays. Every other path plays now.
-  if (sanoExited) startResultAutoScroll();
-  else drawSanoBanner(0);
+  captureClassicTail();
   Serial.printf("[toi] cycle total: %lums\n", millis() - cycleStart);
 }
 
@@ -3487,6 +4061,7 @@ static void debugDumpFrame() {
 void loop() {
   M5.update();
   sanoPoll();
+  livePoll();
 
   if (Serial.available()) {
     const char cmd = Serial.read();
@@ -3639,6 +4214,9 @@ void loop() {
         flushButtons();  // eat the release — else Idle sees BtnB click -> Home
         break;
       }
+      // /live capture: the canvas still holds the previous shot's text, so
+      // leave the photo untouched until the terminal frame replaces it.
+      if (liveHoldPhoto) break;
       // Touch drag scroll — track absolute Y between frames (deltaY from the
       // touch driver proved unreliable on this panel)
       static int lastTouchY = -1;
