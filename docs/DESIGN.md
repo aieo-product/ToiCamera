@@ -90,11 +90,14 @@ RESULT / ERROR --[KEYB 青]--> IDLE
 - バッファは全て PSRAM(`ps_malloc`): JPEG ≤2MB、WAV ≤4MB。撮影サイクル毎に解放
 - ボイス=GPT Realtime(`voiceMode==3`)では撮影も音声質問も `/analyze`+`/tts`
   (音声質問は `/ask`+`/tts`)を呼ばず、JPEG(音声質問は録音 WAV も連結)を
-  `POST /live` に 1 回投げ、`liveWorker` タスクが `writeToStream()` で
-  `TOI1` フレーム列(`A` PCM16 24kHz / `T` transcript 差分 / `E` 終端 JSON /
-  `X` エラー)を受信する。`LiveSink` が音声を 45 秒分の PSRAM バッファに追記し、
-  `livePoll()` が 1.5 秒先行した時点から専用チャネルへ 200ms 単位で `playRaw`
-  投入してギャップレス再生、`E` で caption/detail・履歴・結果画面を更新する
+  `POST /live` に 1 回投げ、`liveWorker` タスクが生ソケット
+  (`getStreamPtr()`)を自前ループで読み、chunked 解除 → `TOI1` フレーム列
+  (`A` PCM16 24kHz / `T` transcript 差分 / `E` 終端 JSON / `X` エラー)を解析する
+  (`writeToStream()` は無音時の期限が無く永久ブロックするため不採用。
+  チャンク間無音 15 s / セッション全体 90 s で打ち切る)。`LiveSink` が音声を
+  45 秒分の PSRAM バッファに追記し、`livePoll()` が 1.5 秒先行した時点から
+  専用チャネルへ「200 ms 以上たまったら未投入分をまとめて 1 回で投入」して
+  ギャップレス再生、`E` で caption/detail・履歴・結果画面を更新する
 - `E` の `status` は `completed` / `truncated` のどちらも正常終了として扱う
   (`truncated` = Worker が途中で転送を打ち切っただけなので受信済みを再生し、
   caption/detail と履歴もそのまま反映する)。音声質問の `E` には `question` も

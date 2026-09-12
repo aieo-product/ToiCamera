@@ -2132,8 +2132,13 @@ static constexpr size_t kLiveChunkSamples = 4800;               // 200 ms/queue
 // Fixed channel: tone() and playRaw(-1) pick the highest free channel, so a
 // low one never collides with the chirps/sfx that play over the same screen.
 static constexpr uint8_t kLiveCh = 0;
-static constexpr size_t kLiveTextMax = 8192;       // per-frame text/JSON cap
-static constexpr size_t kLiveTranscriptMax = 2048;
+// The 'E' JSON carries the transcript twice (as detail + transcript) and ja
+// runs 3 bytes per character, so leave real headroom.
+static constexpr size_t kLiveTextMax = 16384;      // per-frame text/JSON cap
+static constexpr size_t kLiveTranscriptMax = 4096;
+static constexpr size_t kLiveReadChunk = 4096;     // socket read block
+static constexpr uint32_t kLiveIdleMs = 15000;     // silence between chunks
+static constexpr uint32_t kLiveTotalMs = 90000;    // whole-session budget
 
 static int16_t *livePcm = nullptr;         // PSRAM, whole answer, never moved
 static volatile size_t liveWritten = 0;    // samples received (task writes)
@@ -2183,13 +2188,25 @@ static void liveSplitTranscript() {
   String t = liveTranscript;
   t.trim();
   if (!t.length()) return;
-  static const char *kEnders[] = {"。", "！", "？", ".", "!", "?"};
+  const int len = (int)t.length();
+  static const char *kEnders[] = {"。", "！", "？", "!", "?"};
   int cut = -1;
   for (auto e : kEnders) {
     const int p = t.indexOf(e);
     if (p >= 0 && (cut < 0 || p < cut)) cut = p + (int)strlen(e);
   }
-  if (cut < 0 || cut > 60) cut = (int)(t.length() < 60 ? t.length() : 60);
+  // A bare '.' ends a sentence only when a space or the end follows, so
+  // decimals and abbreviations do not split the text.
+  for (int p = t.indexOf('.'); p >= 0; p = t.indexOf('.', p + 1)) {
+    if (p + 1 < len && t[p + 1] != ' ') continue;
+    if (cut < 0 || p + 1 < cut) cut = p + 1;
+    break;
+  }
+  if (cut < 0 || cut > 60) {
+    cut = len < 60 ? len : 60;
+    // Never cut inside a UTF-8 sequence.
+    while (cut > 0 && cut < len && (t[cut] & 0xC0) == 0x80) --cut;
+  }
   liveCaption = t.substring(0, cut);
   liveDetail = t.substring(cut);
   liveDetail.trim();
@@ -2282,6 +2299,15 @@ class LiveSink : public Stream {
   }
 
   void endFrame() {
+    // stopLive() re-initialises the shared Strings once the task is gone; if a
+    // stop was requested, stay away from them entirely.
+    if (liveStopFlag) {
+      text_ = "";
+      carry_ = false;
+      hdrGot_ = 0;
+      stage_ = 1;
+      return;
+    }
     switch (type_) {
       case 'A':
         break;
@@ -2340,20 +2366,86 @@ class LiveSink : public Stream {
   String text_;
 };
 
+// Minimal HTTP/1.1 chunked-transfer decoder in front of the frame parser.
+// liveWorker() reads the raw socket so a peer that goes silent mid-chunk hits
+// our own deadline (HTTPClient::writeToStream() de-chunks but loops on
+// connected() with no timeout at all), which leaves the framing to us.
+class LiveDechunk {
+ public:
+  LiveDechunk(LiveSink &sink, bool chunked, uint32_t contentLen)
+      : sink_(sink), chunked_(chunked), left_(chunked ? 0 : contentLen) {}
+
+  bool finished() const { return done_; }
+
+  // false = malformed framing (the caller gives up on the stream).
+  bool feed(const uint8_t *data, size_t len) {
+    if (!chunked_) {
+      if (done_) return true;
+      size_t take = len;
+      if (left_ && take > left_) take = left_;
+      sink_.write(data, take);
+      if (left_) {
+        left_ -= take;
+        if (!left_) done_ = true;
+      }
+      return true;
+    }
+    size_t i = 0;
+    while (i < len && !done_) {
+      if (stage_ == 0) {  // "<hex>[;ext]\r\n" size line
+        const char c = (char)data[i++];
+        if (c == '\n') {
+          line_[lineLen_] = 0;
+          char *end = nullptr;
+          const unsigned long size = strtoul(line_, &end, 16);
+          if (end == line_) return false;
+          lineLen_ = 0;
+          if (size == 0) {
+            done_ = true;  // terminator; trailers are never read back
+          } else {
+            left_ = (uint32_t)size;
+            stage_ = 1;
+          }
+        } else if (c != '\r' && lineLen_ + 1 < sizeof(line_)) {
+          line_[lineLen_++] = c;
+        }
+      } else if (stage_ == 1) {  // chunk payload
+        size_t take = len - i;
+        if (take > left_) take = left_;
+        sink_.write(data + i, take);
+        i += take;
+        left_ -= take;
+        if (!left_) stage_ = 2;
+      } else {  // CRLF after the payload
+        if (data[i++] == '\n') stage_ = 0;
+      }
+    }
+    return true;
+  }
+
+ private:
+  LiveSink &sink_;
+  bool chunked_;
+  bool done_ = false;
+  uint8_t stage_ = 0;
+  uint32_t left_ = 0;
+  char line_[24] = {0};
+  uint8_t lineLen_ = 0;
+};
+
 static void liveWorker(void *) {
   const uint32_t t0 = millis();
   LiveSink sink;
   int code = -1;
-  int written = 0;
+  size_t written = 0;  // raw body bytes read off the socket
   if (!ttsHttpInit) {
     ttsClient.setInsecure();  // same own-Worker TLS trade-off as /analyze
     ttsHttp.setReuse(true);
     ttsHttp.setConnectTimeout(5000);
     ttsHttpInit = true;
   }
-  // Reads block until the next chunk arrives; 15 s covers a slow first token
-  // and still bounds a dead connection.
-  ttsHttp.setTimeout(15000);
+  // Applies to the request/header phase; the body has its own deadlines below.
+  ttsHttp.setTimeout(kLiveIdleMs);
   if (ttsHttp.begin(ttsClient, String(WORKER_URL) + "/live")) {
     ttsHttp.addHeader("Content-Type", "application/octet-stream");
     ttsHttp.addHeader("X-Device-Token", deviceToken());
@@ -2363,10 +2455,51 @@ static void liveWorker(void *) {
     code = ttsHttp.POST(liveBody, liveBodyLen);
     Serial.printf("[toi] live: POST %d after %lums\n", code,
                   (unsigned long)(millis() - t0));
-    if (code == HTTP_CODE_OK) written = ttsHttp.writeToStream(&sink);
+    if (code == HTTP_CODE_OK) {
+      WiFiClient *s = ttsHttp.getStreamPtr();
+      const int contentLen = ttsHttp.getSize();
+      LiveDechunk pipe(sink, contentLen < 0,
+                       contentLen > 0 ? (uint32_t)contentLen : 0);
+      uint8_t *buf = (uint8_t *)malloc(kLiveReadChunk);
+      if (!buf) Serial.println("[toi] live: read buffer alloc failed");
+      uint32_t lastData = millis();
+      while (s && buf && !liveStopFlag && !liveFailed && !liveDone &&
+             !pipe.finished()) {
+        if (millis() - t0 > kLiveTotalMs) {
+          Serial.println("[toi] live: session budget exhausted");
+          liveFailed = true;
+          break;
+        }
+        const int avail = s->available();
+        if (avail > 0) {
+          const int want = avail > (int)kLiveReadChunk ? (int)kLiveReadChunk : avail;
+          const int n = s->read(buf, want);
+          if (n > 0) {
+            written += n;
+            lastData = millis();
+            if (!pipe.feed(buf, (size_t)n)) {
+              Serial.println("[toi] live: malformed chunk framing");
+              liveFailed = true;
+            }
+          } else {
+            delay(1);
+          }
+        } else if (!ttsHttp.connected()) {
+          break;  // peer closed; liveDone decides whether that was clean
+        } else if (millis() - lastData > kLiveIdleMs) {
+          Serial.printf("[toi] live: no data for %lums\n",
+                        (unsigned long)kLiveIdleMs);
+          liveFailed = true;
+          break;
+        } else {
+          delay(1);
+        }
+      }
+      free(buf);
+    }
   }
-  ttsHttp.end();
   ttsClient.stop();  // release the TLS context right away (see #61)
+  ttsHttp.end();
   if (liveBody) {
     free(liveBody);
     liveBody = nullptr;
@@ -2374,11 +2507,18 @@ static void liveWorker(void *) {
   }
   if (!liveDone) liveFailed = true;
   Serial.printf(
-      "[toi] live: %s HTTP %d, %d B streamed, %.1f s audio, first audio %lums, "
+      "[toi] live: %s HTTP %d, %u B streamed, %.1f s audio, first audio %lums, "
       "total %lums%s\n",
-      liveDone ? "done" : "FAILED", code, written, liveWritten / (float)kLiveRate,
+      liveDone ? "done" : "FAILED", code, (unsigned)written,
+      liveWritten / (float)kLiveRate,
       (unsigned long)(liveFirstAudioAt ? liveFirstAudioAt - liveStartedAt : 0),
       (unsigned long)(millis() - t0), liveOverflow ? " (audio truncated!)" : "");
+  // stopLive() gave up waiting and handed the PCM buffer over: nothing can be
+  // writing to it any more, so release it here (livePoll() is the backstop).
+  if (livePendingFree) {
+    free(livePendingFree);
+    livePendingFree = nullptr;
+  }
   liveExited = true;
   vTaskDelete(nullptr);
 }
@@ -2388,19 +2528,25 @@ static void liveWorker(void *) {
 static void drawLiveBanner(int pct) {
   if (state != AppState::Result) return;
   if (pct == liveBannerPct) return;
+  const bool wasHidden = liveBannerPct < 0;
   liveBannerPct = pct;
   const int x = (M5.Display.width() - kTextWidth) / 2;
-  M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
-  if (pct < 0) return;
-  M5.Display.setFont(contentFont());
-  M5.Display.setTextSize(1);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
-  M5.Display.drawString(
-      String(tr("リアルタイム応答中 ", "Realtime ", "实时应答中 ")) + pct + "%",
-      M5.Display.width() / 2, 50);
+  if (pct < 0) {
+    M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
+    return;
+  }
   const int barW = 220, barH = 8, bx = (M5.Display.width() - barW) / 2, by = 70;
-  M5.Display.drawRect(bx, by, barW, barH, TFT_DARKGREY);
+  if (wasHidden) {  // label and frame never change — draw them once, no flicker
+    M5.Display.fillRect(x, 30, kTextWidth, 56, TFT_BLACK);
+    M5.Display.setFont(contentFont());
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+    M5.Display.drawString(tr("リアルタイム応答中", "Realtime answer",
+                             "实时应答中"),
+                          M5.Display.width() / 2, 50);
+    M5.Display.drawRect(bx, by, barW, barH, TFT_DARKGREY);
+  }
   M5.Display.fillRect(bx + 1, by + 1, (barW - 2) * pct / 100, barH - 2, TFT_CYAN);
 }
 
@@ -2408,11 +2554,14 @@ static void drawLiveBanner(int pct) {
 // buffers. Safe to call when nothing is running (stopSpeech() always does).
 static void stopLive() {
   if (!liveExited) {
-    liveStopFlag = true;  // LiveSink::write() returns 0 -> writeToStream aborts
-    for (int i = 0; i < 1000 && !liveExited; ++i) delay(10);
+    liveStopFlag = true;  // LiveSink::write() returns 0 -> the read loop stops
+    // The task's own idle deadline bounds it at ~15 s and it frees the PCM
+    // buffer itself, so do not hold the UI here for longer than 2 s.
+    for (int i = 0; i < 200 && !liveExited; ++i) delay(10);
   }
   M5.Speaker.stop(kLiveCh);
-  if (liveExited) {
+  const bool taskGone = liveExited;
+  if (taskGone) {
     if (livePcm) {
       free(livePcm);
       livePcm = nullptr;
@@ -2423,9 +2572,9 @@ static void stopLive() {
       liveBodyLen = 0;
     }
   } else if (livePcm) {
-    // The task is stuck in a stalled read and may still write into the PCM
-    // buffer, so hand it to livePoll(), which frees it once the task is gone.
-    // Only one session exists at a time, so there is never a second orphan.
+    // The task has not left yet and may still write into the PCM buffer, so
+    // hand it over: the task frees it on its way out, livePoll() is the
+    // backstop. Only one session exists at a time — never a second orphan.
     livePendingFree = livePcm;
     livePcm = nullptr;
   }
@@ -2434,22 +2583,24 @@ static void stopLive() {
     liveWav = nullptr;
     liveWavLen = 0;
   }
-  liveWritten = 0;
   liveQueued = 0;
+  livePlaying = false;
+  liveActive = false;
+  liveHoldPhoto = false;
+  liveBannerPct = -1;
+  if (!taskGone) return;  // everything below is written by the task; startLive()
+                          // re-initialises it once liveExited is true again
+  liveWritten = 0;
   liveDone = false;
   liveFailed = false;
   liveStopFlag = false;
   liveOverflow = false;
   liveResultPending = false;
   liveFirstAudioAt = 0;
-  livePlaying = false;
-  liveActive = false;
-  liveHoldPhoto = false;
   liveCaption = "";
   liveDetail = "";
   liveTranscript = "";
   liveQuestion = "";
-  liveBannerPct = -1;
 }
 
 // Kick off a /live session for the current photo. `extra` is the recorded
@@ -3182,6 +3333,12 @@ static void livePoll() {
     drawResult(true);
     liveHoldPhoto = false;
     startResultAutoScroll();  // scroll along with the voice, as /analyze does
+    if (!liveWritten) {
+      // Text without audio: chirp it so the device is never silent. The
+      // stopSpeech() inside ends the (already finished) live session.
+      speakAnimalese(caption + "。" + detailText);
+      return;
+    }
     Serial.printf("[toi] live: result after %lums: %s\n",
                   (unsigned long)(millis() - liveStartedAt), caption.c_str());
   }
