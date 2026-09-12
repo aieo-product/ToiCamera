@@ -892,12 +892,18 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
-const REALTIME_TIMEOUT_MS = 25_000;
+// Budget: the device waits 30 s for /tts in total (main.cpp ttsHttp timeout,
+// raised to 45 s for engine=realtime), and a failed Realtime attempt is
+// followed by a full /audio/speech render (~3-5 s) — so Realtime gets 15 s.
+const REALTIME_TIMEOUT_MS = 15_000;
 // The Realtime model is an LLM, not a TTS engine: pin it to verbatim reading
 // so captions in ja/en/zh come out unchanged.
 const REALTIME_READ_ALOUD_INSTRUCTIONS =
   "You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.";
-const REALTIME_MAX_PCM_BYTES = 1_900_000; // ~40s of 24kHz mono PCM16
+// ~40 s of 24 kHz mono PCM16; the WAV (+44 B) stays under the device's 2 MB
+// kMaxTtsWav (2,097,152 B). A "high" detail answer runs ~25-30 s of speech,
+// so the cap is only a runaway guard.
+const REALTIME_MAX_PCM_BYTES = 1_900_000;
 
 // text → WAV via the OpenAI Realtime API (WebSocket only — no REST). Returns
 // null on any failure so callers fall back to the regular /audio/speech TTS;
@@ -920,6 +926,7 @@ async function realtimeSpeech(text: string, env: Env): Promise<Uint8Array | null
     const ws = upstream.webSocket;
     if (!ws) {
       console.error("[toi] realtime: no websocket in upstream response", upstream.status);
+      await upstream.body?.cancel().catch(() => undefined);
       return null;
     }
     ws.accept();
@@ -986,37 +993,52 @@ async function realtimeSpeech(text: string, env: Env): Promise<Uint8Array | null
         } else if (type === "response.output_audio.delta" || type === "response.audio.delta") {
           const delta = msg.delta;
           if (typeof delta === "string") {
-            const bytes = base64ToBytes(delta);
+            let bytes: Uint8Array;
+            try {
+              bytes = base64ToBytes(delta);
+            } catch (err) {
+              // Malformed/oversized delta — never leave the promise pending.
+              console.error("[toi] realtime: bad audio delta", err);
+              finish(null);
+              return;
+            }
             pcmBytes += bytes.length;
             chunks.push(bytes);
             if (pcmBytes >= REALTIME_MAX_PCM_BYTES) {
+              // Deliberate cut-off: what we have is complete, playable speech.
               console.warn("[toi] realtime: hit max PCM size, cutting off");
               finish(concatBytes(chunks));
             }
           }
         } else if (type === "response.done") {
+          // Only a completed response counts. Anything else (failed,
+          // incomplete, cancelled) is discarded so the caller re-renders the
+          // whole line with the regular TTS instead of playing a fragment.
           const status = (msg.response as { status?: unknown } | undefined)?.status;
-          if (status !== "completed") {
+          if (status !== "completed" || !chunks.length) {
             console.warn("[toi] realtime: response.done status", status, JSON.stringify(msg).slice(0, 300));
+            finish(null);
+            return;
           }
-          if (chunks.length) {
-            console.log(
-              `[toi] realtime: ${pcmBytes} B pcm, ${Date.now() - startedAt} ms, model=${model} voice=${realtimeVoice(env)}`,
-            );
-          }
-          finish(chunks.length ? concatBytes(chunks) : null);
+          console.log(
+            `[toi] realtime: ${pcmBytes} B pcm, ${Date.now() - startedAt} ms, model=${model} voice=${realtimeVoice(env)}`,
+          );
+          finish(concatBytes(chunks));
         } else if (type === "error" || type === "response.error") {
           console.error("[toi] realtime: error event", JSON.stringify(msg).slice(0, 300));
-          finish(chunks.length ? concatBytes(chunks) : null);
+          finish(null);
         }
       });
+      // Disconnect or socket error before response.done: partial audio is
+      // not returned (same rule as the timeout) — the TTS fallback re-renders.
       ws.addEventListener("close", () => {
-        finish(chunks.length ? concatBytes(chunks) : null);
+        if (!settled) console.error("[toi] realtime: socket closed before response.done");
+        finish(null);
       });
       ws.addEventListener("error", (event: ErrorEvent) => {
         if (settled) return; // our own close() after finish() also surfaces here
         console.error("[toi] realtime: socket error", event.message || event);
-        finish(chunks.length ? concatBytes(chunks) : null);
+        finish(null);
       });
     });
   } catch (err) {
@@ -1145,7 +1167,7 @@ export default {
             voice: env.TTS_VOICE,
             tts: true,
             realtime: realtimeAvailable(env),
-            realtimeVoice: realtimeVoice(env),
+            realtimeVoice: realtimeAvailable(env) ? realtimeVoice(env) : "",
           });
         case "/analyze":
           return await handleAnalyze(request, env, ctx);

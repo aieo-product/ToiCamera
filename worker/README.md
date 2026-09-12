@@ -83,11 +83,15 @@ the bearer token — Realtime is OpenAI-only, so it does not follow
 `AUDIO_API_BASE_URL`. Realtime speaks the text (unmodified — asked to read it
 verbatim) as PCM16 24kHz mono, which the Worker collects and wraps into the
 same WAV shape `/audio/speech` already returns, so the device's playback path
-is unchanged. Voice is `REALTIME_VOICE` (empty = reuse `TTS_VOICE`).
+is unchanged. Voice is `REALTIME_VOICE` (default `marin`; must be a Realtime voice —
+alloy/ash/ballad/coral/echo/sage/shimmer/verse/marin/cedar; empty = reuse
+`TTS_VOICE`).
 
-If Realtime errors, times out (25 s), or returns no audio, `/tts` transparently
-falls back to the regular TTS engine, and the device falls back further to
-chirps if that also fails — GPT Realtime never causes silence. The response
+If Realtime errors, times out (15 s), disconnects before `response.done`, or
+returns no audio, `/tts` discards any partial audio and transparently falls
+back to the regular TTS engine (the device allows 45 s for a Realtime request
+so both attempts fit), and the device falls back further to chirps if that
+also fails — GPT Realtime never causes silence. The response
 carries `X-Voice-Engine: realtime` or `tts` so you can see which one answered.
 `GET /config` reports `realtime: true` whenever `TOICAMERA_TTS_API_KEY` is set,
 plus `realtimeVoice`, so the device can show `Realtime(<voice>)` in Settings.

@@ -836,6 +836,26 @@ static void drawPageHistory() {
 // Seven spacious items: model / volume / quality / AI detail / voice / WiFi /
 // language.
 // Items use 78px content-space bands inside the clipped y=128..431 viewport.
+// Settings row text for the current voice mode (see voiceMode).
+static String voiceModeLabel() {
+  switch (voiceMode) {
+    case 0:
+      return String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"));
+    case 2:
+      return String(tr("sanoTTS(端末内・日本語)", "sanoTTS (on-device, ja)",
+                       "sanoTTS(设备端·日语)"));
+    case 3:
+      return toiRealtimeVoiceName.length()
+                 ? String("Realtime(") + toiRealtimeVoiceName + ")"
+                 : String(tr("Realtime(GPT)", "Realtime (GPT)", "Realtime(GPT)"));
+    default:
+      return toiVoiceName.length()
+                 ? String("TTS(") + toiVoiceName + ")"
+                 : String(tr("TTS(Workerの声)", "TTS (Worker voice)",
+                             "TTS(Worker语音)"));
+  }
+}
+
 static void drawPageSettings() {
   homeCanvas.setFont(contentFont());
   homeCanvas.fillArc(233, 233, 222, 219, -150.0f, -30.0f, TFT_YELLOW);
@@ -915,24 +935,7 @@ static void drawPageSettings() {
                               screenItemTop + 18);
         homeCanvas.setTextSize(1);
         homeCanvas.setTextColor(TFT_LIGHTGREY, rowBg(item));
-        homeCanvas.drawString(
-            voiceMode == 0
-                ? String(tr("ピコピコ(高速)", "Chirps (fast)", "哔哔声(快速)"))
-                : voiceMode == 2
-                      ? String(tr("sanoTTS(端末内・日本語)",
-                                  "sanoTTS (on-device, ja)",
-                                  "sanoTTS(设备端·日语)"))
-                      : voiceMode == 3
-                            ? (toiRealtimeVoiceName.length()
-                                   ? String("Realtime(") + toiRealtimeVoiceName + ")"
-                                   : String(tr("Realtime(GPT)", "Realtime (GPT)",
-                                               "Realtime(GPT)")))
-                            : (toiVoiceName.length()
-                                   ? String("TTS(") + toiVoiceName + ")"
-                                   : String(tr("TTS(Workerの声)",
-                                               "TTS (Worker voice)",
-                                               "TTS(Worker语音)"))),
-            90, screenItemTop + 46);
+        homeCanvas.drawString(voiceModeLabel(), 90, screenItemTop + 46);
         break;
       case 5: {
         homeCanvas.drawString("WiFi", 90, screenItemTop + 18);
@@ -1658,6 +1661,17 @@ static bool fetchTts(const String &text, bool realtime = false) {
     ttsHttp.setTimeout(30000);
     ttsHttpInit = true;
   }
+  // Which engine actually answered (the Worker falls back on its own). The
+  // collected-header list persists across requests, so set it once.
+  static bool ttsEngineHeaderSet = false;
+  if (!ttsEngineHeaderSet) {
+    static const char *kEngineHeader[] = {"X-Voice-Engine"};
+    ttsHttp.collectHeaders(kEngineHeader, 1);
+    ttsEngineHeaderSet = true;
+  }
+  // Realtime may take up to 15 s and then be re-rendered by the regular TTS
+  // inside the Worker — allow both attempts to fit.
+  ttsHttp.setTimeout(realtime ? 45000 : 30000);
 
   JsonDocument requestDoc;
   requestDoc["text"] = text;
@@ -1667,8 +1681,6 @@ static bool fetchTts(const String &text, bool realtime = false) {
 
   int code = -1;
   if (ttsHttp.begin(ttsClient, String(WORKER_URL) + "/tts")) {
-    static const char *kEngineHeader[] = {"X-Voice-Engine"};
-    ttsHttp.collectHeaders(kEngineHeader, 1);
     ttsHttp.addHeader("Content-Type", "application/json");
     ttsHttp.addHeader("X-Device-Token", deviceToken());
     code = ttsHttp.POST(body);
