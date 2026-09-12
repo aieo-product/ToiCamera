@@ -1,0 +1,16 @@
+[wrangler:info] Ready on http://localhost:8799
+[wrangler:info] GET /config 200 OK (22ms)
+✘ [ERROR] [toi] realtime: error event {"type":"error","event_id":"event_EN8BU4wDx1dWCjtX9oZfl","error":{"type":"invalid_request_error","code":"model_not_found","message":"The model `gpt-realtime` does not exist or you do not have access to it.","param":null,"event_id":null}}
+▲ [WARNING] [toi] tts: realtime failed, falling back to tts
+✘ [ERROR] [toi] realtime: socket error Uncaught Error: Network connection lost.
+✘ [ERROR] TTS upstream error 403 {
+      "error": {
+          "message": "Project `proj_noOkTrUmHwmJaGeVfCeU3wjn` does not have access to model `gpt-4o-mini-tts`",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "model_not_found"
+      }
+  }
+  
+[wrangler:info] POST /tts 502 Bad Gateway (2561ms)
+🪵  Logs were written to "/Users/otanitakehiro/Library/Preferences/.wrangler/logs/wrangler-2026-09-12_02-55-00_131.log"

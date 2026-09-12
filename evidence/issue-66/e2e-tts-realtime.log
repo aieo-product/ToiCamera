@@ -1,0 +1,50 @@
+### GET /config
+{"models":["gpt-5.6-terra","gpt-5.6-luna"],"voice":"marin","tts":true,"realtime":true,"realtimeVoice":"marin"}
+
+### POST /tts engine=realtime (ja)
+HTTP/1.1 502 Bad Gateway
+Content-Length: 44
+Content-Type: application/json; charset=utf-8
+
+real 2.57
+user 0.00
+sys 0.00
+
+### [mock Realtime] POST /tts engine=realtime (ja) — expect 200 audio/wav, x-voice-engine: realtime
+HTTP/1.1 200 OK
+Content-Length: 72044
+Content-Type: audio/wav
+x-voice-engine: realtime
+
+
+### file / ffprobe
+-rw-r--r--@ 1 otanitakehiro  wheel  72044  9 12 11:56 realtime-mock.wav
+00000000: 5249 4646 6419 0100 5741 5645 666d 7420  RIFFd...WAVEfmt 
+00000010: 1000 0000 0100 0100 c05d 0000 80bb 0000  .........]......
+00000020: 0200 1000 6461 7461 4019 0100            ....data@...
+Input #0, wav, from 'realtime-mock.wav':
+  Duration: 00:00:01.50, bitrate: 384 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 24000 Hz, 1 channels, s16, 384 kb/s
+
+### [mock-long] 60 s of audio — expect cut at ~1.9 MB (≈40 s)
+HTTP/1.1 200 OK
+Content-Length: 1900844
+Content-Type: audio/wav
+x-voice-engine: realtime
+
+
+-rw-r--r--@ 1 otanitakehiro  wheel  1900844  9 12 11:57 realtime-mock-long.wav
+  Duration: 00:00:39.60, bitrate: 384 kb/s
+
+### [mock-fail] Realtime returns error event — expect fallback to /audio/speech (this local key has no TTS access → 502; on a key with gpt-4o-mini-tts access this would be 200 + x-voice-engine: tts)
+HTTP/1.1 502 Bad Gateway
+Content-Length: 44
+Content-Type: application/json; charset=utf-8
+
+
+### wrangler dev log (fallback path)
+✘ [ERROR] [toi] realtime: error event {"type":"error","error":{"type":"invalid_request_error","code":"model_not_found","message":"mock failure"}}
+▲ [WARNING] [toi] tts: realtime failed, falling back to tts
+✘ [ERROR] TTS upstream error 403 {
+          "message": "Project `proj_noOkTrUmHwmJaGeVfCeU3wjn` does not have access to model `gpt-4o-mini-tts`",
+[wrangler:info] POST /tts 502 Bad Gateway (713ms)
