@@ -26,6 +26,16 @@ export interface Env {
   /** Separate base for STT/TTS (default https://api.openai.com/v1) so voice
    *  keeps working when MAIN_API_BASE_URL points at a chat-only local LLM. */
   AUDIO_API_BASE_URL?: string;
+  /** OpenAI Realtime API model for the device's "GPT Realtime" voice mode
+   *  (default gpt-realtime). Realtime is OpenAI-only; TOICAMERA_TTS_API_KEY
+   *  is reused as its bearer token. */
+  REALTIME_MODEL?: string;
+  /** Realtime output voice (marin/cedar/alloy/...). Empty = reuse TTS_VOICE. */
+  REALTIME_VOICE?: string;
+  /** Base for the Realtime WebSocket endpoint (default
+   *  https://api.openai.com/v1) — kept separate from AUDIO_API_BASE_URL
+   *  since most OpenAI-compatible bridges do not offer Realtime. */
+  REALTIME_API_BASE_URL?: string;
   /** Cap on /analyze reply tokens (default 500). */
   ANALYZE_MAX_TOKENS?: string;
   /** Style lines appended to the analyze system prompt depending on the
@@ -184,6 +194,20 @@ function openaiBase(env: Env): string {
 // servers only implement chat/completions.
 function audioBase(env: Env): string {
   return (env.AUDIO_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+function realtimeBase(env: Env): string {
+  return (env.REALTIME_API_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+function realtimeVoice(env: Env): string {
+  return env.REALTIME_VOICE || env.TTS_VOICE;
+}
+
+// Whether the "GPT Realtime" voice mode can be offered to the device at all
+// (same key as Worker TTS — Realtime is OpenAI-only, no separate flag var).
+function realtimeAvailable(env: Env): boolean {
+  return Boolean(env.TOICAMERA_TTS_API_KEY);
 }
 
 function pickModel(request: Request, env: Env): string {
@@ -835,13 +859,184 @@ async function handleKana(request: Request, env: Env): Promise<Response> {
   }
 }
 
-async function handleTts(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => null)) as { text?: string } | null;
-  const text = body?.text?.trim();
-  if (!text) {
-    return json({ error: "missing text" }, 400);
-  }
+// PCM16 mono → RIFF/WAVE, matching the header shape the device's WAV parser
+// expects (same layout /audio/speech already produces after patching).
+function pcm16ToWav(pcm: Uint8Array, sampleRate: number): Uint8Array {
+  const dataLen = pcm.length - (pcm.length % 2); // whole samples only
+  const buf = new Uint8Array(44 + dataLen);
+  const dv = new DataView(buf.buffer);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) dv.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  dv.setUint32(4, 36 + dataLen, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  dv.setUint32(16, 16, true); // fmt chunk size
+  dv.setUint16(20, 1, true); // PCM
+  dv.setUint16(22, 1, true); // mono
+  dv.setUint32(24, sampleRate, true);
+  dv.setUint32(28, sampleRate * 2, true); // byte rate (16-bit mono)
+  dv.setUint16(32, 2, true); // block align
+  dv.setUint16(34, 16, true); // bits per sample
+  writeStr(36, "data");
+  dv.setUint32(40, dataLen, true);
+  buf.set(pcm.subarray(0, dataLen), 44);
+  return buf;
+}
 
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+const REALTIME_TIMEOUT_MS = 25_000;
+// The Realtime model is an LLM, not a TTS engine: pin it to verbatim reading
+// so captions in ja/en/zh come out unchanged.
+const REALTIME_READ_ALOUD_INSTRUCTIONS =
+  "You are a text-to-speech engine. Read the user's message aloud verbatim, in its original language (Japanese, English or Chinese), with natural, friendly intonation. Do not add, omit, translate, paraphrase or comment on anything. Output speech only.";
+const REALTIME_MAX_PCM_BYTES = 1_900_000; // ~40s of 24kHz mono PCM16
+
+// text → WAV via the OpenAI Realtime API (WebSocket only — no REST). Returns
+// null on any failure so callers fall back to the regular /audio/speech TTS;
+// never throws.
+async function realtimeSpeech(text: string, env: Env): Promise<Uint8Array | null> {
+  if (!env.TOICAMERA_TTS_API_KEY) return null;
+  const model = env.REALTIME_MODEL || "gpt-realtime";
+  // Workers open outbound WebSockets with an https URL + `Upgrade: websocket`
+  // (a wss:// URL is rejected by the Workers fetch()).
+  const url = `${realtimeBase(env)}/realtime?model=${encodeURIComponent(model)}`;
+  const startedAt = Date.now();
+
+  try {
+    const upstream = await fetch(url, {
+      headers: {
+        Upgrade: "websocket",
+        Authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}`,
+      },
+    });
+    const ws = upstream.webSocket;
+    if (!ws) {
+      console.error("[toi] realtime: no websocket in upstream response", upstream.status);
+      return null;
+    }
+    ws.accept();
+
+    return await new Promise<Uint8Array | null>((resolve) => {
+      const chunks: Uint8Array[] = [];
+      let pcmBytes = 0;
+      let settled = false;
+      const finish = (result: Uint8Array | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {
+          // already closing/closed
+        }
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        console.error("[toi] realtime: timed out waiting for audio");
+        finish(null);
+      }, REALTIME_TIMEOUT_MS);
+
+      ws.addEventListener("message", (event: MessageEvent) => {
+        if (typeof event.data !== "string") return;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const type = msg.type;
+        if (type === "session.created") {
+          ws.send(
+            JSON.stringify({
+              type: "session.update",
+              session: {
+                type: "realtime",
+                output_modalities: ["audio"],
+                audio: {
+                  output: { voice: realtimeVoice(env), format: { type: "audio/pcm", rate: 24000 } },
+                },
+              },
+            }),
+          );
+          ws.send(
+            JSON.stringify({
+              type: "response.create",
+              response: {
+                conversation: "none",
+                output_modalities: ["audio"],
+                instructions: REALTIME_READ_ALOUD_INSTRUCTIONS,
+                input: [
+                  {
+                    type: "message",
+                    role: "user",
+                    content: [{ type: "input_text", text }],
+                  },
+                ],
+              },
+            }),
+          );
+        } else if (type === "response.output_audio.delta" || type === "response.audio.delta") {
+          const delta = msg.delta;
+          if (typeof delta === "string") {
+            const bytes = base64ToBytes(delta);
+            pcmBytes += bytes.length;
+            chunks.push(bytes);
+            if (pcmBytes >= REALTIME_MAX_PCM_BYTES) {
+              console.warn("[toi] realtime: hit max PCM size, cutting off");
+              finish(concatBytes(chunks));
+            }
+          }
+        } else if (type === "response.done") {
+          const status = (msg.response as { status?: unknown } | undefined)?.status;
+          if (status !== "completed") {
+            console.warn("[toi] realtime: response.done status", status, JSON.stringify(msg).slice(0, 300));
+          }
+          if (chunks.length) {
+            console.log(
+              `[toi] realtime: ${pcmBytes} B pcm, ${Date.now() - startedAt} ms, model=${model} voice=${realtimeVoice(env)}`,
+            );
+          }
+          finish(chunks.length ? concatBytes(chunks) : null);
+        } else if (type === "error" || type === "response.error") {
+          console.error("[toi] realtime: error event", JSON.stringify(msg).slice(0, 300));
+          finish(chunks.length ? concatBytes(chunks) : null);
+        }
+      });
+      ws.addEventListener("close", () => {
+        finish(chunks.length ? concatBytes(chunks) : null);
+      });
+      ws.addEventListener("error", (event: ErrorEvent) => {
+        if (settled) return; // our own close() after finish() also surfaces here
+        console.error("[toi] realtime: socket error", event.message || event);
+        finish(chunks.length ? concatBytes(chunks) : null);
+      });
+    });
+  } catch (err) {
+    console.error("[toi] realtime: connect failed", err);
+    return null;
+  }
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+async function ttsUpstream(text: string, env: Env): Promise<{ buf: Uint8Array } | { status: number }> {
   const upstream = await fetch(`${audioBase(env)}/audio/speech`, {
     method: "POST",
     headers: {
@@ -859,7 +1054,7 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
   if (!upstream.ok) {
     const detail = await upstream.text();
     console.error("TTS upstream error", upstream.status, detail);
-    return json({ error: "tts upstream failed", status: upstream.status }, 502);
+    return { status: upstream.status };
   }
 
   // Buffer the stream: the device needs Content-Length, and OpenAI streams
@@ -873,10 +1068,47 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
       dv.setUint32(40, buf.length - 44, true);
     }
   }
+  return { buf };
+}
+
+async function handleTts(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as { text?: string; engine?: string } | null;
+  const text = body?.text?.trim();
+  if (!text) {
+    return json({ error: "missing text" }, 400);
+  }
+
+  let buf: Uint8Array | null = null;
+  let engineUsed: "realtime" | "tts" = "tts";
+  if (body?.engine === "realtime") {
+    const pcm = await realtimeSpeech(text.slice(0, 500), env);
+    if (pcm && pcm.length > 0) {
+      buf = pcm16ToWav(pcm, 24000);
+      engineUsed = "realtime";
+    } else {
+      console.warn("[toi] tts: realtime failed, falling back to tts");
+    }
+  }
+
+  let fallbackStatus: number | undefined;
+  if (!buf) {
+    const result = await ttsUpstream(text, env);
+    if ("buf" in result) {
+      buf = result.buf;
+    } else {
+      fallbackStatus = result.status;
+    }
+    engineUsed = "tts";
+  }
+  if (!buf) {
+    return json({ error: "tts upstream failed", status: fallbackStatus }, 502);
+  }
+
   return new Response(buf, {
     headers: {
       "content-type": "audio/wav",
       "content-length": String(buf.length),
+      "x-voice-engine": engineUsed,
     },
   });
 }
@@ -912,6 +1144,8 @@ export default {
             models: configuredModels(env),
             voice: env.TTS_VOICE,
             tts: true,
+            realtime: realtimeAvailable(env),
+            realtimeVoice: realtimeVoice(env),
           });
         case "/analyze":
           return await handleAnalyze(request, env, ctx);

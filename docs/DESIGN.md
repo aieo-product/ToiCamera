@@ -62,6 +62,7 @@ Stopwatch は ESP32 の **SoftAP+STA 同時動作**を使い、カメラ収容(A
 | 解析モデル | OpenAI 互換 API(vars `MAIN_API_BASE_URL`、既定 api.openai.com)。モデルメニューは vars `MODELS`(既定 `gpt-5.6-terra,gpt-5.6-luna`)で Worker が配信し、デバイスは `GET /config` で取得して `X-Model` で選択を返す | base URL を Cloudflare Tunnel 経由のローカル LLM(Ollama 等)に向け替え可能。モデル追加・切替は Worker 再デプロイのみでデバイス無関係 |
 | TTS | OpenAI `gpt-4o-mini-tts` → WAV 24kHz mono | M5Unified Speaker は WAV/RAW のみ(MP3 デコーダ非搭載)。品質不満時は Google TTS `ja-JP-Neural2`(LINEAR16)へ Worker 側のみで差替 |
 | 端末内 TTS(ボイス=sanoTTS、日本語のみ) | [sanoTTS-jp](https://github.com/ayutaz/sanoTTS-jp) C99 推論コア(W8A8 + ESP32-S3 PIE SIMD)を `firmware/stopwatch/lib/sanotts` に取り込み、int8 重み 654KB を app `.rodata` に埋め込み。arena 176KB(内部 DRAM、無ければ PSRAM)。合成は 22.05kHz を PSRAM に逐次書き出し、合成速度(実測レート)から再生開始タイミングを決めて `playRaw` | TTS API キー不要・往復 1 回(`/kana`)で済む。漢字→かな中間表現は端末側辞書が 13.7MB でフラッシュに入らないため Worker の LLM に委ねる(喋る文自体が LLM 出力)。重みは MIT ではなく Model License(帰属表示・用途制限。`lib/sanotts/NOTICE.md`)。日本語以外の言語では Worker TTS にフォールバック |
+| ボイス=GPT Realtime(4つ目の選択肢) | Worker が OpenAI Realtime API(`wss://api.openai.com/v1/realtime`、vars `REALTIME_MODEL`/`REALTIME_VOICE`/`REALTIME_API_BASE_URL`)に外向き WebSocket で接続し、PCM16 24kHz の音声デルタを集めて WAV に変換してから既存 `POST /tts` のプロトコルで返す(`{"engine":"realtime"}`) | 端末に鍵や WebSocket クライアントを載せない(#61 の TLS ヒープ枯渇再燃を回避、DESIGN.md 3 章の「API キーは Worker 秘匿」方針を維持)。端末側の再生経路(WAV 全量バッファ→`playWav`)は無変更。Realtime 失敗時は Worker が従来 TTS に、それも失敗すれば端末がチャープにフォールバックし無音にしない |
 | 日本語表示 | M5GFX 内蔵 `efontJA_16` | 追加フォント資材なしで UTF-8 日本語描画。品質を上げたければ VLW 変換が後続手段 |
 | デバイス→Worker TLS | `setInsecure()` | 自前 Worker のみに接続・送信物は画像+デバイストークンのみ。トレードオフを README に明記。将来はルート CA ピン留め |
 
@@ -137,22 +138,25 @@ Stopwatch 起動 → HOME → 黄ボタンで初回ファインダー進入
 | Endpoint | 認証 | 入力 | 出力 |
 |---|---|---|---|
 | `GET /health` | なし | — | `{ok, model}` |
-| `GET /config` | `X-Device-Token` | — | `{models, voice, tts}` — Worker が提供するモデルメニューと TTS 声名(ファームは NVS にキャッシュ) |
+| `GET /config` | `X-Device-Token` | — | `{models, voice, tts, realtime, realtimeVoice}` — Worker が提供するモデルメニュー・TTS 声名・GPT Realtime の可否/声名(ファームは NVS にキャッシュ) |
 | `POST /analyze` | `X-Device-Token` | raw `image/jpeg` | `{caption(≤15字), detail(≤150字)}` — structured outputs(json_schema)でスキーマ強制 |
 | `POST /ask` | `X-Device-Token` | raw `audio/wav` + query `caption`, `detail` | `{question, answer}` — STT で文字起こし後、写真の文脈で回答 |
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` — 地名 + 最寄駅/徒歩分(取得失敗時は駅情報を空で返す) |
 | `POST /digest` | `X-Device-Token` | `{items: string[]}` | `{summary}` — 撮影/質問見出しから今日の行動を 1 文要約 |
-| `POST /tts` | `X-Device-Token` | `{text}` | `audio/wav`(パススルーストリーム) |
+| `POST /tts` | `X-Device-Token` | `{text, engine?: "realtime"}` | `audio/wav`(パススルーストリーム)、応答ヘッダ `X-Voice-Engine: tts\|realtime`。`engine:"realtime"` は OpenAI Realtime API(WebSocket)で音声化し、失敗時は Worker 内で通常 TTS にフォールバックする |
 | `POST /kana` | `X-Device-Token` | `{text}` | `{kana}` — 端末内 sanoTTS 用のかな中間表現(ひらがな + `[` 上昇 / `]` 核 / `_` ポーズ / `°` 無声化)。撮影時は `/analyze` に `X-Kana: 1` を付けると応答に `kana` が同梱されるため、`/kana` は音声質問とフォールバック用 |
 
 シークレット(`wrangler secret`): `TOICAMERA_MAIN_API_KEY`(チャット/画像解説の
 バックエンド用。STT の認証にも使われるため、音声質問を使うには OpenAI で有効な
-キーが必要)/ `TOICAMERA_TTS_API_KEY`(TTS 用。未設定ならチャープ音フォールバック)/
-`DEVICE_TOKEN`。
+キーが必要)/ `TOICAMERA_TTS_API_KEY`(TTS 用。未設定ならチャープ音フォールバック。
+GPT Realtime のベアラートークンにも同じ鍵を流用する)/ `DEVICE_TOKEN`。
 vars: `MODELS` / `TTS_VOICE` / `TTS_MODEL` / `MAIN_API_BASE_URL`(チャット系の
 接続先。ローカル LLM に向けても STT/TTS は `AUDIO_API_BASE_URL`(既定
 api.openai.com)に接続する)/ `ANALYZE_MAX_TOKENS` / `ANALYZE_STYLE_LOW` /
-`ANALYZE_STYLE_HIGH` / `KANA_MODEL` / `KANA_REASONING_EFFORT`(`/kana` 用。既定は解析モデル・`none`)。
+`ANALYZE_STYLE_HIGH` / `KANA_MODEL` / `KANA_REASONING_EFFORT`(`/kana` 用。既定は解析モデル・`none`)/
+`REALTIME_MODEL`(既定 `gpt-realtime`)/ `REALTIME_VOICE`(空 = `TTS_VOICE` を流用)/
+`REALTIME_API_BASE_URL`(既定 api.openai.com。Realtime は OpenAI 専用のため
+`AUDIO_API_BASE_URL` とは独立)。
 
 ### 4.4 ケース(`case/`)
 

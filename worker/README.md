@@ -8,12 +8,12 @@ explanation (ja/en/zh). The device never talks to an AI provider directly.
 | Endpoint | Auth | In | Out |
 |---|---|---|---|
 | `GET /health` | none | — | `{ok, model}` |
-| `GET /config` | `X-Device-Token` | — | `{models, voice, tts}` — model menu + TTS voice name (cached on-device) |
+| `GET /config` | `X-Device-Token` | — | `{models, voice, tts, realtime, realtimeVoice}` — model menu + TTS voice name + GPT Realtime availability/voice (cached on-device) |
 | `POST /analyze` | `X-Device-Token` | raw `image/jpeg` body | `{caption, detail}` (JSON, schema-enforced) |
 | `POST /ask` | `X-Device-Token` | raw `audio/wav` + query `caption`, `detail` | `{question, answer}` — STT, then answer in photo context |
 | `GET /place` | `X-Device-Token` | query `lat`, `lon` | `{place, station, distance_m, walk_min}` |
 | `POST /digest` | `X-Device-Token` | `{"items": ["…"]}` | `{summary}` — one-line day summary |
-| `POST /tts` | `X-Device-Token` | `{"text": "..."}` | `audio/wav` (24kHz mono) |
+| `POST /tts` | `X-Device-Token` | `{"text": "...", "engine"?: "realtime"}` | `audio/wav` (24kHz mono), header `X-Voice-Engine: tts\|realtime` — `engine:"realtime"` speaks via the OpenAI Realtime API, falling back to the regular TTS engine (and then on-device chirps) on any failure |
 | `POST /kana` | `X-Device-Token` | `{"text": "..."}` | `{kana}` — kana intermediate representation (pitch-accent marks) for the on-device sanoTTS voice |
 
 ## Setup
@@ -33,7 +33,8 @@ npx wrangler deploy
 Vars (see `wrangler.jsonc` for defaults and comments): `MODELS`,
 `MAIN_API_BASE_URL`, `AUDIO_API_BASE_URL`, `TTS_VOICE`, `TTS_MODEL`,
 `ANALYZE_MAX_TOKENS`, `ANALYZE_STYLE_LOW`, `ANALYZE_STYLE_HIGH`,
-`KANA_MODEL`, `KANA_REASONING_EFFORT`, `KANA_BUNDLE`, `ANALYZE_KANA_REASONING_EFFORT`.
+`KANA_MODEL`, `KANA_REASONING_EFFORT`, `KANA_BUNDLE`, `ANALYZE_KANA_REASONING_EFFORT`,
+`REALTIME_MODEL`, `REALTIME_VOICE`, `REALTIME_API_BASE_URL`.
 
 ## Testing
 
@@ -71,6 +72,32 @@ questions stop working (TTS keeps working via `TOICAMERA_TTS_API_KEY`).
 TTS voice is `TTS_VOICE` (model `TTS_MODEL`, default OpenAI
 `gpt-4o-mini-tts`). Any OpenAI-compatible `/audio/speech` backend works via
 `AUDIO_API_BASE_URL` — device side needs no change (still WAV).
+
+## GPT Realtime voice
+
+The device's fourth Voice option, "GPT Realtime", asks `/tts` for
+`{"engine":"realtime"}`. The Worker opens an outbound WebSocket to the OpenAI
+Realtime API (`REALTIME_API_BASE_URL`, default `api.openai.com/v1`,
+`REALTIME_MODEL` default `gpt-realtime`), reusing `TOICAMERA_TTS_API_KEY` as
+the bearer token — Realtime is OpenAI-only, so it does not follow
+`AUDIO_API_BASE_URL`. Realtime speaks the text (unmodified — asked to read it
+verbatim) as PCM16 24kHz mono, which the Worker collects and wraps into the
+same WAV shape `/audio/speech` already returns, so the device's playback path
+is unchanged. Voice is `REALTIME_VOICE` (empty = reuse `TTS_VOICE`).
+
+If Realtime errors, times out (25 s), or returns no audio, `/tts` transparently
+falls back to the regular TTS engine, and the device falls back further to
+chirps if that also fails — GPT Realtime never causes silence. The response
+carries `X-Voice-Engine: realtime` or `tts` so you can see which one answered.
+`GET /config` reports `realtime: true` whenever `TOICAMERA_TTS_API_KEY` is set,
+plus `realtimeVoice`, so the device can show `Realtime(<voice>)` in Settings.
+
+```bash
+curl -s -X POST "$BASE/tts" \
+  -H "X-Device-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"text":"こんにちは、AIカメラです。","engine":"realtime"}' \
+  -D - -o out.wav && afplay out.wav
+```
 
 ## On-device voice (sanoTTS) and `/kana`
 
