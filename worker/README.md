@@ -121,7 +121,7 @@ can start playing after the first chunk instead of waiting for a finished WAV.
 | `X-Lang` | `ja` (default) / `en` / `zh` — instructions and speech are pinned to it |
 
 Body = `N` bytes of JPEG (must start `FF D8`), then, for `ask`, a RIFF/WAVE file
-(PCM 16-bit mono, any sample rate, 4 KB … 2 MB). The Worker linearly resamples
+(PCM 16-bit mono, any sample rate, 4000 B … 2 MB). The Worker linearly resamples
 it to the 24 kHz mono PCM the Realtime API accepts (the device records 16 kHz).
 
 **Response** — `application/octet-stream`, chunked, `X-Voice-Engine:
@@ -132,18 +132,13 @@ followed by frames of `type (1 B) + length (uint32 LE) + payload`:
 |---|---|
 | `A` | PCM16 mono 24 kHz audio bytes — one Realtime `output_audio` delta, verbatim |
 | `T` | transcript delta (UTF-8), interleaved with the audio |
-| `E` | terminal JSON `{caption, detail, transcript, status:"completed", pcmBytes, ms}` — `caption` is the first sentence (≤15 chars ja/zh, ≤15 words en), `detail` the rest |
-| `X` | error JSON `{error}` — the device falls back to `/analyze` + `/tts`, then to chirps |
+| `E` | terminal JSON `{caption, detail, transcript, question, status, pcmBytes, ms}` — `caption` is the first sentence (≤15 chars ja/zh, ≤15 words en), `detail` the rest (empty for one-sentence answers); `question` is the transcribed spoken question (`ask`, best effort, may be empty); `status` is `"completed"`, or `"truncated"` when the Worker stopped forwarding audio (1.9 MB cap, 15 s idle gap or disconnect after audio had started) — the device treats both as a normal end |
+| `X` | error JSON `{error}` — only ever sent **before any audio frame**; the device falls back to `/analyze` + `/tts` (or `/ask`), then to chirps |
 
 Exactly one `E` or `X` frame ends the stream. Everything after the upgrade is
-reported inside the stream: a Realtime `error` event, a disconnect before
-`response.done`, a non-`completed` status, or the 30 s timeout all produce `X`.
-Failures *before* the WebSocket opens are plain JSON instead — 503
-`{"error":"realtime unavailable"}` when `TOICAMERA_TTS_API_KEY` is unset, 502 on
-an upgrade or connect failure, 400/413 on a malformed body. Audio is capped at
-1.9 MB (~40 s); past that the stream stops forwarding `A` frames but still ends
-with `E`. Model and voice are `REALTIME_MODEL` / `REALTIME_VOICE`, same as
-`/tts engine:"realtime"`.
+reported in-band: an upstream `error`, a disconnect before `response.done`, a
+non-`completed` status, a 15 s idle gap or the 90 s hard limit produce `X` if
+no audio was sent yet, and `E` with `status:"truncated"` otherwise.
 
 ```bash
 curl -s --no-buffer -X POST "$BASE/live" \

@@ -1146,12 +1146,18 @@ async function handleTts(request: Request, env: Env): Promise<Response> {
 // then frames of `type(1 B) + len(uint32 LE) + payload`:
 //   A  PCM16 mono 24 kHz audio bytes (a Realtime output_audio delta, verbatim)
 //   T  transcript delta (UTF-8)
-//   E  terminal JSON {caption, detail, transcript, status, pcmBytes, ms}
-//   X  error JSON {error} — the device falls back to /analyze + /tts
+//   E  terminal JSON {caption, detail, transcript, question, status, pcmBytes, ms}
+//      status is "completed", or "truncated" when the Worker stopped forwarding
+//      audio (size cap, idle timeout or disconnect after audio had started) —
+//      the device treats both as a normal end and keeps what it played.
+//   X  error JSON {error} — only ever sent BEFORE any audio frame; the device
+//      falls back to /analyze + /tts (or /ask) on it.
 const LIVE_MAGIC = "TOI1";
-// The device allows ~30 s for the whole exchange; Realtime normally starts
-// speaking in ~1 s, so this is a runaway guard, not a budget.
-const LIVE_TIMEOUT_MS = 30_000;
+// Idle guard: reset on every upstream event. Realtime normally starts
+// speaking in ~1 s and streams continuously, so a 15 s gap means it hung.
+const LIVE_IDLE_TIMEOUT_MS = 15_000;
+// Absolute guard on top of the idle one — a runaway session, not a budget.
+const LIVE_MAX_TOTAL_MS = 90_000;
 // ~40 s of 24 kHz mono PCM16 (same guard as /tts).
 const LIVE_MAX_PCM_BYTES = 1_900_000;
 const LIVE_MAX_JPEG_BYTES = 2 * 1024 * 1024;
@@ -1278,16 +1284,21 @@ const LIVE_USER_TEXT: Record<Lang, { capture: string; ask: string }> = {
 function splitCaption(transcript: string, lang: Lang): { caption: string; detail: string } {
   const text = transcript.trim();
   if (!text) return { caption: "", detail: "" };
-  const at = text.search(/[。．.!?！？]/);
-  const head = at >= 0 ? text.slice(0, at).trim() : text;
+  // English: a terminator only counts at a word boundary, so "Dr." and "3.5"
+  // do not end the headline. ja/zh: any full-width terminator.
+  const m = lang === "en" ? /[.!?](?=\s|$)/.exec(text) : /[。．.!?！？]/.exec(text);
+  const at = m ? m.index : -1;
+  const head = (at >= 0 ? text.slice(0, at) : text).trim();
   const rest = at >= 0 ? text.slice(at + 1).trim() : "";
-  let caption: string;
-  if (lang === "en") {
-    caption = head.split(/\s+/).filter(Boolean).slice(0, 15).join(" ");
-  } else {
-    caption = Array.from(head).slice(0, 15).join("");
-  }
-  return { caption: caption || text, detail: rest || text };
+  // en: 15 words, and never more than 80 characters (a reply in the wrong
+  // language has no spaces to cut at); ja/zh: 15 characters.
+  const truncate = (v: string): string =>
+    lang === "en"
+      ? Array.from(v.split(/\s+/).filter(Boolean).slice(0, 15).join(" ")).slice(0, 80).join("")
+      : Array.from(v).slice(0, 15).join("");
+  // One-sentence answers: the whole text is the headline, no body (the device
+  // shows the caption alone rather than the same sentence twice).
+  return { caption: truncate(head || text), detail: rest };
 }
 
 async function handleLive(request: Request, env: Env): Promise<Response> {
@@ -1304,9 +1315,20 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
     return json({ error: "realtime unavailable" }, 503);
   }
 
+  // Bound the body before reading it (X-Jpeg-Length only bounds the JPEG).
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (declared > LIVE_MAX_JPEG_BYTES + LIVE_MAX_WAV_BYTES) {
+    return json({ error: "body too large" }, 413);
+  }
   const body = new Uint8Array(await request.arrayBuffer());
+  if (body.length > LIVE_MAX_JPEG_BYTES + LIVE_MAX_WAV_BYTES) {
+    return json({ error: "body too large" }, 413);
+  }
   if (body.length < jpegLength) {
     return json({ error: "body shorter than X-Jpeg-Length" }, 400);
+  }
+  if (mode === "capture" && body.length !== jpegLength) {
+    return json({ error: "capture body must be exactly the JPEG" }, 400); // framing slipped
   }
   const jpeg = body.subarray(0, jpegLength);
   if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
@@ -1352,11 +1374,13 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
   const encoder = new TextEncoder();
   const startedAt = Date.now();
   let transcript = "";
+  let question = ""; // ask: what the user said (Realtime input transcription)
   let pcmBytes = 0;
-  let firstAudioMs = 0;
+  let firstAudioMs = -1;
   let capped = false;
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let hardTimer: ReturnType<typeof setTimeout> | undefined;
 
   const readable = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -1379,6 +1403,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        if (hardTimer) clearTimeout(hardTimer);
         push(frame);
         try {
           controller.close();
@@ -1387,17 +1412,46 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         }
         closeSocket();
       };
-      const fail = (message: string) =>
-        finish(liveFrame("X", encoder.encode(JSON.stringify({ error: message }))));
+      const endFrame = (status: "completed" | "truncated"): Uint8Array => {
+        const { caption, detail } = splitCaption(transcript, lang);
+        const ms = Date.now() - startedAt;
+        console.log(
+          `[toi] live: ${mode} ${lang} ${status} ${pcmBytes} B pcm, ${ms} ms, first audio at ${firstAudioMs} ms`,
+        );
+        return liveFrame(
+          "E",
+          encoder.encode(JSON.stringify({ caption, detail, transcript, question, status, pcmBytes, ms })),
+        );
+      };
+      // Before any audio: X → the device falls back to the old path. After
+      // audio started: E(truncated) → the device keeps what it already played
+      // instead of narrating the same photo twice.
+      const fail = (message: string) => {
+        if (pcmBytes > 0) {
+          console.warn("[toi] live: ending as truncated —", message);
+          finish(endFrame("truncated"));
+        } else {
+          finish(liveFrame("X", encoder.encode(JSON.stringify({ error: message }))));
+        }
+      };
+      const armIdle = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          console.error("[toi] live: idle timeout waiting for upstream");
+          fail("realtime timeout");
+        }, LIVE_IDLE_TIMEOUT_MS);
+      };
 
       push(encoder.encode(LIVE_MAGIC));
-      timer = setTimeout(() => {
-        console.error("[toi] live: timed out waiting for response.done");
+      armIdle();
+      hardTimer = setTimeout(() => {
+        console.error("[toi] live: hard timeout");
         fail("realtime timeout");
-      }, LIVE_TIMEOUT_MS);
+      }, LIVE_MAX_TOTAL_MS);
 
       ws.addEventListener("message", (event: MessageEvent) => {
         if (settled || typeof event.data !== "string") return;
+        armIdle();
         let msg: Record<string, unknown>;
         try {
           msg = JSON.parse(event.data);
@@ -1416,7 +1470,14 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
                 audio: {
                   // turn_detection: null — one shot, the Worker decides when
                   // the turn ends (the audio is sent complete, in the request).
-                  input: { format: { type: "audio/pcm", rate: LIVE_RATE }, turn_detection: null },
+                  input: {
+                    format: { type: "audio/pcm", rate: LIVE_RATE },
+                    turn_detection: null,
+                    // Transcribe the spoken question so the device can log
+                    // "Q: …" in its history (best effort; may not arrive for
+                    // out-of-band input — then `question` stays empty).
+                    transcription: { model: "gpt-4o-mini-transcribe" },
+                  },
                   output: { voice, format: { type: "audio/pcm", rate: LIVE_RATE } },
                 },
               },
@@ -1446,7 +1507,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
             fail("realtime bad audio delta");
             return;
           }
-          if (!firstAudioMs) firstAudioMs = Date.now() - startedAt;
+          if (firstAudioMs < 0) firstAudioMs = Date.now() - startedAt;
           if (pcmBytes + bytes.length > LIVE_MAX_PCM_BYTES) {
             // Keep the session running to the terminal frame, just stop
             // forwarding audio the device has no room for.
@@ -1466,24 +1527,17 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
           if (typeof delta !== "string" || !delta) return;
           transcript += delta;
           push(liveFrame("T", encoder.encode(delta)));
+        } else if (type === "conversation.item.input_audio_transcription.completed") {
+          const t = msg.transcript;
+          if (typeof t === "string" && t.trim()) question = t.trim();
         } else if (type === "response.done") {
           const status = (msg.response as { status?: unknown } | undefined)?.status;
-          const ms = Date.now() - startedAt;
           if (status !== "completed") {
             console.warn("[toi] live: response.done status", status, JSON.stringify(msg).slice(0, 300));
             fail(`realtime ${String(status)}`);
             return;
           }
-          const { caption, detail } = splitCaption(transcript, lang);
-          console.log(
-            `[toi] live: ${mode} ${lang} ${pcmBytes} B pcm, ${ms} ms, first audio at ${firstAudioMs} ms`,
-          );
-          finish(
-            liveFrame(
-              "E",
-              encoder.encode(JSON.stringify({ caption, detail, transcript, status: "completed", pcmBytes, ms })),
-            ),
-          );
+          finish(endFrame(capped ? "truncated" : "completed"));
         } else if (type === "error" || type === "response.error") {
           console.error("[toi] live: error event", JSON.stringify(msg).slice(0, 300));
           fail("realtime error");
@@ -1504,6 +1558,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
       // Device hung up (fallback path, power off): stop the upstream session.
       settled = true;
       if (timer) clearTimeout(timer);
+      if (hardTimer) clearTimeout(hardTimer);
       try {
         ws.close();
       } catch {
