@@ -1346,6 +1346,24 @@ const LIVE_DELEGATION_TIMEOUT_MS = 30_000;
 // After the backend result arrives, how long to wait for the voice model to
 // start speaking it before giving up on the rest of the answer.
 const LIVE_POST_DELEGATION_WAIT_MS = 12_000;
+// Full-duplex output never stops: between sentences and after the answer the
+// server keeps streaming near-silent PCM. Chunks whose peak sample is below
+// this are "silence" — forwarded only inside short pauses, never counted as
+// output activity for the end-of-answer rule.
+const LIVE_SPEECH_PEAK = 400; // ≈ -38 dBFS on PCM16
+const LIVE_PAUSE_KEEP_MS = 500;
+
+function pcm16Peak(bytes: Uint8Array): number {
+  let peak = 0;
+  const n = bytes.length - (bytes.length % 2);
+  for (let i = 0; i < n; i += 2) {
+    let v = bytes[i] | (bytes[i + 1] << 8);
+    if (v & 0x8000) v -= 0x10000;
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+  }
+  return peak;
+}
 // session.started must arrive quickly — it is the first server event after
 // session.start and gates everything else. Missing it = fall back to Realtime.
 const LIVE_SESSION_START_TIMEOUT_MS = 10_000;
@@ -1723,6 +1741,8 @@ function gptLiveDriver(env: Env): LiveDriver {
   // (with the input simply stopping it only ever produced fillers).
   let silenceTimer: ReturnType<typeof setInterval> | undefined;
   const silenceB64 = bytesToBase64(new Uint8Array(LIVE_AUDIO_CHUNK_BYTES));
+  let lastSpeechAt = 0;   // last output chunk that actually contained speech
+  let droppedSilence = 0; // bytes of idle silence not forwarded to the device
   let lastOutputAt = 0;
   // Delegated Responses calls still running — the answer is not over while
   // the backend is still thinking, however quiet the voice channel is.
@@ -1767,6 +1787,7 @@ function gptLiveDriver(env: Env): LiveDriver {
   const beginClose = (ws: WebSocket, ctx: LiveCtx) => {
     if (closing) return;
     closing = true;
+    if (droppedSilence) ctx.note(`silence_dropped=${droppedSilence}`);
     if (startTimer) clearTimeout(startTimer);
     if (audioTimer) clearTimeout(audioTimer);
     if (endTimer) clearInterval(endTimer);
@@ -1904,12 +1925,20 @@ function gptLiveDriver(env: Env): LiveDriver {
           ctx.fail("gpt-live bad audio delta");
           return;
         }
+        const now = Date.now();
+        const speech = pcm16Peak(bytes) >= LIVE_SPEECH_PEAK;
+        if (speech) {
+          lastSpeechAt = now;
+        } else if (now - lastSpeechAt > LIVE_PAUSE_KEEP_MS) {
+          droppedSilence += bytes.length; // idle silence: not audio, not activity
+          return;
+        }
         if (audioTimer) {
           clearTimeout(audioTimer);
           audioTimer = undefined;
         }
         ctx.pushAudio(bytes);
-        markOutput(ws, ctx);
+        if (speech) markOutput(ws, ctx);
       } else if (type === "session.output_transcript.delta") {
         const delta = msg.delta;
         if (typeof delta !== "string" || !delta) return;
