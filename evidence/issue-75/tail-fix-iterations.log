@@ -1,0 +1,59 @@
+  (log) [toi] live: photo uploaded as file-Bmic77nFgd1Cv2dkSNu6ci (132377 B, 449 ms)
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENgAY2czgijMhjGJVcmtV","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENgAXkn4sQMCPZvTsYVgk","expires_at":1789319549,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (log) [toi] live: gpt-live sent 270614 B pcm + 38400 B silence
+  (log) [toi] gpt-live event session.delegation.created
+  (log) [toi] live: gpt-live response.event response.created backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.in_progress backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.delta backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.completed backend=gpt-5.6-terra
+  (warn) [toi] live: gpt-live no speech after delegation result — ending
+  (log) [toi] live: gpt-live session.closed {"event_id":"event_ENgAxsXWgnuGvu8qPzzE7","type":"session.closed","reason":"close_requested","session":{"id":"live_u7_ENgAXkn4sQMCPZvTsYVgk","expires_at":1789319549,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かな
+  (log) [toi] live: gpt-live ask ja completed 278400 B pcm, 25329 ms, first audio at 833 ms, backend=gpt-5.6-terra, usage={"seconds":9} usage={"seconds":9}
+  (log) [toi] live: question="" transcript="うん、ちょっと見てみますね。はい、少しだけ待ってください。確認して、わ"
+  (log) [toi] live: file file-Bmic77nFgd1Cv2dkSNu6ci deleted
+  (log) [toi] live: photo uploaded as file-6D6RirpQzARL15bysfBdxT (132377 B, 389 ms)
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENgCEec8sdggTnitF5hsD","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENgCD61Nc2odLQ6TQh0PR","expires_at":1789319654,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (log) [toi] live: gpt-live sent 270614 B pcm + 38400 B silence
+  (log) [toi] live: gpt-live delegation created item_ENgCGA4o3lbQlixUbISIm
+  (log) [toi] live: gpt-live response.event response.created backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.in_progress backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.delta backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.completed backend=gpt-5.6-terra
+  (warn) [toi] live: hit max PCM size, dropping further audio
+  (error) [toi] live: hard timeout
+  (log) [toi] live: gpt-live ask ja truncated 1896000 B pcm, 90000 ms, first audio at 701 ms, backend=gpt-5.6-terra, usage={"seconds":19} usage={"seconds":34} usage={"seconds":49} usage={"seconds":64} usage={"seconds":79}
+  (log) [toi] live: question="" transcript="はい、ちょっと見てみますね。これはアダフルート社のサーキットプレイグラウンド・エクスプレスっていうマイコン基板ですね。真ん中に「STOPWATCH」って書いてあるから、ストップウォッチとして使うための配線例っぽいです。基板自体は2017年ご"
+  (log) [toi] live: file file-6D6RirpQzARL15bysfBdxT deleted
+  (log) [toi] live: photo uploaded as file-F3t5ZVSiQo54WMnavwMgs9 (132377 B, 628 ms)
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENgEikm3eZVDx4Frhq7ND","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENgEhJYSIe0svfpQZw2JD","expires_at":1789319808,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (log) [toi] live: gpt-live sent 270614 B pcm + 38400 B silence
+  (log) [toi] live: gpt-live delegation created item_ENgEk9CIvnxP9Y4OMNlo0
+  (log) [toi] live: gpt-live response.event response.created backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.in_progress backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_item.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.added backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.delta backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.output_text.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.content_part.done backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live response.event response.completed backend=gpt-5.6-terra
+  (log) [toi] live: gpt-live session.closed {"event_id":"event_ENgFHeUrvmO8YcJetp0Q0","type":"session.closed","reason":"close_requested","session":{"id":"live_u7_ENgEhJYSIe0svfpQZw2JD","expires_at":1789319808,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問は、かな
+  (log) [toi] live: gpt-live ask ja completed 1387200 B pcm, 35372 ms, first audio at 3501 ms, backend=gpt-5.6-terra, usage={"seconds":19} usage={"seconds":34} silence_dropped=235200 usage={"seconds":38}
+  (log) [toi] live: question="" transcript="はい、ちょっと詳しく見てみますね。これはM5Stackの「M5Dial」っていうちっちゃな開発用ガジェットみたいです。中には無線もできる小さなコンピューターが入っていて、microSDカードもつながってます。製品としては2023年ごろに登場"
+  (log) [toi] live: file file-F3t5ZVSiQo54WMnavwMgs9 deleted
+  (log) [toi] live: photo uploaded as file-AgUa4SQBeh4Bq6HqEEyzhG (132377 B, 656 ms)
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENgFIGl0kobX3PRyJnBuf","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENgFIdAzHXUlWZES3HovT","expires_at":1789319844,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (log) [toi] live: gpt-live failed before audio (gpt-live no audio) — falling back to realtime
+  (log) [toi] live: realtime capture ja completed 940800 B pcm, 25505 ms, first audio at 21770 ms, backend=-, usage=-
+  (log) [toi] live: question="" transcript="配線ゴチャゴチャメカ丸。これは電子機器の内部、通称「ストップウォッチモジュール」だね。カラフルな配線とシールがぎっしり貼られて、まるで電子工作の秘密基地みたい！豆知識だけど、こういう配線をミスると動かなくなっちゃうから、色分けは命綱なんだ。"
+  (log) [toi] live: file file-AgUa4SQBeh4Bq6HqEEyzhG deleted

@@ -1,0 +1,11 @@
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENg4npBA0FrHL8gOZiPlf","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENg4mJaPKBacCu7RfRuy4","expires_at":1789319193,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (error) [toi] live: gpt-live error event {"type":"error","event_id":"event_ENg4nl7OmDixxfqQt8G19","error":{"type":"invalid_request_error","code":"response_input_buffer_full","message":"Backend response input history is limited to 128 items and 32768 UTF-8 bytes per session.","param":"item","client_event_id":"toi_photo"}}
+  (log) [toi] live: gpt-live failed before audio (gpt-live error) — falling back to realtime
+  (log) [toi] live: realtime capture ja completed 856800 B pcm, 6392 ms, first audio at 2476 ms, backend=-, usage=-
+  (log) [toi] live: question="" transcript="謎の配線パズル！  \nこの黒い丸い装置、実はエレベーターのICリーダー部分みたいだね。カラフルなラベルがびっしり貼られてて、配線の色と対応がわかりやすい。豆知識だけど、こういうの一度わかっちゃうと、配線作業がサクサク進むんだよね。"
+  (log) [toi] live: gpt-live session.started {"event_id":"event_ENg4uF1HO2oHJwZRhv1ME","type":"session.started","client_event_id":"toi_start","session":{"id":"live_u7_ENg4tZ5RV6NMHc3FBSNuk","expires_at":1789319200,"model":"gpt-live-1","instructions":"あなたはカメラ付き小型ガジェット「ToiCamera」のナレーターです。親しみやすく少しユーモラスな話し言葉で、かならず日本語だけで話してください。\n写真の説明や、事実・知識が必要な質問
+  (log) [toi] live: gpt-live sent 270614 B pcm + 38400 B silence
+  (error) [toi] live: gpt-live error event {"type":"error","event_id":"event_ENg4uSyj1riCx32Wxjw3S","error":{"type":"invalid_request_error","code":"response_input_buffer_full","message":"Backend response input history is limited to 128 items and 32768 UTF-8 bytes per session.","param":"item","client_event_id":"toi_photo"}}
+  (log) [toi] live: gpt-live failed before audio (gpt-live error) — falling back to realtime
+  (log) [toi] live: realtime ask ja completed 501600 B pcm, 4756 ms, first audio at 2572 ms, backend=-, usage=-
+  (log) [toi] live: question="" transcript="これ、電子部品の配線モジュールみたいだね。最近の製品っぽくて、いろんな端子にカラフルにラベルが貼ってあるから、わりと新しいタイプだと思うよ。"
