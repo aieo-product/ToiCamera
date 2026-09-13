@@ -1717,6 +1717,12 @@ function gptLiveDriver(env: Env): LiveDriver {
   // it is treated as finished and the normal silence rule takes over (the
   // 90 s hard limit would otherwise be the only way out).
   let delegationTimer: ReturnType<typeof setTimeout> | undefined;
+  // Full-duplex: the server expects a live microphone. Once the recording (if
+  // any) has been sent, keep feeding 100 ms of silence every 100 ms so the
+  // user's turn ends and the voice model takes the floor for the real answer
+  // (with the input simply stopping it only ever produced fillers).
+  let silenceTimer: ReturnType<typeof setInterval> | undefined;
+  const silenceB64 = bytesToBase64(new Uint8Array(LIVE_AUDIO_CHUNK_BYTES));
   let lastOutputAt = 0;
   // Delegated Responses calls still running — the answer is not over while
   // the backend is still thinking, however quiet the voice channel is.
@@ -1730,8 +1736,19 @@ function gptLiveDriver(env: Env): LiveDriver {
     if (endTimer) clearInterval(endTimer);
     if (closeTimer) clearTimeout(closeTimer);
     if (delegationTimer) clearTimeout(delegationTimer);
+    if (silenceTimer) clearInterval(silenceTimer);
     startTimer = audioTimer = closeTimer = delegationTimer = undefined;
-    endTimer = undefined;
+    endTimer = silenceTimer = undefined;
+  };
+  const startSilenceFeed = (ws: WebSocket) => {
+    if (silenceTimer) return;
+    silenceTimer = setInterval(() => {
+      try {
+        ws.send(JSON.stringify({ type: "session.input_audio.append", audio: silenceB64 }));
+      } catch {
+        // socket gone — the close/error handlers finish the request
+      }
+    }, 100);
   };
   const armDelegationWatchdog = () => {
     if (delegationTimer) clearTimeout(delegationTimer);
@@ -1753,8 +1770,9 @@ function gptLiveDriver(env: Env): LiveDriver {
     if (startTimer) clearTimeout(startTimer);
     if (audioTimer) clearTimeout(audioTimer);
     if (endTimer) clearInterval(endTimer);
+    if (silenceTimer) clearInterval(silenceTimer);
     startTimer = audioTimer = undefined;
-    endTimer = undefined;
+    endTimer = silenceTimer = undefined;
     try {
       ws.send(JSON.stringify({ type: "session.close" }));
     } catch {
@@ -1871,6 +1889,7 @@ function gptLiveDriver(env: Env): LiveDriver {
         console.log("[toi] live: gpt-live session.started", JSON.stringify(msg).slice(0, 300));
         sendPhoto(ws, ctx);
         if (ctx.mode === "ask") sendAudio(ws, ctx);
+        startSilenceFeed(ws);
         audioTimer = setTimeout(() => {
           ctx.fail("gpt-live no audio");
         }, LIVE_FIRST_AUDIO_TIMEOUT_MS);
@@ -1907,6 +1926,17 @@ function gptLiveDriver(env: Env): LiveDriver {
         // per-utterance — so they only count as output activity, never as
         // "the answer is over" (silence + delegation state decide that).
         markOutput(ws, ctx);
+      } else if (type === "session.delegation.created") {
+        // Documented start of a delegated backend call — mark it in flight
+        // right away (the Responses lifecycle events follow under the same id).
+        const d = isRecord(msg.delegation) ? msg.delegation : undefined;
+        const id = typeof d?.id === "string" ? d.id : "delegation";
+        if (!inflight.has(id)) {
+          delegationsSeen++;
+          inflight.add(id);
+          armDelegationWatchdog();
+        }
+        console.log("[toi] live: gpt-live delegation created", id);
       } else if (type === "response.event") {
         // Delegated Responses stream. Only the lifecycle matters here: the
         // text itself comes back to the device as spoken audio.
