@@ -1336,13 +1336,34 @@ function splitCaption(transcript: string, lang: Lang): { caption: string; detail
 // authoritative turn-completed event" — live-conversations guide), so the end
 // of the answer is inferred from a gap in output deltas with no delegated
 // Responses call still running.
-const LIVE_END_SILENCE_MS = 1500;
+const LIVE_END_SILENCE_MS = 2500; // gpt-live pauses mid-answer; 1.5 s cut long readings
 // When no delegation was ever observed (unexpected on this endpoint), be
 // more patient before deciding the voice model is done.
 const LIVE_END_SILENCE_NO_DELEGATION_MS = 4000;
 // A delegated backend call that never reports completion is assumed done
 // after this long (see the watchdog in gptLiveDriver).
 const LIVE_DELEGATION_TIMEOUT_MS = 30_000;
+// After the backend result arrives, how long to wait for the voice model to
+// start speaking it before giving up on the rest of the answer.
+const LIVE_POST_DELEGATION_WAIT_MS = 12_000;
+// Full-duplex output never stops: between sentences and after the answer the
+// server keeps streaming near-silent PCM. Chunks whose peak sample is below
+// this are "silence" — forwarded only inside short pauses, never counted as
+// output activity for the end-of-answer rule.
+const LIVE_SPEECH_PEAK = 400; // ≈ -38 dBFS on PCM16
+const LIVE_PAUSE_KEEP_MS = 500;
+
+function pcm16Peak(bytes: Uint8Array): number {
+  let peak = 0;
+  const n = bytes.length - (bytes.length % 2);
+  for (let i = 0; i < n; i += 2) {
+    let v = bytes[i] | (bytes[i + 1] << 8);
+    if (v & 0x8000) v -= 0x10000;
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+  }
+  return peak;
+}
 // session.started must arrive quickly — it is the first server event after
 // session.start and gates everything else. Missing it = fall back to Realtime.
 const LIVE_SESSION_START_TIMEOUT_MS = 10_000;
@@ -1478,6 +1499,8 @@ interface LiveCtx {
   readonly lang: Lang;
   /** JPEG as a data: URL, ready to drop into an image content part. */
   readonly imageUrl: string;
+  /** Files API id of the photo (gpt-live), "" when the upload was skipped or failed. */
+  readonly imageFileId: string;
   /** ask: the recorded question as base64 PCM16 mono 24 kHz (one blob). */
   readonly audioB64: string;
   /** ask: the same audio as samples, for drivers that stream it in chunks. */
@@ -1492,7 +1515,10 @@ interface LiveCtx {
    *  otherwise become the headline. */
   appendBackendText(text: string): void;
   finishCompleted(): void;
-  fail(message: string): void;
+  /** retryable: a setup failure (e.g. the photo item was rejected) — worth
+   *  re-running the request on the fallback driver even if a few seconds of
+   *  filler speech already reached the device. */
+  fail(message: string, opts?: { retryable?: boolean }): void;
   armIdle(): void;
   /** Has any audio reached the device yet? (gates fallback vs. truncated) */
   hasAudio(): boolean;
@@ -1639,6 +1665,53 @@ function realtimeLiveDriver(env: Env): LiveDriver {
 }
 
 // --- GPT-Live-1 (voice) + Responses delegation (reasoning) -----------------
+// GPT-Live's backend input history is capped at 32 KB per session, so the
+// photo cannot travel as a data URL (a VGA JPEG is ~110 KB of base64). It is
+// uploaded to the Files API instead and referenced by id — a few dozen bytes.
+const LIVE_FILE_UPLOAD_TIMEOUT_MS = 8000;
+
+async function uploadVisionFile(env: Env, jpeg: Uint8Array): Promise<string | null> {
+  const t0 = Date.now();
+  try {
+    const form = new FormData();
+    form.append("purpose", "vision");
+    form.append("file", new File([jpeg], "photo.jpg", { type: "image/jpeg" }));
+    const res = await fetch(`${liveBase(env)}/files`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(LIVE_FILE_UPLOAD_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error("[toi] live: file upload failed", res.status, (await res.text()).slice(0, 300));
+      return null;
+    }
+    const data = (await res.json()) as { id?: unknown };
+    if (typeof data.id !== "string" || !data.id) {
+      console.error("[toi] live: file upload returned no id");
+      return null;
+    }
+    console.log(`[toi] live: photo uploaded as ${data.id} (${jpeg.length} B, ${Date.now() - t0} ms)`);
+    return data.id;
+  } catch (err) {
+    console.error("[toi] live: file upload error", err);
+    return null;
+  }
+}
+
+async function deleteVisionFile(env: Env, id: string): Promise<void> {
+  try {
+    const res = await fetch(`${liveBase(env)}/files/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${env.TOICAMERA_TTS_API_KEY}` },
+      signal: AbortSignal.timeout(LIVE_FILE_UPLOAD_TIMEOUT_MS),
+    });
+    console.log(`[toi] live: file ${id} ${res.ok ? "deleted" : `delete failed ${res.status}`}`);
+  } catch (err) {
+    console.warn("[toi] live: file delete error", err);
+  }
+}
+
 function gptLiveDriver(env: Env): LiveDriver {
   const model = liveModel(env);
   const backend = liveBackendModel(env);
@@ -1654,10 +1727,22 @@ function gptLiveDriver(env: Env): LiveDriver {
   // the silence window between its acknowledgement and the real answer.
   let delegationsSeen = 0;
   let delegationsDone = 0;
+  // When the last delegation finished: the voice model then needs time to
+  // start reading the result, so silence right after completion must not end
+  // the answer (that is exactly how "let me take a look…" got cut off).
+  let lastDelegationDoneAt = 0;
   // Watchdog for a delegation that never reports completion: after this long
   // it is treated as finished and the normal silence rule takes over (the
   // 90 s hard limit would otherwise be the only way out).
   let delegationTimer: ReturnType<typeof setTimeout> | undefined;
+  // Full-duplex: the server expects a live microphone. Once the recording (if
+  // any) has been sent, keep feeding 100 ms of silence every 100 ms so the
+  // user's turn ends and the voice model takes the floor for the real answer
+  // (with the input simply stopping it only ever produced fillers).
+  let silenceTimer: ReturnType<typeof setInterval> | undefined;
+  const silenceB64 = bytesToBase64(new Uint8Array(LIVE_AUDIO_CHUNK_BYTES));
+  let lastSpeechAt = 0;   // last output chunk that actually contained speech
+  let droppedSilence = 0; // bytes of idle silence not forwarded to the device
   let lastOutputAt = 0;
   // Delegated Responses calls still running — the answer is not over while
   // the backend is still thinking, however quiet the voice channel is.
@@ -1671,8 +1756,19 @@ function gptLiveDriver(env: Env): LiveDriver {
     if (endTimer) clearInterval(endTimer);
     if (closeTimer) clearTimeout(closeTimer);
     if (delegationTimer) clearTimeout(delegationTimer);
+    if (silenceTimer) clearInterval(silenceTimer);
     startTimer = audioTimer = closeTimer = delegationTimer = undefined;
-    endTimer = undefined;
+    endTimer = silenceTimer = undefined;
+  };
+  const startSilenceFeed = (ws: WebSocket) => {
+    if (silenceTimer) return;
+    silenceTimer = setInterval(() => {
+      try {
+        ws.send(JSON.stringify({ type: "session.input_audio.append", audio: silenceB64 }));
+      } catch {
+        // socket gone — the close/error handlers finish the request
+      }
+    }, 100);
   };
   const armDelegationWatchdog = () => {
     if (delegationTimer) clearTimeout(delegationTimer);
@@ -1682,6 +1778,7 @@ function gptLiveDriver(env: Env): LiveDriver {
       console.warn(`[toi] live: gpt-live delegation watchdog — ${inflight.size} still open after ${LIVE_DELEGATION_TIMEOUT_MS} ms`);
       delegationsDone += inflight.size;
       inflight.clear();
+      lastDelegationDoneAt = Date.now();
     }, LIVE_DELEGATION_TIMEOUT_MS);
   };
 
@@ -1690,11 +1787,13 @@ function gptLiveDriver(env: Env): LiveDriver {
   const beginClose = (ws: WebSocket, ctx: LiveCtx) => {
     if (closing) return;
     closing = true;
+    if (droppedSilence) ctx.note(`silence_dropped=${droppedSilence}`);
     if (startTimer) clearTimeout(startTimer);
     if (audioTimer) clearTimeout(audioTimer);
     if (endTimer) clearInterval(endTimer);
+    if (silenceTimer) clearInterval(silenceTimer);
     startTimer = audioTimer = undefined;
-    endTimer = undefined;
+    endTimer = silenceTimer = undefined;
     try {
       ws.send(JSON.stringify({ type: "session.close" }));
     } catch {
@@ -1712,7 +1811,14 @@ function gptLiveDriver(env: Env): LiveDriver {
     // If no delegation was ever observed, wait a longer window so an
     // acknowledgement followed by a delegated answer is not cut in two.
     const window = delegationsSeen > 0 ? silenceMs : Math.max(silenceMs, LIVE_END_SILENCE_NO_DELEGATION_MS);
-    if (Date.now() - lastOutputAt < window) return;
+    const now = Date.now();
+    if (lastDelegationDoneAt && lastOutputAt < lastDelegationDoneAt) {
+      // The backend answered but the voice has not started reading it yet:
+      // keep waiting (bounded) instead of closing on the pre-answer silence.
+      if (now - lastDelegationDoneAt < LIVE_POST_DELEGATION_WAIT_MS) return;
+      console.warn("[toi] live: gpt-live no speech after delegation result — ending");
+    }
+    if (now - lastOutputAt < window) return;
     beginClose(ws, ctx);
   };
 
@@ -1728,7 +1834,9 @@ function gptLiveDriver(env: Env): LiveDriver {
       type: "message",
       role: "user",
       content: [
-        { type: "input_image", image_url: ctx.imageUrl },
+        ctx.imageFileId
+          ? { type: "input_image", file_id: ctx.imageFileId }
+          : { type: "input_image", image_url: ctx.imageUrl }, // mock/dev only: >32 KB is rejected upstream
         { type: "input_text", text: GPT_LIVE_BACKEND_TEXT[ctx.lang][ctx.mode] },
       ],
     };
@@ -1802,6 +1910,7 @@ function gptLiveDriver(env: Env): LiveDriver {
         console.log("[toi] live: gpt-live session.started", JSON.stringify(msg).slice(0, 300));
         sendPhoto(ws, ctx);
         if (ctx.mode === "ask") sendAudio(ws, ctx);
+        startSilenceFeed(ws);
         audioTimer = setTimeout(() => {
           ctx.fail("gpt-live no audio");
         }, LIVE_FIRST_AUDIO_TIMEOUT_MS);
@@ -1816,12 +1925,20 @@ function gptLiveDriver(env: Env): LiveDriver {
           ctx.fail("gpt-live bad audio delta");
           return;
         }
+        const now = Date.now();
+        const speech = pcm16Peak(bytes) >= LIVE_SPEECH_PEAK;
+        if (speech) {
+          lastSpeechAt = now;
+        } else if (now - lastSpeechAt > LIVE_PAUSE_KEEP_MS) {
+          droppedSilence += bytes.length; // idle silence: not audio, not activity
+          return;
+        }
         if (audioTimer) {
           clearTimeout(audioTimer);
           audioTimer = undefined;
         }
         ctx.pushAudio(bytes);
-        markOutput(ws, ctx);
+        if (speech) markOutput(ws, ctx);
       } else if (type === "session.output_transcript.delta") {
         const delta = msg.delta;
         if (typeof delta !== "string" || !delta) return;
@@ -1838,6 +1955,17 @@ function gptLiveDriver(env: Env): LiveDriver {
         // per-utterance — so they only count as output activity, never as
         // "the answer is over" (silence + delegation state decide that).
         markOutput(ws, ctx);
+      } else if (type === "session.delegation.created") {
+        // Documented start of a delegated backend call — mark it in flight
+        // right away (the Responses lifecycle events follow under the same id).
+        const d = isRecord(msg.delegation) ? msg.delegation : undefined;
+        const id = typeof d?.id === "string" ? d.id : "delegation";
+        if (!inflight.has(id)) {
+          delegationsSeen++;
+          inflight.add(id);
+          armDelegationWatchdog();
+        }
+        console.log("[toi] live: gpt-live delegation created", id);
       } else if (type === "response.event") {
         // Delegated Responses stream. Only the lifecycle matters here: the
         // text itself comes back to the device as spoken audio.
@@ -1859,7 +1987,10 @@ function gptLiveDriver(env: Env): LiveDriver {
           innerType === "response.failed" ||
           innerType === "response.incomplete"
         ) {
-          if (inflight.delete(id)) delegationsDone++;
+          if (inflight.delete(id)) {
+            delegationsDone++;
+            lastDelegationDoneAt = Date.now();
+          }
           if (!inflight.size && delegationTimer) {
             clearTimeout(delegationTimer);
             delegationTimer = undefined;
@@ -1886,7 +2017,12 @@ function gptLiveDriver(env: Env): LiveDriver {
           `[toi] live: gpt-live error event${clientEvent ? ` (rejected ${clientEvent})` : ""}`,
           JSON.stringify(msg).slice(0, 400),
         );
-        ctx.fail(clientEvent ? `gpt-live rejected ${clientEvent}` : "gpt-live error");
+        // A rejected photo/session is a setup failure: the answer never
+        // started, so the Realtime driver should take over even after a
+        // filler ("let me take a look") was already spoken.
+        ctx.fail(clientEvent ? `gpt-live rejected ${clientEvent}` : "gpt-live error", {
+          retryable: clientEvent === "toi_photo" || clientEvent === "toi_start",
+        });
       } else if (type === "session.updated" || type === "session.input_audio.committed") {
         // Acknowledgements — nothing to do, the idle timer was already fed.
       } else if (!loggedTypes.has(type)) {
@@ -1910,7 +2046,7 @@ function gptLiveDriver(env: Env): LiveDriver {
   };
 }
 
-async function handleLive(request: Request, env: Env): Promise<Response> {
+async function handleLive(request: Request, env: Env, exec: ExecutionContext): Promise<Response> {
   const mode = request.headers.get("x-live") as LiveMode | null;
   if (mode !== "capture" && mode !== "ask") {
     return json({ error: "X-Live must be capture or ask" }, 400);
@@ -1983,19 +2119,42 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
 
   const lang = pickLang(request);
   const imageUrl = `data:image/jpeg;base64,${bytesToBase64(jpeg)}`;
+  // gpt-live: the photo goes to the delegated backend by Files API id.
+  // gpt-live needs the photo as a Files API id (32 KB history cap). The upload
+  // runs in parallel with the WebSocket connect below; if it fails, the
+  // request goes straight to the Realtime driver instead of paying for a
+  // filler + rejected item + retry on the gpt-live path.
+  const wantGptLive = liveEngine(env) !== "realtime" && Boolean(env.TOICAMERA_TTS_API_KEY);
+  const mockUpstream = Boolean(env.LIVE_API_BASE_URL) && !liveBase(env).startsWith("https://api.openai.com");
+  const uploadPromise: Promise<string | null> = wantGptLive ? uploadVisionFile(env, jpeg) : Promise.resolve(null);
+  let imageFileId = "";
+  let fileReleased = false;
+  const releaseFile = () => {
+    if (fileReleased || !imageFileId) return;
+    fileReleased = true;
+    exec.waitUntil(deleteVisionFile(env, imageFileId));
+  };
 
   // Primary engine, then the Realtime driver as the in-request fallback. With
   // LIVE_ENGINE=realtime there is only ever the one driver (#69 behaviour).
-  const drivers: LiveDriver[] =
-    liveEngine(env) === "realtime"
-      ? [realtimeLiveDriver(env)]
-      : [gptLiveDriver(env), realtimeLiveDriver(env)];
+  let drivers: LiveDriver[] = wantGptLive ? [gptLiveDriver(env), realtimeLiveDriver(env)] : [realtimeLiveDriver(env)];
 
   // Connect before the response starts so a dead upstream is still a plain
   // HTTP error (the device retries its old path), not a TOI1 stream with an X.
   let driverIndex = 0;
-  let socket = await drivers[0].connect();
-  if (!socket && drivers.length > 1) {
+  let [socket, uploadedId] = await Promise.all([drivers[0].connect(), uploadPromise]);
+  imageFileId = uploadedId ?? "";
+  if (wantGptLive && !imageFileId && !mockUpstream) {
+    // No file id → the photo item would be rejected upstream. Skip gpt-live.
+    console.log("[toi] live: gpt-live skipped (photo upload failed) — using realtime");
+    try {
+      socket?.close();
+    } catch {
+      // ignore
+    }
+    drivers = [realtimeLiveDriver(env)];
+    socket = await drivers[0].connect();
+  } else if (!socket && drivers.length > 1) {
     console.log(
       `[toi] live: gpt-live failed before audio (connect failed) — falling back to realtime`,
     );
@@ -2003,6 +2162,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
     socket = await drivers[1].connect();
   }
   if (!socket) {
+    releaseFile();
     return json({ error: `${drivers[driverIndex].name} connect failed` }, 502);
   }
 
@@ -2042,6 +2202,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
       const finish = (frame: Uint8Array) => {
         if (settled) return;
         settled = true;
+        releaseFile();
         if (timer) clearTimeout(timer);
         if (hardTimer) clearTimeout(hardTimer);
         driver.stop?.();
@@ -2082,7 +2243,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
       // Swap to the Realtime driver mid-stream. The device is already reading
       // TOI1 and has heard nothing yet, so it sees one continuous response.
       const fallbackToRealtime = async (reason: string) => {
-        console.log(`[toi] live: gpt-live failed before audio (${reason}) — falling back to realtime`);
+        console.log(`[toi] live: gpt-live failed ${pcmBytes > 0 ? "after filler" : "before audio"} (${reason}) — falling back to realtime`);
         generation++;
         driver.stop?.();
         closeSocket();
@@ -2092,6 +2253,8 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         backendText = "";
         question = "";
         notes = [];
+        firstAudioMs = -1; // measure the fallback driver's own first speech
+        capped = false;
         driverIndex = 1;
         const next = drivers[1];
         const sock = await next.connect();
@@ -2118,6 +2281,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         mode,
         lang,
         imageUrl,
+        imageFileId,
         audioB64,
         pcm,
         history,
@@ -2156,14 +2320,16 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
         // gpt-live, the Realtime driver takes over first). After audio
         // started: E(truncated) → the device keeps what it already played
         // instead of narrating the same photo twice.
-        fail(message) {
+        fail(message, opts) {
           if (settled) return;
-          if (pcmBytes > 0) {
+          const canFallback = driverIndex === 0 && drivers.length > 1;
+          if (pcmBytes > 0 && !(opts?.retryable && canFallback)) {
             console.warn("[toi] live: ending as truncated —", message);
             finish(endFrame("truncated"));
             return;
           }
-          if (driverIndex === 0 && drivers.length > 1) {
+          if (canFallback) {
+            if (pcmBytes > 0) console.warn(`[toi] live: retrying on realtime after ${pcmBytes} B of audio (${message})`);
             void fallbackToRealtime(message);
             return;
           }
@@ -2216,6 +2382,7 @@ async function handleLive(request: Request, env: Env): Promise<Response> {
     cancel() {
       // Device hung up (fallback path, power off): stop the upstream session.
       settled = true;
+      releaseFile();
       if (timer) clearTimeout(timer);
       if (hardTimer) clearTimeout(hardTimer);
       driver.stop?.();
@@ -2281,7 +2448,7 @@ export default {
         case "/tts":
           return await handleTts(request, env);
         case "/live":
-          return await handleLive(request, env);
+          return await handleLive(request, env, ctx);
         case "/kana":
           return await handleKana(request, env);
         default:
