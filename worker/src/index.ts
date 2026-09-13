@@ -1336,7 +1336,7 @@ function splitCaption(transcript: string, lang: Lang): { caption: string; detail
 // authoritative turn-completed event" — live-conversations guide), so the end
 // of the answer is inferred from a gap in output deltas with no delegated
 // Responses call still running.
-const LIVE_END_SILENCE_MS = 1500;
+const LIVE_END_SILENCE_MS = 2500; // gpt-live pauses mid-answer; 1.5 s cut long readings
 // When no delegation was ever observed (unexpected on this endpoint), be
 // more patient before deciding the voice model is done.
 const LIVE_END_SILENCE_NO_DELEGATION_MS = 4000;
@@ -2120,24 +2120,41 @@ async function handleLive(request: Request, env: Env, exec: ExecutionContext): P
   const lang = pickLang(request);
   const imageUrl = `data:image/jpeg;base64,${bytesToBase64(jpeg)}`;
   // gpt-live: the photo goes to the delegated backend by Files API id.
-  const imageFileId =
-    liveEngine(env) === "realtime" || !env.TOICAMERA_TTS_API_KEY ? "" : (await uploadVisionFile(env, jpeg)) ?? "";
+  // gpt-live needs the photo as a Files API id (32 KB history cap). The upload
+  // runs in parallel with the WebSocket connect below; if it fails, the
+  // request goes straight to the Realtime driver instead of paying for a
+  // filler + rejected item + retry on the gpt-live path.
+  const wantGptLive = liveEngine(env) !== "realtime" && Boolean(env.TOICAMERA_TTS_API_KEY);
+  const mockUpstream = Boolean(env.LIVE_API_BASE_URL) && !liveBase(env).startsWith("https://api.openai.com");
+  const uploadPromise: Promise<string | null> = wantGptLive ? uploadVisionFile(env, jpeg) : Promise.resolve(null);
+  let imageFileId = "";
+  let fileReleased = false;
   const releaseFile = () => {
-    if (imageFileId) exec.waitUntil(deleteVisionFile(env, imageFileId));
+    if (fileReleased || !imageFileId) return;
+    fileReleased = true;
+    exec.waitUntil(deleteVisionFile(env, imageFileId));
   };
 
   // Primary engine, then the Realtime driver as the in-request fallback. With
   // LIVE_ENGINE=realtime there is only ever the one driver (#69 behaviour).
-  const drivers: LiveDriver[] =
-    liveEngine(env) === "realtime"
-      ? [realtimeLiveDriver(env)]
-      : [gptLiveDriver(env), realtimeLiveDriver(env)];
+  let drivers: LiveDriver[] = wantGptLive ? [gptLiveDriver(env), realtimeLiveDriver(env)] : [realtimeLiveDriver(env)];
 
   // Connect before the response starts so a dead upstream is still a plain
   // HTTP error (the device retries its old path), not a TOI1 stream with an X.
   let driverIndex = 0;
-  let socket = await drivers[0].connect();
-  if (!socket && drivers.length > 1) {
+  let [socket, uploadedId] = await Promise.all([drivers[0].connect(), uploadPromise]);
+  imageFileId = uploadedId ?? "";
+  if (wantGptLive && !imageFileId && !mockUpstream) {
+    // No file id → the photo item would be rejected upstream. Skip gpt-live.
+    console.log("[toi] live: gpt-live skipped (photo upload failed) — using realtime");
+    try {
+      socket?.close();
+    } catch {
+      // ignore
+    }
+    drivers = [realtimeLiveDriver(env)];
+    socket = await drivers[0].connect();
+  } else if (!socket && drivers.length > 1) {
     console.log(
       `[toi] live: gpt-live failed before audio (connect failed) — falling back to realtime`,
     );
@@ -2145,6 +2162,7 @@ async function handleLive(request: Request, env: Env, exec: ExecutionContext): P
     socket = await drivers[1].connect();
   }
   if (!socket) {
+    releaseFile();
     return json({ error: `${drivers[driverIndex].name} connect failed` }, 502);
   }
 
@@ -2235,6 +2253,8 @@ async function handleLive(request: Request, env: Env, exec: ExecutionContext): P
         backendText = "";
         question = "";
         notes = [];
+        firstAudioMs = -1; // measure the fallback driver's own first speech
+        capped = false;
         driverIndex = 1;
         const next = drivers[1];
         const sock = await next.connect();
